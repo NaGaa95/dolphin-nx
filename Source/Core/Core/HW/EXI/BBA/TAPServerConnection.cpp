@@ -10,10 +10,13 @@
 #include <winsock2.h>
 #include <ws2ipdef.h>
 #else
+#include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/select.h>
 #include <sys/socket.h>
+#ifndef __SWITCH__
 #include <sys/un.h>
+#endif
 #include <unistd.h>
 #endif
 
@@ -21,6 +24,7 @@
 #include "Common/Network.h"
 #include "Common/StringUtil.h"
 #include "Core/HW/EXI/BBA/TAPServerConnection.h"
+#include "DolphinSwitch/SFMLNetworkCompat.h"
 #include "SFML/Network/IpAddress.hpp"
 
 namespace ExpansionInterface
@@ -83,7 +87,7 @@ static int ConnectToDestination(const std::string& destination)
     }
     sin->sin_port = htons(dest_port);
     ss_size = sizeof(*sin);
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__SWITCH__)
   }
   else
   {
@@ -101,7 +105,7 @@ static int ConnectToDestination(const std::string& destination)
   }
   else
   {
-    ERROR_LOG_FMT(SP1, "UNIX sockets are not supported on Windows\n");
+    ERROR_LOG_FMT(SP1, "UNIX sockets are not supported on this platform\n");
     return -1;
 #endif
   }

@@ -1,4 +1,5 @@
 // Copyright 2014 Dolphin Emulator Project
+// Copyright 2026 Dan | ticoverse.com
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "Core/PowerPC/JitArm64/Jit.h"
@@ -40,12 +41,16 @@ void JitArm64::GenerateAsm()
   const u32 ALL_CALLEE_SAVED_FPR = 0x0000FF00;
   BitSet32 regs_to_save(ALL_CALLEE_SAVED);
   BitSet32 regs_to_save_fpr(ALL_CALLEE_SAVED_FPR);
-  enter_code = GetCodePtr();
+  enter_code = ConvertToExecutable(GetCodePtr());
 
   ABI_PushRegisters(regs_to_save);
   m_float_emit.ABI_PushRegisters(regs_to_save_fpr, ARM64Reg::X8);
 
   MOVP2R(PPC_REG, &m_ppc_state);
+
+#ifdef __SWITCH__
+  EmitUpdateMembase();
+#endif
 
   // Store the stack pointer, so we can reset it if the BLR optimization fails.
   ADD(ARM64Reg::X8, ARM64Reg::SP, 0);
@@ -131,10 +136,18 @@ void JitArm64::GenerateAsm()
       ARM64Reg feature_flags_2 = ARM64Reg::W13;
       ARM64Reg entry = ARM64Reg::X14;
 
-      // iCache[(address >> 2) & iCache_Mask];
+      // Look up the PC in the compact fallback map.
       MOVP2R(cache_base, GetBlockCache()->GetFastBlockMapFallback());
+#ifdef __SWITCH__
+      // Fold high PC bits into the compact-map index.
+      EOR(pc_masked, DISPATCHER_PC, DISPATCHER_PC,
+          ArithOption(DISPATCHER_PC, ShiftType::LSR,
+                      JitBaseBlockCache::FAST_BLOCK_MAP_FALLBACK_BITS));
+      UBFX(pc_masked, pc_masked, 2, JitBaseBlockCache::FAST_BLOCK_MAP_FALLBACK_BITS);
+#else
       UBFX(pc_masked, DISPATCHER_PC, 2,
-           MathUtil::IntLog2(JitBaseBlockCache::FAST_BLOCK_MAP_FALLBACK_ELEMENTS) - 2);
+           JitBaseBlockCache::FAST_BLOCK_MAP_FALLBACK_BITS);
+#endif
       LDR(block, cache_base, ArithOption(EncodeRegTo64(pc_masked), true));
       FixupBranch not_found = CBZ(block);
 
@@ -150,7 +163,7 @@ void JitArm64::GenerateAsm()
       CMP(feature_flags, feature_flags_2);
       FixupBranch feature_flags_mismatch = B(CC_NEQ);
 
-      // return blocks[block_num].normalEntry;
+      // normalEntry is stored as RX, so BR can use it directly.
       BR(entry);
 
       SetJumpTarget(not_found);
@@ -172,6 +185,7 @@ void JitArm64::GenerateAsm()
 
     FixupBranch no_block_available = CBZ(ARM64Reg::X0);
 
+    // Dispatch() returns normalEntry, which is RX, so BR can use it directly.
     BR(ARM64Reg::X0);
 
     SetJumpTarget(no_block_available);
@@ -239,7 +253,7 @@ void JitArm64::GenerateAsm()
 
   GenerateCommonAsm();
 
-  FlushIcache();
+  FlushIcacheWxX();
 }
 
 void JitArm64::GenerateCommonAsm()
@@ -815,6 +829,12 @@ void JitArm64::GenerateQuantizedLoads()
   single_load_quantized[5] = loadPairedU16One;
   single_load_quantized[6] = loadPairedS8One;
   single_load_quantized[7] = loadPairedS16One;
+
+  for (size_t i = 0; i < 8; ++i)
+  {
+    paired_load_quantized[i] = ConvertToExecutable(paired_load_quantized[i]);
+    single_load_quantized[i] = ConvertToExecutable(single_load_quantized[i]);
+  }
 }
 
 void JitArm64::GenerateQuantizedStores()
@@ -1035,4 +1055,11 @@ void JitArm64::GenerateQuantizedStores()
   single_store_quantized[5] = storeSingleU16;
   single_store_quantized[6] = storeSingleS8;
   single_store_quantized[7] = storeSingleS16;
+
+  // See note in GenerateQuantizedLoads — convert to RX so BLR works directly.
+  for (size_t i = 0; i < 8; ++i)
+  {
+    paired_store_quantized[i] = ConvertToExecutable(paired_store_quantized[i]);
+    single_store_quantized[i] = ConvertToExecutable(single_store_quantized[i]);
+  }
 }

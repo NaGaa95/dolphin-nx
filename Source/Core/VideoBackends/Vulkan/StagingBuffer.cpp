@@ -143,8 +143,14 @@ bool StagingBuffer::AllocateBuffer(STAGING_BUFFER_TYPE type, VkDeviceSize size,
   alloc_create_info.pool = VK_NULL_HANDLE;
   alloc_create_info.pUserData = nullptr;
   alloc_create_info.priority = 0.0;
+#if defined(__SWITCH__)
+  alloc_create_info.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+  alloc_create_info.requiredFlags =
+      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+#else
   alloc_create_info.preferredFlags = 0;
   alloc_create_info.requiredFlags = 0;
+#endif
 
   if (DriverDetails::HasBug(DriverDetails::BUG_SLOW_CACHED_READBACK_MEMORY)) [[unlikely]]
   {

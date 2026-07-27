@@ -116,6 +116,18 @@ void GenericLogFmt(LogLevel level, LogType type, const char* file, int line, con
 
 // fmtlib capable API
 
+#ifdef __SWITCH__
+#define GENERIC_LOG_FMT(t, v, format, ...)                                                         \
+  do                                                                                               \
+  {                                                                                                \
+    if constexpr (false)                                                                           \
+    {                                                                                              \
+      constexpr auto GENERIC_LOG_FMT_N = Common::CountFmtReplacementFields(format);                \
+      Common::Log::GenericLogFmt<GENERIC_LOG_FMT_N>(                                               \
+          v, t, __FILE__, __LINE__, FMT_STRING(format) __VA_OPT__(, ) __VA_ARGS__);                \
+    }                                                                                              \
+  } while (0)
+#else
 #define GENERIC_LOG_FMT(t, v, format, ...)                                                         \
   do                                                                                               \
   {                                                                                                \
@@ -127,6 +139,7 @@ void GenericLogFmt(LogLevel level, LogType type, const char* file, int line, con
           v, t, __FILE__, __LINE__, FMT_STRING(format) __VA_OPT__(, ) __VA_ARGS__);                \
     }                                                                                              \
   } while (0)
+#endif
 
 #define ERROR_LOG_FMT(t, ...)                                                                      \
   do                                                                                               \

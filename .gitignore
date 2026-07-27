@@ -8,6 +8,8 @@ Source/Core/Common/scmrev.h
 # Ignore files output by build
 /cmake-build-debug
 /cmake-build-release
+/build-switch/
+/Tools/Switch/ForwarderPayload/hbl.elf
 /[Bb]uild*/
 /[Bb]inary*/
 /obj/

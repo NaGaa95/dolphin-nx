@@ -10,6 +10,7 @@ using socklen_t = int;
 #include <netinet/in.h>
 #endif
 
+#include "DolphinSwitch/SFMLNetworkCompat.h"
 #include <SFML/Network.hpp>
 #include "Common/CommonTypes.h"
 #include "Common/Network.h"

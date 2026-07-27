@@ -42,9 +42,13 @@
 
 #else
 #include <arpa/inet.h>
+#ifndef __SWITCH__
 #include <ifaddrs.h>
-#include <netinet/in.h>
 #include <resolv.h>
+#else
+#include <switch.h>
+#endif
+#include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #endif
@@ -379,6 +383,36 @@ static std::optional<DefaultInterface> GetSystemDefaultInterface()
       }
     }
   }
+#elif defined(__SWITCH__)
+  // Query Horizon's selected IPv4 configuration through NIFM.
+  const Result init_result = nifmInitialize(NifmServiceType_User);
+  if (R_FAILED(init_result))
+  {
+    ERROR_LOG_FMT(IOS_NET, "nifmInitialize failed: {:#x}", init_result);
+    return std::nullopt;
+  }
+  Common::ScopeGuard nifm_guard{[] { nifmExit(); }};
+
+  u32 address = 0;
+  u32 netmask = 0;
+  u32 gateway = 0;
+  u32 primary_dns = 0;
+  u32 secondary_dns = 0;
+  const Result config_result = nifmGetCurrentIpConfigInfo(
+      &address, &netmask, &gateway, &primary_dns, &secondary_dns);
+  if (R_FAILED(config_result) || address == 0)
+  {
+    ERROR_LOG_FMT(IOS_NET, "nifmGetCurrentIpConfigInfo failed: {:#x}", config_result);
+    return std::nullopt;
+  }
+
+  const in_addr inet = std::bit_cast<in_addr>(address);
+  const in_addr mask = std::bit_cast<in_addr>(netmask);
+  const in_addr broadcast = std::bit_cast<in_addr>((address & netmask) | ~netmask);
+  const in_addr gateway_addr = std::bit_cast<in_addr>(gateway);
+  if (routing_table.empty())
+    routing_table = {{0, {}, {}, gateway_addr}};
+  return DefaultInterface{inet, mask, broadcast, std::move(routing_table)};
 #elif defined(__ANDROID__)
   const u32 addr = GetNetworkIpAddress();
   const u32 prefix_length = GetNetworkPrefixLength();
@@ -1092,6 +1126,25 @@ IPCReply NetIPTopDevice::HandleGetInterfaceOptRequest(const IOCtlVRequest& reque
       if (AdapterAddresses != nullptr)
       {
         FREE(AdapterAddresses);
+      }
+    }
+#elif defined(__SWITCH__)
+    if (!Core::WantsDeterminism())
+    {
+      const Result init_result = nifmInitialize(NifmServiceType_User);
+      if (R_SUCCEEDED(init_result))
+      {
+        Common::ScopeGuard nifm_guard{[] { nifmExit(); }};
+        u32 current_address = 0;
+        u32 subnet_mask = 0;
+        u32 gateway = 0;
+        u32 primary_dns = 0;
+        u32 secondary_dns = 0;
+        if (R_SUCCEEDED(nifmGetCurrentIpConfigInfo(&current_address, &subnet_mask, &gateway,
+                                                   &primary_dns, &secondary_dns)))
+        {
+          address = ntohl(primary_dns);
+        }
       }
     }
 #elif (defined(__linux__) && !defined(ANDROID)) || defined(__APPLE__) || defined(__FreeBSD__) ||   \

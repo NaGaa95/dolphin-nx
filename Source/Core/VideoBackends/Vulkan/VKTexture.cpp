@@ -86,6 +86,9 @@ std::unique_ptr<VKTexture> VKTexture::Create(const TextureConfig& tex_config, st
                                   nullptr,
                                   VK_IMAGE_LAYOUT_UNDEFINED};
 
+  VkImage image = VK_NULL_HANDLE;
+  VmaAllocation alloc = VK_NULL_HANDLE;
+
   VmaAllocationCreateInfo alloc_create_info = {};
   alloc_create_info.flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
   alloc_create_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
@@ -96,8 +99,6 @@ std::unique_ptr<VKTexture> VKTexture::Create(const TextureConfig& tex_config, st
   alloc_create_info.requiredFlags = 0;
   alloc_create_info.preferredFlags = 0;
 
-  VkImage image = VK_NULL_HANDLE;
-  VmaAllocation alloc = VK_NULL_HANDLE;
   VkResult res = vmaCreateImage(g_vulkan_context->GetMemoryAllocator(), &image_info,
                                 &alloc_create_info, &image, &alloc, nullptr);
   if (res != VK_SUCCESS)

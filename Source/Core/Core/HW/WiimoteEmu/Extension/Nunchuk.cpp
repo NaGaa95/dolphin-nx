@@ -176,7 +176,22 @@ void Nunchuk::DoState(PointerWrap& p)
 
 void Nunchuk::LoadDefaults()
 {
-#ifndef ANDROID
+#ifdef __SWITCH__
+  m_stick->SetControlExpression(0, "`Y0+`");
+  m_stick->SetControlExpression(1, "`Y0-`");
+  m_stick->SetControlExpression(2, "`X0-`");
+  m_stick->SetControlExpression(3, "`X0+`");
+
+  m_buttons->SetControlExpression(0, "`L`");
+  m_buttons->SetControlExpression(1, "`Z`");
+
+  m_imu_accelerometer->SetControlExpression(0, "`Nunchuk Accel Up`");
+  m_imu_accelerometer->SetControlExpression(1, "`Nunchuk Accel Down`");
+  m_imu_accelerometer->SetControlExpression(2, "`Nunchuk Accel Left`");
+  m_imu_accelerometer->SetControlExpression(3, "`Nunchuk Accel Right`");
+  m_imu_accelerometer->SetControlExpression(4, "`Nunchuk Accel Forward`");
+  m_imu_accelerometer->SetControlExpression(5, "`Nunchuk Accel Backward`");
+#elif !defined(ANDROID)
   // Stick
   m_stick->SetControlExpression(0, "W");  // up
   m_stick->SetControlExpression(1, "S");  // down

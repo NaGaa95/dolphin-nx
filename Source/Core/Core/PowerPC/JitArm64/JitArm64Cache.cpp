@@ -41,6 +41,8 @@ void JitArm64BlockCache::WriteLinkBlock(Arm64Gen::ARM64XEmitter& emit,
   }
   else
   {
+    const u8* const dest_rw = static_cast<JitArm64&>(m_jit).ConvertToWritable(dest->normalEntry);
+
     if (source.call)
     {
       // The "fast" BL should be the last instruction, so that the return address matches the
@@ -49,21 +51,23 @@ void JitArm64BlockCache::WriteLinkBlock(Arm64Gen::ARM64XEmitter& emit,
       emit.B(source.exitFarcode);
       DEBUG_ASSERT(emit.GetCodePtr() == start + BLOCK_LINK_FAST_BL_OFFSET || emit.HasWriteFailed());
       emit.SetJumpTarget(fast);
-      emit.BL(dest->normalEntry);
+      emit.BL(dest_rw);
     }
     else
     {
       // Are we able to jump directly to the block?
-      s64 block_distance = ((s64)dest->normalEntry - (s64)emit.GetCodePtr()) >> 2;
+      const s64 block_distance = (reinterpret_cast<s64>(dest_rw) -
+                                  reinterpret_cast<s64>(emit.GetCodePtr())) >>
+                                 2;
       if (block_distance >= -0x40000 && block_distance <= 0x3FFFF)
       {
-        emit.B(CC_GT, dest->normalEntry);
+        emit.B(CC_GT, dest_rw);
         emit.B(source.exitFarcode);
       }
       else
       {
         FixupBranch slow = emit.B(CC_LE);
-        emit.B(dest->normalEntry);
+        emit.B(dest_rw);
         emit.SetJumpTarget(slow);
         emit.B(source.exitFarcode);
       }
@@ -88,16 +92,23 @@ void JitArm64BlockCache::WriteLinkBlock(const JitBlock::LinkData& source, const 
   ARM64XEmitter emit(location, location + BLOCK_LINK_SIZE);
 
   WriteLinkBlock(emit, source, dest);
-  emit.FlushIcache();
+  u8* const rw_end = const_cast<u8*>(emit.GetCodePtr());
+  emit.FlushIcacheSection(location, rw_end,
+                          static_cast<JitArm64&>(m_jit).ConvertToExecutable(location),
+                          static_cast<JitArm64&>(m_jit).ConvertToExecutable(rw_end));
 }
 
 void JitArm64BlockCache::WriteDestroyBlock(const JitBlock& block)
 {
+  u8* const rw_start = static_cast<JitArm64&>(m_jit).ConvertToWritable(block.normalEntry);
   // Only clear the entry point as we might still be within this block.
-  ARM64XEmitter emit(block.normalEntry, block.normalEntry + 4);
+  ARM64XEmitter emit(rw_start, rw_start + 4);
   const Common::ScopedJITPageWriteAndNoExecute enable_jit_page_writes;
   emit.BRK(0x123);
-  emit.FlushIcache();
+  u8* const rw_end = const_cast<u8*>(emit.GetCodePtr());
+  emit.FlushIcacheSection(rw_start, rw_end,
+                          static_cast<JitArm64&>(m_jit).ConvertToExecutable(rw_start),
+                          static_cast<JitArm64&>(m_jit).ConvertToExecutable(rw_end));
 }
 
 void JitArm64BlockCache::DestroyBlock(JitBlock& block)

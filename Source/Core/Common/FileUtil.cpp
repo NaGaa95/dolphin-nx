@@ -18,7 +18,7 @@
 #include "Common/CommonFuncs.h"
 #include "Common/CommonPaths.h"
 #include "Common/CommonTypes.h"
-#ifdef ANDROID
+#if defined(ANDROID) || defined(__SWITCH__)
 #include "Common/Assert.h"
 #endif
 #ifdef __APPLE__
@@ -27,6 +27,10 @@
 #include "Common/IOFile.h"
 #include "Common/Logging/Log.h"
 #include "Common/StringUtil.h"
+
+#ifdef __SWITCH__
+#include <dirent.h>
+#endif
 
 #ifdef _WIN32
 #include <windows.h>
@@ -37,6 +41,7 @@
 #include <shellapi.h>
 #include <shlwapi.h>
 #else
+#include <cerrno>
 #include <libgen.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -62,10 +67,26 @@ namespace fs = std::filesystem;
 
 namespace File
 {
+#ifdef __SWITCH__
+namespace
+{
+bool HasDevicePathPrefix(std::string_view path)
+{
+  const size_t colon = path.find(':');
+  return colon != std::string_view::npos && colon + 1 < path.size() &&
+         (path[colon + 1] == '/' || path[colon + 1] == '\\');
+}
+}  // namespace
+#endif
+
 #ifdef ANDROID
 static std::string s_android_sys_directory;
 static std::string s_android_driver_directory;
 static std::string s_android_lib_directory;
+#endif
+
+#ifdef __SWITCH__
+static std::string s_switch_sys_directory;
 #endif
 
 #ifdef __APPLE__
@@ -280,6 +301,23 @@ bool DeleteDir(const std::string& filename, IfAbsentBehavior behavior)
 bool Rename(const std::string& srcFilename, const std::string& destFilename)
 {
   DEBUG_LOG_FMT(COMMON, "{}: {} --> {}", __func__, srcFilename, destFilename);
+
+#ifdef __SWITCH__
+  if (HasDevicePathPrefix(srcFilename) || HasDevicePathPrefix(destFilename))
+  {
+    if (std::rename(srcFilename.c_str(), destFilename.c_str()) == 0)
+      return true;
+
+    if (FileInfo(destFilename).IsFile() && Delete(destFilename, IfAbsentBehavior::NoConsoleWarning) &&
+        std::rename(srcFilename.c_str(), destFilename.c_str()) == 0)
+    {
+      return true;
+    }
+
+    return false;
+  }
+#endif
+
   std::error_code error;
   std::filesystem::rename(StringToPath(srcFilename), StringToPath(destFilename), error);
   if (error)
@@ -318,6 +356,10 @@ bool RenameSync(const std::string& srcFilename, const std::string& destFilename)
     close(fd);
   }
 #else
+#ifdef __SWITCH__
+  FSyncPath(destFilename.c_str());
+  FSyncPath(fs::path(destFilename).parent_path().string().c_str());
+#else
   char* path = strdup(srcFilename.c_str());
   FSyncPath(path);
   FSyncPath(dirname(path));
@@ -325,6 +367,7 @@ bool RenameSync(const std::string& srcFilename, const std::string& destFilename)
   path = strdup(destFilename.c_str());
   FSyncPath(dirname(path));
   free(path);
+#endif
 #endif
   return true;
 }
@@ -335,6 +378,67 @@ bool CopyRegularFile(std::string_view source_path, std::string_view destination_
 
   auto src_path = StringToPath(source_path);
   auto dst_path = StringToPath(destination_path);
+#ifdef __SWITCH__
+  // newlib copy_file does not support devoptab paths.
+  if (src_path.lexically_normal() == dst_path.lexically_normal())
+  {
+    ERROR_LOG_FMT(COMMON, "{}: source and destination are the same: {}", __func__, source_path);
+    return false;
+  }
+
+  const std::string source{source_path};
+  const std::string destination{destination_path};
+  IOFile source_file(source, "rb");
+  if (!source_file)
+  {
+    ERROR_LOG_FMT(COMMON, "{}: failed to open source {}: {}", __func__, source_path,
+                  Common::LastStrerrorString());
+    return false;
+  }
+
+  IOFile destination_file(destination, "wb");
+  if (!destination_file)
+  {
+    ERROR_LOG_FMT(COMMON, "{}: failed to open destination {}: {}", __func__, destination_path,
+                  Common::LastStrerrorString());
+    return false;
+  }
+
+  constexpr size_t COPY_BUFFER_SIZE = 128 * 1024;
+  std::vector<u8> buffer(COPY_BUFFER_SIZE);
+  while (true)
+  {
+    const size_t bytes_read =
+        std::fread(buffer.data(), sizeof(buffer.front()), buffer.size(), source_file.GetHandle());
+    if (bytes_read != 0 &&
+        std::fwrite(buffer.data(), sizeof(buffer.front()), bytes_read,
+                    destination_file.GetHandle()) != bytes_read)
+    {
+      ERROR_LOG_FMT(COMMON, "{}: write failed {} --> {}: {}", __func__, source_path,
+                    destination_path, Common::LastStrerrorString());
+      return false;
+    }
+
+    if (bytes_read != buffer.size())
+    {
+      if (std::ferror(source_file.GetHandle()))
+      {
+        ERROR_LOG_FMT(COMMON, "{}: read failed {} --> {}: {}", __func__, source_path,
+                      destination_path, Common::LastStrerrorString());
+        return false;
+      }
+      break;
+    }
+  }
+
+  if (!destination_file.Flush())
+  {
+    ERROR_LOG_FMT(COMMON, "{}: flush failed {} --> {}: {}", __func__, source_path,
+                  destination_path, Common::LastStrerrorString());
+    return false;
+  }
+  return true;
+#else
   std::error_code error;
   bool copied = fs::copy_file(src_path, dst_path, fs::copy_options::overwrite_existing, error);
   if (!copied)
@@ -343,6 +447,7 @@ bool CopyRegularFile(std::string_view source_path, std::string_view destination_
                   error.message());
   }
   return copied;
+#endif
 }
 
 // Returns the size of a file (or returns 0 if the path isn't a file that exists)
@@ -443,12 +548,31 @@ FSTEntry ScanDirectoryTree(const std::string& directory, bool recursive)
   };
 
   auto dirent_to_fstent = [&](const fs::directory_entry& entry) {
+#ifdef __SWITCH__
+    std::error_code type_error;
+    const bool is_directory = entry.is_directory(type_error);
+
+    std::error_code fifo_error;
+    const bool is_fifo = !type_error && entry.is_fifo(fifo_error);
+
+    std::error_code size_error;
+    const std::uintmax_t size =
+        (type_error || fifo_error || is_directory || is_fifo) ? 0 : entry.file_size(size_error);
+
+    return FSTEntry{
+        .isDirectory = is_directory,
+        .size = size_error ? 0 : size,
+        .physicalName = path_to_physical_name(entry.path()),
+        .virtualName = PathToString(entry.path().filename()),
+    };
+#else
     return FSTEntry{
         .isDirectory = entry.is_directory(),
         .size = entry.is_directory() || entry.is_fifo() ? 0 : entry.file_size(),
         .physicalName = path_to_physical_name(entry.path()),
         .virtualName = PathToString(entry.path().filename()),
     };
+#endif
   };
 
   auto calc_dir_size = [](FSTEntry* dir) {
@@ -519,6 +643,78 @@ FSTEntry ScanDirectoryTree(const std::string& directory, bool recursive)
 bool DeleteDirRecursively(const std::string& directory)
 {
   DEBUG_LOG_FMT(COMMON, "{}: {}", __func__, directory);
+
+#ifdef __SWITCH__
+  if (HasDevicePathPrefix(directory))
+  {
+    DIR* const handle = ::opendir(directory.c_str());
+    if (!handle)
+    {
+      // The desired end state is already satisfied when the directory is absent.
+      if (errno == ENOENT)
+        return true;
+
+      ERROR_LOG_FMT(COMMON, "{}: cannot open {}: {}", __func__, directory,
+                    std::strerror(errno));
+      return false;
+    }
+
+    bool success = true;
+    while (success)
+    {
+      errno = 0;
+      const dirent* const entry = ::readdir(handle);
+      if (!entry)
+      {
+        if (errno != 0)
+        {
+          ERROR_LOG_FMT(COMMON, "{}: cannot enumerate {}: {}", __func__, directory,
+                        std::strerror(errno));
+          success = false;
+        }
+        break;
+      }
+
+      if (std::strcmp(entry->d_name, ".") == 0 || std::strcmp(entry->d_name, "..") == 0)
+        continue;
+
+      std::string child = directory;
+      if (child.empty() || (child.back() != '/' && child.back() != '\\'))
+        child += '/';
+      child += entry->d_name;
+
+      struct stat status{};
+      if (::stat(child.c_str(), &status) != 0)
+      {
+        if (errno == ENOENT)
+          continue;
+        ERROR_LOG_FMT(COMMON, "{}: cannot inspect {}: {}", __func__, child,
+                      std::strerror(errno));
+        success = false;
+      }
+      else if (S_ISDIR(status.st_mode))
+      {
+        success = DeleteDirRecursively(child);
+      }
+      else if (std::remove(child.c_str()) != 0 && errno != ENOENT)
+      {
+        ERROR_LOG_FMT(COMMON, "{}: cannot remove {}: {}", __func__, child,
+                      std::strerror(errno));
+        success = false;
+      }
+    }
+
+    ::closedir(handle);
+    if (!success)
+      return false;
+    if (::rmdir(directory.c_str()) == 0 || errno == ENOENT)
+      return true;
+
+    ERROR_LOG_FMT(COMMON, "{}: cannot remove {}: {}", __func__, directory,
+                  std::strerror(errno));
+    return false;
+  }
+#endif
 
   std::error_code error;
   const std::uintmax_t num_removed = std::filesystem::remove_all(StringToPath(directory), error);
@@ -664,6 +860,11 @@ std::string CreateTempDir()
 
 std::string GetTempFilenameForAtomicWrite(std::string path)
 {
+#ifdef __SWITCH__
+  if (HasDevicePathPrefix(path))
+    return std::move(path) + ".xxx";
+#endif
+
   std::error_code error;
   auto absolute_path = fs::absolute(StringToPath(path), error);
   if (!error)
@@ -773,6 +974,9 @@ static std::string CreateSysDirectoryPath()
 #elif defined ANDROID
   sys_directory = s_android_sys_directory + DIR_SEP;
   ASSERT_MSG(COMMON, !s_android_sys_directory.empty(), "Sys directory has not been set");
+#elif defined(__SWITCH__)
+  sys_directory = s_switch_sys_directory + DIR_SEP;
+  ASSERT_MSG(COMMON, !s_switch_sys_directory.empty(), "Sys directory has not been set");
 #else
   const std::string local_sys_directory = GetExeDirectory() + DIR_SEP SYS_FOLDER_NAME DIR_SEP;
   if (IsDirectory(local_sys_directory))
@@ -791,6 +995,16 @@ const std::string& GetSysDirectory()
   static const std::string sys_directory = CreateSysDirectoryPath();
   return sys_directory;
 }
+
+#ifdef __SWITCH__
+void SetSysDirectory(const std::string& path)
+{
+  INFO_LOG_FMT(COMMON, "Setting Sys directory to {}", path);
+  ASSERT_MSG(COMMON, s_switch_sys_directory.empty(), "Sys directory already set to {}",
+             s_switch_sys_directory);
+  s_switch_sys_directory = path;
+}
+#endif
 
 #ifdef ANDROID
 void SetSysDirectory(const std::string& path)
@@ -890,7 +1104,9 @@ static void RebuildUserDirectories(unsigned int dir_index)
     s_user_paths[F_FREELOOKCONFIG_IDX] = s_user_paths[D_CONFIG_IDX] + FREELOOK_CONFIG;
     s_user_paths[F_RETROACHIEVEMENTSCONFIG_IDX] =
         s_user_paths[D_CONFIG_IDX] + RETROACHIEVEMENTS_CONFIG;
+#ifndef __SWITCH__
     s_user_paths[F_MAINLOG_IDX] = s_user_paths[D_LOGS_IDX] + MAIN_LOG;
+#endif
     s_user_paths[F_MEM1DUMP_IDX] = s_user_paths[D_DUMP_IDX] + MEM1_DUMP;
     s_user_paths[F_MEM2DUMP_IDX] = s_user_paths[D_DUMP_IDX] + MEM2_DUMP;
     s_user_paths[F_ARAMDUMP_IDX] = s_user_paths[D_DUMP_IDX] + ARAM_DUMP;
@@ -961,7 +1177,9 @@ static void RebuildUserDirectories(unsigned int dir_index)
     break;
 
   case D_LOGS_IDX:
+#ifndef __SWITCH__
     s_user_paths[F_MAINLOG_IDX] = s_user_paths[D_LOGS_IDX] + MAIN_LOG;
+#endif
     break;
 
   case D_LOAD_IDX:

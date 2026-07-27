@@ -219,7 +219,11 @@ bool MemoryManager::InitFastmemArena()
   // 2 GiB guard
 
   constexpr size_t ppc_view_size = 0x1'0000'0000;
+#ifdef __SWITCH__
+  constexpr size_t guard_size = 0;
+#else
   constexpr size_t guard_size = 0x8000'0000;
+#endif
   constexpr size_t memory_size = ppc_view_size * 2 + guard_size * 3;
 
   m_fastmem_arena = m_arena.ReserveMemoryRegion(memory_size);
@@ -258,7 +262,7 @@ void MemoryManager::UpdateDBATMappings(const PowerPC::BatTable& dbat_table)
 {
   for (const auto& [logical_address, entry] : m_dbat_mapped_entries)
   {
-    m_arena.UnmapFromMemoryRegion(entry.mapped_pointer, entry.mapped_size);
+    m_arena.UnmapFromMemoryRegion(entry.mapped_pointer, entry.mapped_size, entry.shm_offset);
   }
   m_dbat_mapped_entries.clear();
 
@@ -317,8 +321,8 @@ void MemoryManager::UpdateDBATMappings(const PowerPC::BatTable& dbat_table)
                             intersection_start, mapped_size, logical_address);
               continue;
             }
-            m_dbat_mapped_entries.emplace(logical_address,
-                                          LogicalMemoryView{mapped_pointer, mapped_size});
+            m_dbat_mapped_entries.emplace(
+                logical_address, LogicalMemoryView{mapped_pointer, mapped_size, position});
           }
 
           u32 bat_index = mapped_logical_address / PowerPC::BAT_PAGE_SIZE;
@@ -439,8 +443,8 @@ void MemoryManager::AddHostPageTableMapping(u32 logical_address, u32 translated_
                       intersection_start, mapped_size, logical_address);
         continue;
       }
-      m_page_table_mapped_entries.emplace(logical_address,
-                                          LogicalMemoryView{mapped_pointer, mapped_size});
+      m_page_table_mapped_entries.emplace(
+          logical_address, LogicalMemoryView{mapped_pointer, mapped_size, position});
     }
   }
 }
@@ -484,7 +488,7 @@ void MemoryManager::RemoveHostPageTableMapping(u32 logical_address)
   if (it != m_page_table_mapped_entries.end())
   {
     const LogicalMemoryView& entry = it->second;
-    m_arena.UnmapFromMemoryRegion(entry.mapped_pointer, entry.mapped_size);
+    m_arena.UnmapFromMemoryRegion(entry.mapped_pointer, entry.mapped_size, entry.shm_offset);
 
     m_page_table_mapped_entries.erase(it);
   }
@@ -494,7 +498,7 @@ void MemoryManager::RemoveAllPageTableMappings()
 {
   for (const auto& [logical_address, entry] : m_page_table_mapped_entries)
   {
-    m_arena.UnmapFromMemoryRegion(entry.mapped_pointer, entry.mapped_size);
+    m_arena.UnmapFromMemoryRegion(entry.mapped_pointer, entry.mapped_size, entry.shm_offset);
   }
   m_page_table_mapped_entries.clear();
   m_large_readable_pages.clear();
@@ -579,18 +583,18 @@ void MemoryManager::ShutdownFastmemArena()
       continue;
 
     u8* base = m_physical_base + region.physical_address;
-    m_arena.UnmapFromMemoryRegion(base, region.size);
+    m_arena.UnmapFromMemoryRegion(base, region.size, region.shm_position);
   }
 
   for (const auto& [logical_address, entry] : m_dbat_mapped_entries)
   {
-    m_arena.UnmapFromMemoryRegion(entry.mapped_pointer, entry.mapped_size);
+    m_arena.UnmapFromMemoryRegion(entry.mapped_pointer, entry.mapped_size, entry.shm_offset);
   }
   m_dbat_mapped_entries.clear();
 
   for (const auto& [logical_address, entry] : m_page_table_mapped_entries)
   {
-    m_arena.UnmapFromMemoryRegion(entry.mapped_pointer, entry.mapped_size);
+    m_arena.UnmapFromMemoryRegion(entry.mapped_pointer, entry.mapped_size, entry.shm_offset);
   }
   m_page_table_mapped_entries.clear();
 

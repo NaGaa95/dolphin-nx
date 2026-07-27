@@ -180,6 +180,7 @@ public:
 
   Classic();
 
+  void LoadDefaults() override;
   void BuildDesiredExtensionState(DesiredExtensionState* target_state) override;
   void Update(const DesiredExtensionState& target_state) override;
   void Reset() override;

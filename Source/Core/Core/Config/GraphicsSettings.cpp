@@ -108,7 +108,12 @@ const Info<bool> GFX_SHADER_CACHE{{System::GFX, "Settings", "ShaderCache"}, true
 const Info<bool> GFX_WAIT_FOR_SHADERS_BEFORE_STARTING{
     {System::GFX, "Settings", "WaitForShadersBeforeStarting"}, false};
 const Info<ShaderCompilationMode> GFX_SHADER_COMPILATION_MODE{
-    {System::GFX, "Settings", "ShaderCompilationMode"}, ShaderCompilationMode::Synchronous};
+    {System::GFX, "Settings", "ShaderCompilationMode"},
+#ifdef __SWITCH__
+    ShaderCompilationMode::AsynchronousUberShaders};
+#else
+    ShaderCompilationMode::Synchronous};
+#endif
 const Info<int> GFX_SHADER_COMPILER_THREADS{{System::GFX, "Settings", "ShaderCompilerThreads"}, 1};
 const Info<int> GFX_SHADER_PRECOMPILER_THREADS{
     {System::GFX, "Settings", "ShaderPrecompilerThreads"}, -1};
@@ -117,6 +122,11 @@ const Info<bool> GFX_SAVE_TEXTURE_CACHE_TO_STATE{
 const Info<bool> GFX_PREFER_VS_FOR_LINE_POINT_EXPANSION{
     {System::GFX, "Settings", "PreferVSForLinePointExpansion"}, false};
 const Info<bool> GFX_CPU_CULL{{System::GFX, "Settings", "CPUCull"}, false};
+
+const Info<bool> GFX_LSFG_ENABLED{{System::GFX, "Settings", "LSFGEnabled"}, false};
+const Info<float> GFX_LSFG_FLOW_SCALE{{System::GFX, "Settings", "LSFGFlowScale"}, 0.25f};
+const Info<bool> GFX_LSFG_PERFORMANCE_MODE{
+    {System::GFX, "Settings", "LSFGPerformanceMode"}, true};
 
 const Info<TriState> GFX_MTL_MANUALLY_UPLOAD_BUFFERS{
     {System::GFX, "Settings", "ManuallyUploadBuffers"}, TriState::Auto};
@@ -190,8 +200,14 @@ const Info<float> GFX_STEREO_DEPTH_PERCENTAGE{{System::GFX, "Stereoscopy", "Ster
 // Graphics.Hacks
 
 const Info<bool> GFX_HACK_EFB_ACCESS_ENABLE{{System::GFX, "Hacks", "EFBAccessEnable"}, false};
+#if defined(__SWITCH__)
+constexpr bool DEFAULT_EFB_ACCESS_DEFER_INVALIDATION = true;
+#else
+constexpr bool DEFAULT_EFB_ACCESS_DEFER_INVALIDATION = false;
+#endif
 const Info<bool> GFX_HACK_EFB_DEFER_INVALIDATION{
-    {System::GFX, "Hacks", "EFBAccessDeferInvalidation"}, false};
+    {System::GFX, "Hacks", "EFBAccessDeferInvalidation"},
+    DEFAULT_EFB_ACCESS_DEFER_INVALIDATION};
 const Info<int> GFX_HACK_EFB_ACCESS_TILE_SIZE{{System::GFX, "Hacks", "EFBAccessTileSize"}, 64};
 const Info<bool> GFX_HACK_BBOX_ENABLE{{System::GFX, "Hacks", "BBoxEnable"}, false};
 const Info<bool> GFX_HACK_FORCE_PROGRESSIVE{{System::GFX, "Hacks", "ForceProgressive"}, true};

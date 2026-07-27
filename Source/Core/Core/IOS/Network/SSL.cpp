@@ -4,8 +4,21 @@
 #include "Core/IOS/Network/SSL.h"
 
 #include <array>
+#include <cerrno>
 #include <cstring>
 #include <vector>
+
+#ifdef __SWITCH__
+#include <mbedtls/entropy_poll.h>
+#include <switch.h>
+
+extern "C" int mbedtls_hardware_poll(void*, unsigned char* output, size_t len, size_t* olen)
+{
+  randomGet(output, len);
+  *olen = len;
+  return 0;
+}
+#endif
 
 #include <mbedtls/md.h>
 #include <mbedtls/sha256.h>
@@ -37,6 +50,33 @@ static constexpr mbedtls_x509_crt_profile mbedtls_x509_crt_profile_wii = {
 
 namespace
 {
+#ifdef __SWITCH__
+// Mbed TLS BIO callbacks for libnx sockets.
+int SwitchMbedTLSSend(int fd, const unsigned char* buf, size_t len)
+{
+  const int ret = static_cast<int>(::send(fd, buf, len, 0));
+  if (ret >= 0)
+    return ret;
+  if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+    return MBEDTLS_ERR_SSL_WANT_WRITE;
+  if (errno == EPIPE || errno == ECONNRESET)
+    return MBEDTLS_ERR_NET_CONN_RESET;
+  return MBEDTLS_ERR_NET_SEND_FAILED;
+}
+
+int SwitchMbedTLSRecv(int fd, unsigned char* buf, size_t len)
+{
+  const int ret = static_cast<int>(::recv(fd, buf, len, 0));
+  if (ret >= 0)
+    return ret;
+  if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+    return MBEDTLS_ERR_SSL_WANT_READ;
+  if (errno == EPIPE || errno == ECONNRESET)
+    return MBEDTLS_ERR_NET_CONN_RESET;
+  return MBEDTLS_ERR_NET_RECV_FAILED;
+}
+#endif
+
 // Dirty workaround to disable SNI which isn't supported by the Wii.
 //
 // This SSL extension can ONLY be disabled by undefining
@@ -58,7 +98,11 @@ int SSLSendWithoutSNI(void* ctx, const unsigned char* buf, size_t len)
 
   if (ssl->ctx.state == MBEDTLS_SSL_SERVER_HELLO)
     mbedtls_ssl_set_hostname(&ssl->ctx, ssl->hostname.c_str());
+#ifdef __SWITCH__
+  const int ret = SwitchMbedTLSSend(*fd, buf, len);
+#else
   const int ret = mbedtls_net_send(fd, buf, len);
+#endif
 
   // Log raw SSL packets if we don't dump unencrypted SSL writes
   if (!Config::Get(Config::MAIN_NETWORK_SSL_DUMP_WRITE) && ret > 0)
@@ -74,7 +118,11 @@ int SSLRecv(void* ctx, unsigned char* buf, size_t len)
 {
   auto* ssl = static_cast<WII_SSL*>(ctx);
   auto* fd = &ssl->hostfd;
+#ifdef __SWITCH__
+  const int ret = SwitchMbedTLSRecv(*fd, buf, len);
+#else
   const int ret = mbedtls_net_recv(fd, buf, len);
+#endif
 
   // Log raw SSL packets if we don't dump unencrypted SSL reads
   if (!Config::Get(Config::MAIN_NETWORK_SSL_DUMP_READ) && ret > 0)

@@ -30,7 +30,9 @@
 #include "VideoBackends/D3D/VideoBackend.h"
 #include "VideoBackends/D3D12/VideoBackend.h"
 #endif
+#ifndef __SWITCH__
 #include "VideoBackends/Null/VideoBackend.h"
+#endif
 #ifdef HAS_OPENGL
 #include "VideoBackends/OGL/VideoBackend.h"
 #include "VideoBackends/Software/VideoBackend.h"
@@ -223,10 +225,12 @@ const std::vector<std::unique_ptr<VideoBackendBase>>& VideoBackendBase::GetAvail
 #ifdef __APPLE__
     backends.emplace(backends.begin(), std::make_unique<Metal::VideoBackend>());
 #endif
+#ifndef __SWITCH__
 #ifdef HAS_OPENGL
     backends.push_back(std::make_unique<SW::VideoSoftware>());
 #endif
     backends.push_back(std::make_unique<Null::VideoBackend>());
+#endif
 
     if (!backends.empty())
       g_video_backend = backends.front().get();

@@ -7,17 +7,23 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#ifndef __SWITCH__
 #include <fstream>
+#endif
 #include <memory>
+#ifndef __SWITCH__
 #include <mutex>
+#endif
 #include <string>
 
 #include <fmt/chrono.h>
 #include <fmt/format.h>
 
 #include "Common/Config/Config.h"
+#ifndef __SWITCH__
 #include "Common/FileUtil.h"
 #include "Common/Logging/ConsoleListener.h"
+#endif
 #include "Common/Logging/Log.h"
 #include "Common/StringUtil.h"
 
@@ -32,6 +38,7 @@ const Config::Info<bool> LOGGER_WRITE_TO_WINDOW{
 const Config::Info<LogLevel> LOGGER_VERBOSITY{{Config::System::Logger, "Options", "Verbosity"},
                                               LogLevel::LNOTICE};
 
+#ifndef __SWITCH__
 class FileLogListener : public LogListener
 {
 public:
@@ -59,6 +66,7 @@ private:
   std::ofstream m_logfile;
   bool m_enable;
 };
+#endif
 
 void GenericLogFmtImpl(LogLevel level, LogType type, const char* file, int line,
                        fmt::string_view format, const fmt::format_args& args)
@@ -154,35 +162,48 @@ LogManager::LogManager()
   m_log[LogType::WIIMOTE] = {"Wiimote", "Wii Remote"};
   m_log[LogType::WII_IPC] = {"WII_IPC", "WII IPC"};
 
+  SetEffectiveLogLevel();
+#ifndef __SWITCH__
   RegisterListener(LogListener::FILE_LISTENER,
                    std::make_unique<FileLogListener>(File::GetUserPath(F_MAINLOG_IDX)));
   RegisterListener(LogListener::CONSOLE_LISTENER, std::make_unique<ConsoleListener>());
 
   // Set up log listeners
-  SetEffectiveLogLevel();
   EnableListener(LogListener::FILE_LISTENER, Config::Get(LOGGER_WRITE_TO_FILE));
   EnableListener(LogListener::CONSOLE_LISTENER, Config::Get(LOGGER_WRITE_TO_CONSOLE));
   EnableListener(LogListener::LOG_WINDOW_LISTENER, Config::Get(LOGGER_WRITE_TO_WINDOW));
+#endif
 
   for (auto& container : m_log)
   {
+#ifdef __SWITCH__
+    container.m_enable = false;
+#else
     container.m_enable = Config::Get(
         Config::Info<bool>{{Config::System::Logger, "Logs", container.m_short_name}, false});
+#endif
   }
 
   m_path_cutoff_point = DeterminePathCutOffPoint();
 
+#ifndef __SWITCH__
   m_config_changed_callback_id =
       Config::AddConfigChangedCallback([this]() { SetEffectiveLogLevel(); });
+#endif
 }
 
 LogManager::~LogManager()
 {
+#ifndef __SWITCH__
   Config::RemoveConfigChangedCallback(m_config_changed_callback_id);
+#endif
 }
 
 void LogManager::SaveSettings()
 {
+#ifdef __SWITCH__
+  return;
+#else
   Config::ConfigChangeCallbackGuard config_guard;
 
   Config::SetBaseOrCurrent(LOGGER_WRITE_TO_FILE, IsListenerEnabled(LogListener::FILE_LISTENER));
@@ -198,6 +219,7 @@ void LogManager::SaveSettings()
   }
 
   Config::Save();
+#endif
 }
 
 void LogManager::Log(LogLevel level, LogType type, const char* file, int line, const char* message)

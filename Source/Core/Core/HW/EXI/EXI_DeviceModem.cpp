@@ -8,6 +8,10 @@
 #include <memory>
 #include <string>
 
+#ifndef _WIN32
+#include <arpa/inet.h>
+#endif
+
 #include "Common/ChunkFile.h"
 #include "Common/CommonTypes.h"
 #include "Common/Logging/Log.h"

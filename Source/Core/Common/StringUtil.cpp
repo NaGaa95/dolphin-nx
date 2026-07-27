@@ -31,6 +31,29 @@ constexpr u32 CODEPAGE_SHIFT_JIS = 932;
 constexpr u32 CODEPAGE_WINDOWS_1252 = 1252;
 
 #include "Common/Swap.h"
+#elif defined(__SWITCH__)
+#include <cerrno>
+#include <cstdio>
+#include <cstdlib>
+#include <iconv.h>
+#include <locale.h>
+
+static int vasprintf(char** strp, const char* fmt, va_list ap)
+{
+  va_list ap_copy;
+  va_copy(ap_copy, ap);
+  int len = vsnprintf(NULL, 0, fmt, ap_copy);
+  va_end(ap_copy);
+
+  if (len < 0)
+    return -1;
+
+  *strp = (char*)malloc(len + 1);
+  if (!*strp)
+    return -1;
+
+  return vsnprintf(*strp, len + 1, fmt, ap);
+}
 #else
 #include <cerrno>
 #include <iconv.h>

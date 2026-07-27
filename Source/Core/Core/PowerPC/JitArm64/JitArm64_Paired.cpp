@@ -1,4 +1,5 @@
 // Copyright 2015 Dolphin Emulator Project
+// Copyright 2026 Dan | ticoverse.com
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "Core/PowerPC/JitArm64/Jit.h"
@@ -404,7 +405,7 @@ void JitArm64::ps_arith(UGeckoInstruction inst)
       if (VD == result_reg)
         m_float_emit.BIF(VD, quiet_nan_reg, nan_temp_reg_paired);
       else  // quiet_nan_reg == VD
-        m_float_emit.BIT(VD, result_reg, nan_temp_reg_paired);
+        (m_float_emit.BIT)(VD, result_reg, nan_temp_reg_paired);
 
       nan_fixup = B();
 
@@ -468,7 +469,7 @@ void JitArm64::ps_sel(UGeckoInstruction inst)
     const ARM64Reg V0 = reg_encoder(V0Q);
     m_float_emit.FCMGE(size, V0, VA);
     if (d == b)
-      m_float_emit.BIT(VD, VC, V0);
+      (m_float_emit.BIT)(VD, VC, V0);
     else if (d == c)
       m_float_emit.BIF(VD, VB, V0);
     else

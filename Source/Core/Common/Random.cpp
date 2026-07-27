@@ -1,7 +1,22 @@
 // Copyright 2018 Dolphin Emulator Project
+// Copyright 2026 Dan | ticoverse.com
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "Common/Random.h"
+
+#ifdef __SWITCH__
+#include <switch.h>
+
+namespace Common::Random
+{
+void Generate(void* buffer, std::size_t size)
+{
+  randomGet(buffer, size);
+}
+}  // namespace Common::Random
+
+#else
+// Non-Switch platforms use mbedtls
 
 #include <mbedtls/entropy.h>
 #include <mbedtls/hmac_drbg.h>
@@ -47,3 +62,5 @@ void Generate(void* buffer, std::size_t size)
   s_esprng.Generate(buffer, size);
 }
 }  // namespace Common::Random
+
+#endif

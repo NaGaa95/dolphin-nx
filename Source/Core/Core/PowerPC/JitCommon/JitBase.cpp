@@ -1,4 +1,5 @@
 // Copyright 2008 Dolphin Emulator Project
+// Copyright 2026 Dan | ticoverse.com
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "Core/PowerPC/JitCommon/JitBase.h"
@@ -23,6 +24,12 @@
 #include "Core/PowerPC/PPCAnalyst.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/System.h"
+
+#ifdef __SWITCH__
+#include <switch.h>
+
+#include "Common/HorizonFastmem.h"
+#endif
 
 #ifdef _WIN32
 #include <windows.h>
@@ -156,13 +163,22 @@ void JitBase::RefreshConfig()
 
 bool JitBase::WantsPageTableMappings() const
 {
-  return jo.fastmem && m_page_table_fastmem_enabled;
+  bool supported = true;
+#ifdef __SWITCH__
+  supported = Common::HorizonFastmem::AreReadOnlyMappingsSupported();
+#endif
+  return jo.fastmem && m_page_table_fastmem_enabled && supported;
 }
 
 void JitBase::InitFastmemArena()
 {
   auto& memory = m_system.GetMemory();
-  jo.fastmem_arena = Config::Get(Config::MAIN_FASTMEM_ARENA) && memory.InitFastmemArena();
+  bool supported = true;
+#ifdef __SWITCH__
+  supported = Common::HorizonFastmem::IsArenaSupported();
+#endif
+  jo.fastmem_arena =
+      Config::Get(Config::MAIN_FASTMEM_ARENA) && supported && memory.InitFastmemArena();
 }
 
 void JitBase::InitBLROptimization()
@@ -197,7 +213,11 @@ void JitBase::ProtectStack()
     return;
   }
 
+#ifdef __SWITCH__
+  const long page_size = 4096;
+#else
   const long page_size = sysconf(_SC_PAGESIZE);
+#endif
   if (page_size <= 0)
   {
     PanicAlertFmt("Failed to get page size");
@@ -216,6 +236,16 @@ void JitBase::ProtectStack()
     return;
   }
 
+#ifdef __SWITCH__
+  m_stack_guard = reinterpret_cast<u8*>(stack_guard_addr);
+  if (!envIsSyscallHinted(0x02) ||
+      R_FAILED(svcSetMemoryPermission(m_stack_guard, GUARD_SIZE, Perm_None)))
+  {
+    m_stack_guard = nullptr;
+    m_enable_blr_optimization = false;
+    return;
+  }
+#else
   m_stack_guard = reinterpret_cast<u8*>(stack_guard_addr);
   if (!Common::ReadProtectMemory(m_stack_guard, GUARD_SIZE))
   {
@@ -224,17 +254,24 @@ void JitBase::ProtectStack()
     return;
   }
 #endif
+#endif
 }
 
-void JitBase::UnprotectStack()
+bool JitBase::UnprotectStack()
 {
 #ifndef _WIN32
   if (m_stack_guard)
   {
+#ifdef __SWITCH__
+    if (R_FAILED(svcSetMemoryPermission(m_stack_guard, GUARD_SIZE, Perm_Rw)))
+      return false;
+#else
     Common::UnWriteProtectMemory(m_stack_guard, GUARD_SIZE);
+#endif
     m_stack_guard = nullptr;
   }
 #endif
+  return true;
 }
 
 bool JitBase::HandleStackFault()
@@ -248,7 +285,8 @@ bool JitBase::HandleStackFault()
 
   WARN_LOG_FMT(POWERPC, "BLR cache disabled due to excessive BL in the emulated program.");
 
-  UnprotectStack();
+  if (!UnprotectStack())
+    return false;
   m_enable_blr_optimization = false;
 
   // We're going to need to clear the whole cache to get rid of the bad

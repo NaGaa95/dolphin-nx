@@ -38,6 +38,7 @@ public:
 
 private:
   WbfsFileReader(File::DirectIOFile file, const std::string& path = "");
+  WbfsFileReader(const WbfsFileReader& other);
 
   void OpenAdditionalFiles(const std::string& path);
   bool AddFileToList(File::DirectIOFile file);

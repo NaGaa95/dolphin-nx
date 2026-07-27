@@ -3,6 +3,8 @@
 
 #pragma once
 
+#ifndef __SWITCH__
+
 #include <SFML/Network/Packet.hpp>
 #include <array>
 #include <chrono>
@@ -350,4 +352,47 @@ void NetPlay_Enable(NetPlayClient* const np);
 void NetPlay_Disable();
 bool NetPlay_GetWiimoteData(const std::span<NetPlayClient::WiimoteDataBatchEntry>& entries);
 unsigned int NetPlay_GetLocalWiimoteForSlot(unsigned int slot);
+
 }  // namespace NetPlay
+
+#else
+
+#include <span>
+
+namespace WiimoteEmu
+{
+struct SerializedWiimoteState;
+}
+
+namespace NetPlay
+{
+class NetPlayClient
+{
+public:
+  struct WiimoteDataBatchEntry
+  {
+    int wiimote;
+    WiimoteEmu::SerializedWiimoteState* state;
+  };
+  static void SendTimeBase() {}
+  bool WiimoteUpdate(const std::span<WiimoteDataBatchEntry>& entries) { return false; }
+};
+
+inline void NetPlay_Enable(NetPlayClient* const np)
+{
+}
+inline void NetPlay_Disable()
+{
+}
+inline bool NetPlay_GetWiimoteData(const std::span<NetPlayClient::WiimoteDataBatchEntry>& entries)
+{
+  return false;
+}
+inline unsigned int NetPlay_GetLocalWiimoteForSlot(unsigned int slot)
+{
+  return slot;
+}
+
+}  // namespace NetPlay
+
+#endif

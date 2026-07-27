@@ -13,7 +13,9 @@
 #include "Common/MsgHandler.h"
 #include "Common/Swap.h"
 #include "Core/HW/SI/SI_DeviceDanceMat.h"
+#ifndef __SWITCH__
 #include "Core/HW/SI/SI_DeviceGBA.h"
+#endif
 #ifdef HAS_LIBMGBA
 #include "Core/HW/SI/SI_DeviceGBAEmu.h"
 #endif
@@ -179,7 +181,11 @@ std::unique_ptr<ISIDevice> SIDevice_Create(Core::System& system, const SIDevices
     return std::make_unique<CSIDevice_TaruKonga>(system, device, port_number);
 
   case SIDEVICE_GC_GBA:
+#ifndef __SWITCH__
     return std::make_unique<CSIDevice_GBA>(system, device, port_number);
+#else
+    return std::make_unique<CSIDevice_Null>(system, device, port_number);
+#endif
 
   case SIDEVICE_GC_GBA_EMULATED:
 #ifdef HAS_LIBMGBA

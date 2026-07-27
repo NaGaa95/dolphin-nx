@@ -80,6 +80,18 @@ private:
     std::string wii_path;
     std::shared_ptr<File::IOFile> host_file;
     u32 file_offset = 0;
+#ifdef __SWITCH__
+    enum class Operation
+    {
+      None,
+      Read,
+      Write,
+    };
+
+    u32 file_size = 0;
+    u32 host_file_offset = 0;
+    Operation last_operation = Operation::None;
+#endif
   };
   Handle* AssignFreeHandle();
   Handle* GetHandleFromFd(Fd fd);

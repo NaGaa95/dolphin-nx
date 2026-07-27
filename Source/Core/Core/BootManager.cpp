@@ -185,6 +185,27 @@ bool BootCore(Core::System& system, std::unique_ptr<BootParameters> boot,
 
   AchievementManager::GetInstance().CloseGame();
 
+#ifdef __SWITCH__
+  if (!system.IsWii() && !Config::Get(Config::MAIN_SKIP_IPL) &&
+      std::holds_alternative<BootParameters::Disc>(boot->parameters))
+  {
+    std::string ipl_path;
+    switch (StartUp.m_region)
+    {
+    case DiscIO::Region::NTSC_J:
+    case DiscIO::Region::NTSC_U:
+    case DiscIO::Region::PAL:
+    case DiscIO::Region::DEV:
+      ipl_path = Config::GetBootROMPath(Config::GetDirectoryForRegion(StartUp.m_region));
+      break;
+    default:
+      break;
+    }
+    if (ipl_path.empty() || !File::Exists(ipl_path))
+      Config::SetCurrent(Config::MAIN_SKIP_IPL, true);
+  }
+#endif
+
   const bool load_ipl = !system.IsWii() && !Config::Get(Config::MAIN_SKIP_IPL) &&
                         std::holds_alternative<BootParameters::Disc>(boot->parameters);
   if (load_ipl)

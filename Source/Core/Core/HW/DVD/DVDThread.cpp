@@ -298,7 +298,9 @@ void DVDThread::ProcessReadRequest(ReadRequest&& request)
   m_file_logger.Log(*m_disc, request.partition, request.dvd_offset);
 
   std::vector<u8> buffer(request.length);
-  if (!m_disc->Read(request.dvd_offset, request.length, buffer.data(), request.partition))
+  const bool read_succeeded =
+      m_disc->Read(request.dvd_offset, request.length, buffer.data(), request.partition);
+  if (!read_succeeded)
     buffer.resize(0);
 
   request.realtime_done_us = Common::Timer::NowUs();

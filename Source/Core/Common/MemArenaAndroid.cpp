@@ -153,7 +153,7 @@ bool MemArena::ChangeMappingProtection(void* view, size_t size, bool writeable)
   return retval == 0;
 }
 
-void MemArena::UnmapFromMemoryRegion(void* view, size_t size)
+void MemArena::UnmapFromMemoryRegion(void* view, size_t size, [[maybe_unused]] s64 shm_offset)
 {
   void* retval = mmap(view, size, PROT_NONE, MAP_SHARED | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
   if (retval == MAP_FAILED)

@@ -3,6 +3,8 @@
 
 #include "InputCommon/InputConfig.h"
 
+#include <array>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -30,6 +32,10 @@ InputConfig::~InputConfig() = default;
 bool InputConfig::LoadConfig()
 {
   Common::IniFile inifile;
+#ifdef __SWITCH__
+  const bool use_switch_player_defaults =
+      m_ini_name == "GCPadNew" || m_ini_name == WIIMOTE_INI_NAME;
+#endif
   bool useProfile[MAX_BBMOTES] = {false, false, false, false, false};
   static constexpr std::array<std::string_view, MAX_BBMOTES> num = {"1", "2", "3", "4", "BB"};
   std::string profile[MAX_BBMOTES];
@@ -67,8 +73,17 @@ bool InputConfig::LoadConfig()
     }
   }
 
-  if (inifile.Load(File::GetUserPath(D_CONFIG_IDX) + m_ini_name + ".ini") &&
-      !inifile.GetSections().empty())
+  const bool has_base_config =
+      inifile.Load(File::GetUserPath(D_CONFIG_IDX) + m_ini_name + ".ini") &&
+      !inifile.GetSections().empty();
+#ifdef __SWITCH__
+  bool has_game_profile = false;
+  for (const bool profile_enabled : useProfile)
+    has_game_profile |= profile_enabled;
+  if (has_base_config || has_game_profile)
+#else
+  if (has_base_config)
+#endif
   {
     int n = 0;
 
@@ -89,9 +104,31 @@ bool InputConfig::LoadConfig()
       }
       else
       {
+#ifdef __SWITCH__
+        // Loading a profile replaces the current IniFile.
+        inifile.Load(File::GetUserPath(D_CONFIG_IDX) + m_ini_name + ".ini");
+#endif
         config = *inifile.GetOrCreateSection(controller->GetName());
       }
+#ifdef __SWITCH__
+      if (use_switch_player_defaults && n < 4)
+      {
+        // Merge sparse per-game values over native Switch defaults.
+        controller->LoadDefaults(g_controller_interface);
+        controller->SetDefaultDevice(fmt::format("Switch/{}/Joypad", n));
+        Common::IniFile::Section merged_config;
+        controller->SaveConfig(&merged_config);
+        for (const auto& [key, value] : config.GetValues())
+          merged_config.Set(key, value);
+        controller->LoadConfig(&merged_config);
+      }
+      else
+      {
+        controller->LoadConfig(&config);
+      }
+#else
       controller->LoadConfig(&config);
+#endif
       controller->UpdateReferences(g_controller_interface);
 
       // Next profile
@@ -101,6 +138,38 @@ bool InputConfig::LoadConfig()
   }
   else
   {
+#ifdef __SWITCH__
+    if (use_switch_player_defaults)
+    {
+      // Assign one native device to each of the first four players.
+      for (size_t i = 0; i < m_controllers.size(); ++i)
+      {
+        if (i < 4)
+        {
+          m_controllers[i]->LoadDefaults(g_controller_interface);
+          m_controllers[i]->SetDefaultDevice(fmt::format("Switch/{}/Joypad", i));
+        }
+        else
+        {
+          m_controllers[i]->EmulatedController::LoadDefaults(g_controller_interface);
+        }
+        m_controllers[i]->UpdateReferences(g_controller_interface);
+      }
+    }
+    else
+    {
+      if (!m_controllers.empty())
+      {
+        m_controllers[0]->LoadDefaults(g_controller_interface);
+        m_controllers[0]->UpdateReferences(g_controller_interface);
+      }
+      for (size_t i = 1; i < m_controllers.size(); ++i)
+      {
+        m_controllers[i]->EmulatedController::LoadDefaults(g_controller_interface);
+        m_controllers[i]->UpdateReferences(g_controller_interface);
+      }
+    }
+#else
     // Only load the default profile for the first controller and clear the others,
     // otherwise they would all share the same mappings on the same (default) device
     if (m_controllers.size() > 0)
@@ -114,6 +183,7 @@ bool InputConfig::LoadConfig()
       m_controllers[i]->EmulatedController::LoadDefaults(g_controller_interface);
       m_controllers[i]->UpdateReferences(g_controller_interface);
     }
+#endif
     return false;
   }
 }

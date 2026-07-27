@@ -12,10 +12,17 @@
 #include "Common/MsgHandler.h"
 
 #include "VideoBackends/Vulkan/CommandBufferManager.h"
+#ifdef __SWITCH__
+#include "VideoBackends/Vulkan/LSFG.h"
+#endif
 #include "VideoBackends/Vulkan/ObjectCache.h"
 #include "VideoBackends/Vulkan/VKTexture.h"
 #include "VideoBackends/Vulkan/VulkanContext.h"
 #include "VideoCommon/Present.h"
+
+#ifdef __SWITCH__
+#include <switch.h>
+#endif
 
 #if defined(VK_USE_PLATFORM_XLIB_KHR)
 #include <X11/Xlib.h>
@@ -118,6 +125,35 @@ VkSurfaceKHR SwapChain::CreateVulkanSurface(VkInstance instance, const WindowSys
     if (res != VK_SUCCESS)
     {
       LOG_VULKAN_ERROR(res, "vkCreateMetalSurfaceEXT failed: ");
+      return VK_NULL_HANDLE;
+    }
+
+    return surface;
+  }
+#endif
+
+#if defined(VK_USE_PLATFORM_VI_NN)
+  if (wsi.type == WindowSystemType::Switch)
+  {
+    void* window = wsi.render_surface ? wsi.render_surface : wsi.render_window;
+    if (!window)
+    {
+      ERROR_LOG_FMT(VIDEO, "vkCreateViSurfaceNN failed: Switch WSI window is null");
+      return VK_NULL_HANDLE;
+    }
+
+    VkViSurfaceCreateInfoNN surface_create_info = {
+        VK_STRUCTURE_TYPE_VI_SURFACE_CREATE_INFO_NN,  // VkStructureType               sType
+        nullptr,                                       // const void*                   pNext
+        0,                                             // VkViSurfaceCreateFlagsNN      flags
+        window                                         // void*                         window
+    };
+
+    VkSurfaceKHR surface;
+    VkResult res = vkCreateViSurfaceNN(instance, &surface_create_info, nullptr, &surface);
+    if (res != VK_SUCCESS)
+    {
+      LOG_VULKAN_ERROR(res, "vkCreateViSurfaceNN failed: ");
       return VK_NULL_HANDLE;
     }
 
@@ -287,6 +323,8 @@ bool SwapChain::CreateSwapChain()
   if (!SelectSurfaceFormat() || !SelectPresentMode())
     return false;
 
+  const VkPresentModeKHR normal_present_mode = m_present_mode;
+
   // Select number of images in swap chain, we prefer one buffer in the background to work on
   uint32_t image_count = surface_capabilities.minImageCount + 1;
 
@@ -306,7 +344,6 @@ bool SwapChain::CreateSwapChain()
                           surface_capabilities.maxImageExtent.width);
   size.height = std::clamp(size.height, surface_capabilities.minImageExtent.height,
                            surface_capabilities.maxImageExtent.height);
-
   // Prefer identity transform if possible
   VkSurfaceTransformFlagBitsKHR transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
   if (!(surface_capabilities.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR))
@@ -319,6 +356,43 @@ bool SwapChain::CreateSwapChain()
     ERROR_LOG_FMT(VIDEO, "Vulkan: Swap chain does not support usage as color attachment");
     return false;
   }
+
+#ifdef __SWITCH__
+  bool lsfg_compatible = LSFG::IsSessionPrepared();
+  if (lsfg_compatible)
+  {
+    constexpr VkImageUsageFlags transfer_usage =
+        VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    constexpr VkFormatFeatureFlags transfer_features =
+        VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    VkFormatProperties swapchain_format_properties{};
+    VkFormatProperties rgba_format_properties{};
+    vkGetPhysicalDeviceFormatProperties(g_vulkan_context->GetPhysicalDevice(),
+                                        m_surface_format.format,
+                                        &swapchain_format_properties);
+    vkGetPhysicalDeviceFormatProperties(g_vulkan_context->GetPhysicalDevice(),
+                                        VK_FORMAT_R8G8B8A8_UNORM,
+                                        &rgba_format_properties);
+    if ((surface_capabilities.supportedUsageFlags & transfer_usage) != transfer_usage ||
+        (swapchain_format_properties.optimalTilingFeatures & transfer_features) !=
+            transfer_features ||
+        (rgba_format_properties.optimalTilingFeatures & transfer_features) != transfer_features)
+    {
+      LSFG::DisableSession("The VI swapchain does not support LSFG transfer operations");
+      lsfg_compatible = false;
+    }
+    else
+    {
+      image_usage |= transfer_usage;
+      // Reserve generated and restored frame images.
+      uint32_t desired_count = image_count + 2;
+      if (surface_capabilities.maxImageCount > 0)
+        desired_count = std::min(desired_count, surface_capabilities.maxImageCount);
+      image_count = desired_count;
+      m_present_mode = VK_PRESENT_MODE_FIFO_KHR;
+    }
+  }
+#endif
 
   // Select the number of image layers for Quad-Buffered stereoscopy
   uint32_t image_layers = g_ActiveConfig.stereo_mode == StereoMode::QuadBuffer ? 2 : 1;
@@ -346,15 +420,21 @@ bool SwapChain::CreateSwapChain()
                                               m_present_mode,
                                               VK_TRUE,
                                               old_swap_chain};
-  std::array<uint32_t, 2> indices = {{
-      g_vulkan_context->GetGraphicsQueueFamilyIndex(),
-      g_vulkan_context->GetPresentQueueFamilyIndex(),
-  }};
-  if (g_vulkan_context->GetGraphicsQueueFamilyIndex() !=
-      g_vulkan_context->GetPresentQueueFamilyIndex())
+  std::array<uint32_t, 2> indices{};
+  uint32_t index_count = 0;
+  const auto add_queue_family = [&](uint32_t family) {
+    if (std::find(indices.begin(), indices.begin() + index_count, family) ==
+        indices.begin() + index_count)
+    {
+      indices[index_count++] = family;
+    }
+  };
+  add_queue_family(g_vulkan_context->GetGraphicsQueueFamilyIndex());
+  add_queue_family(g_vulkan_context->GetPresentQueueFamilyIndex());
+  if (index_count > 1)
   {
     swap_chain_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
-    swap_chain_info.queueFamilyIndexCount = 2;
+    swap_chain_info.queueFamilyIndexCount = index_count;
     swap_chain_info.pQueueFamilyIndices = indices.data();
   }
 
@@ -387,6 +467,28 @@ bool SwapChain::CreateSwapChain()
     res = vkCreateSwapchainKHR(g_vulkan_context->GetDevice(), &swap_chain_info, nullptr,
                                &m_swap_chain);
   }
+#ifdef __SWITCH__
+  if (res != VK_SUCCESS && lsfg_compatible)
+  {
+    LSFG::DisableSession("NVK rejected the LSFG-compatible swapchain");
+    m_present_mode = normal_present_mode;
+    swap_chain_info.minImageCount = std::min(
+        surface_capabilities.minImageCount + 1,
+        surface_capabilities.maxImageCount > 0 ? surface_capabilities.maxImageCount : UINT32_MAX);
+    swap_chain_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    swap_chain_info.presentMode = normal_present_mode;
+    index_count = 0;
+    add_queue_family(g_vulkan_context->GetGraphicsQueueFamilyIndex());
+    add_queue_family(g_vulkan_context->GetPresentQueueFamilyIndex());
+    swap_chain_info.imageSharingMode =
+        index_count > 1 ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE;
+    swap_chain_info.queueFamilyIndexCount = index_count > 1 ? index_count : 0;
+    swap_chain_info.pQueueFamilyIndices = index_count > 1 ? indices.data() : nullptr;
+    m_swap_chain = VK_NULL_HANDLE;
+    res = vkCreateSwapchainKHR(g_vulkan_context->GetDevice(), &swap_chain_info, nullptr,
+                               &m_swap_chain);
+  }
+#endif
   if (res != VK_SUCCESS)
   {
     LOG_VULKAN_ERROR(res, "vkCreateSwapchainKHR failed: ");
@@ -401,6 +503,7 @@ bool SwapChain::CreateSwapChain()
   m_width = size.width;
   m_height = size.height;
   m_layers = image_layers;
+
   return true;
 }
 
@@ -459,11 +562,19 @@ bool SwapChain::SetupSwapChainImages()
     m_swap_chain_images.emplace_back(std::move(image));
   }
 
+#ifdef __SWITCH__
+  if (LSFG::IsSessionPrepared())
+    LSFG::RegisterSwapChain(m_swap_chain, VkExtent2D{m_width, m_height}, images);
+#endif
+
   return true;
 }
 
 void SwapChain::DestroySwapChainImages()
 {
+#ifdef __SWITCH__
+  LSFG::UnregisterSwapChain();
+#endif
   for (auto& it : m_swap_chain_images)
   {
     // Images themselves are cleaned up by the swap chain object
@@ -516,6 +627,20 @@ bool SwapChain::RecreateSwapChain()
 {
   DestroySwapChainImages();
   DestroySwapChain();
+#ifdef __SWITCH__
+  if (m_wsi.type == WindowSystemType::Switch)
+  {
+    auto* const window = static_cast<NWindow*>(m_wsi.render_surface ? m_wsi.render_surface :
+                                                                    m_wsi.render_window);
+    if (window)
+    {
+      const bool docked = appletGetOperationMode() == AppletOperationMode_Console;
+      const u32 width = docked ? 1920 : 1280;
+      const u32 height = docked ? 1080 : 720;
+      (void)nwindowSetDimensions(window, width, height);
+    }
+  }
+#endif
   if (!CreateSwapChain() || !SetupSwapChainImages())
   {
     PanicAlertFmt("Failed to re-configure swap chain images, this is fatal (for now)");

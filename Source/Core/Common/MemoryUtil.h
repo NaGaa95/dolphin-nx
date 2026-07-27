@@ -1,4 +1,5 @@
 // Copyright 2008 Dolphin Emulator Project
+// Copyright 2026 Dan | ticoverse.com
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
@@ -8,7 +9,13 @@
 
 namespace Common
 {
-void* AllocateExecutableMemory(size_t size);
+struct ExecutableMemory
+{
+  void* rw_ptr;
+  void* rx_ptr;
+};
+
+ExecutableMemory AllocateExecutableMemory(size_t size);
 
 // These two functions control the executable/writable state of the W^X memory
 // allocations. More detailed documentation about them is in the .cpp file.
@@ -34,5 +41,6 @@ bool ReadProtectMemory(void* ptr, size_t size);
 bool WriteProtectMemory(void* ptr, size_t size, bool executable = false);
 bool UnWriteProtectMemory(void* ptr, size_t size, bool allowExecute = false);
 size_t MemPhysical();
+void FreeExecutableMemory(void* ptr, size_t size);
 
 }  // namespace Common

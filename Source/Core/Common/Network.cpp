@@ -9,6 +9,7 @@
 #include <vector>
 
 #ifndef _WIN32
+#include <arpa/inet.h>
 #include <cstring>
 #include <netinet/in.h>
 #include <sys/socket.h>

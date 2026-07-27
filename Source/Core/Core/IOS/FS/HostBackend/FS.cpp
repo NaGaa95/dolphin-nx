@@ -340,7 +340,14 @@ void HostFileSystem::DoState(PointerWrap& p)
     p.Do(handle.wii_path);
     p.Do(handle.file_offset);
     if (handle.opened)
+    {
       handle.host_file = OpenHostFile(BuildFilename(handle.wii_path).host_path);
+#ifdef __SWITCH__
+      handle.file_size = static_cast<u32>(handle.host_file->GetSize());
+      handle.host_file_offset = static_cast<u32>(handle.host_file->Tell());
+      handle.last_operation = Handle::Operation::None;
+#endif
+    }
   }
 }
 
@@ -637,7 +644,15 @@ Result<Metadata> HostFileSystem::GetMetadata(Uid uid, Gid gid, const std::string
     return std::unexpected{ResultCode::NotFound};
 
   Metadata metadata = entry->data;
+#ifdef __SWITCH__
+  const auto open_handle = std::ranges::find_if(m_handles, [&](const Handle& handle) {
+    return handle.opened && handle.wii_path == path;
+  });
+  metadata.size = open_handle != m_handles.end() ? open_handle->file_size :
+                                                  File::GetSize(BuildFilename(path).host_path);
+#else
   metadata.size = File::GetSize(BuildFilename(path).host_path);
+#endif
   return metadata;
 }
 
@@ -656,7 +671,15 @@ ResultCode HostFileSystem::SetMetadata(Uid caller_uid, const std::string& path, 
   if (caller_uid != 0 && uid != entry->data.uid)
     return ResultCode::AccessDenied;
 
+#ifdef __SWITCH__
+  const auto open_handle = std::ranges::find_if(m_handles, [&](const Handle& handle) {
+    return handle.opened && handle.wii_path == path;
+  });
+  const bool is_empty = open_handle != m_handles.end() ? open_handle->file_size == 0 :
+                                                        File::GetSize(BuildFilename(path).host_path) == 0;
+#else
   const bool is_empty = File::GetSize(BuildFilename(path).host_path) == 0;
+#endif
   if (entry->data.uid != uid && entry->data.is_file && !is_empty)
     return ResultCode::FileNotEmpty;
 

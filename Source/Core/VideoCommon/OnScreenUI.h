@@ -19,6 +19,10 @@ struct ImTextureData;
 
 namespace VideoCommon
 {
+// Runs on the video thread inside the active ImGui frame.
+using ImGuiRenderCallback = void (*)();
+void SetImGuiRenderCallback(ImGuiRenderCallback callback);
+
 // OnScreenUI handles all the ImGui rendering.
 class OnScreenUI
 {

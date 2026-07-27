@@ -56,8 +56,7 @@ const Info<bool> MAIN_RUSH_FRAME_PRESENTATION{{System::Main, "Core", "RushFrameP
                                               false};
 const Info<bool> MAIN_SMOOTH_EARLY_PRESENTATION{{System::Main, "Core", "SmoothEarlyPresentation"},
                                                 false};
-#if defined(ANDROID)
-// Currently enabled by default on Android because the performance boost is really needed.
+#if defined(ANDROID) || defined(__SWITCH__)
 constexpr bool DEFAULT_CPU_THREAD = true;
 #else
 constexpr bool DEFAULT_CPU_THREAD = false;
@@ -214,6 +213,10 @@ const Info<std::string> MAIN_WIIMOTE_AUTO_CONNECT_ADDRESSES{
 const Info<bool> MAIN_WIIMOTE_ENABLE_SPEAKER{{System::Main, "Core", "WiimoteEnableSpeaker"}, false};
 const Info<bool> MAIN_CONNECT_WIIMOTES_FOR_CONTROLLER_INTERFACE{
     {System::Main, "Core", "WiimoteControllerInterface"}, false};
+#ifdef __SWITCH__
+const Info<bool> MAIN_SWITCH_TOUCHSCREEN_POINTER{
+    {System::Main, "Core", "SwitchTouchscreenPointer"}, true};
+#endif
 const Info<bool> MAIN_MMU{{System::Main, "Core", "MMU"}, false};
 const Info<bool> MAIN_PAUSE_ON_PANIC{{System::Main, "Core", "PauseOnPanic"}, false};
 const Info<int> MAIN_BB_DUMP_PORT{{System::Main, "Core", "BBDumpPort"}, -1};

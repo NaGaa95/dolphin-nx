@@ -162,7 +162,7 @@ bool MemArena::ChangeMappingProtection(void* view, size_t size, bool writeable)
   return retval == KERN_SUCCESS;
 }
 
-void MemArena::UnmapFromMemoryRegion(void* view, size_t size)
+void MemArena::UnmapFromMemoryRegion(void* view, size_t size, [[maybe_unused]] s64 shm_offset)
 {
   vm_address_t address = reinterpret_cast<vm_address_t>(view);
 

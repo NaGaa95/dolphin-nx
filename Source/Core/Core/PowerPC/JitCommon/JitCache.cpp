@@ -1,4 +1,5 @@
 // Copyright 2008 Dolphin Emulator Project
+// Copyright 2026 Dan | ticoverse.com
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "Core/PowerPC/JitCommon/JitCache.h"
@@ -190,6 +191,20 @@ void JitBaseBlockCache::FinalizeBlock(JitBlock& block, bool block_link,
   }
 
   const Common::Symbol* symbol = nullptr;
+#ifdef __SWITCH__
+  const auto block_size = block.near_end - block.near_begin;
+  if (Common::JitRegister::IsEnabled() &&
+      (symbol = m_jit.m_ppc_symbol_db.GetSymbolFromAddr(block.effectiveAddress)) != nullptr)
+  {
+    Common::JitRegister::Register(block.near_begin, block_size, "JIT_PPC_{}_{:08x}",
+                                  symbol->function_name, block.physicalAddress);
+  }
+  else
+  {
+    Common::JitRegister::Register(block.near_begin, block_size, "JIT_PPC_{:08x}",
+                                  block.physicalAddress);
+  }
+#else
   if (Common::JitRegister::IsEnabled() &&
       (symbol = m_jit.m_ppc_symbol_db.GetSymbolFromAddr(block.effectiveAddress)) != nullptr)
   {
@@ -202,6 +217,7 @@ void JitBaseBlockCache::FinalizeBlock(JitBlock& block, bool block_link,
     Common::JitRegister::Register(block.normalEntry, block.near_end - block.normalEntry,
                                   "JIT_PPC_{:08x}", block.physicalAddress);
   }
+#endif
 }
 
 JitBlock* JitBaseBlockCache::GetBlockFromStartAddress(u32 addr, CPUEmuFeatureFlags feature_flags)
@@ -576,6 +592,12 @@ size_t JitBaseBlockCache::FastLookupIndexForAddress(u32 address, u32 feature_fla
   }
   else
   {
+#ifdef __SWITCH__
+    const u32 word_address = address >> 2;
+    return (word_address ^ (word_address >> FAST_BLOCK_MAP_FALLBACK_BITS)) &
+           FAST_BLOCK_MAP_FALLBACK_MASK;
+#else
     return (address >> 2) & FAST_BLOCK_MAP_FALLBACK_MASK;
+#endif
   }
 }

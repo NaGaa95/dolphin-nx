@@ -82,6 +82,41 @@ Classic::Classic() : Extension1stParty("Classic", _trans("Classic Controller"))
   }
 }
 
+void Classic::LoadDefaults()
+{
+#ifdef __SWITCH__
+  m_buttons->SetControlExpression(0, "`A`");
+  m_buttons->SetControlExpression(1, "`B`");
+  m_buttons->SetControlExpression(2, "`X`");
+  m_buttons->SetControlExpression(3, "`Y`");
+  m_buttons->SetControlExpression(4, "`Z`");
+  m_buttons->SetControlExpression(5, "`R2`");
+  m_buttons->SetControlExpression(6, "`Select`");
+  m_buttons->SetControlExpression(7, "`Start`");
+  m_buttons->SetControlExpression(8, "`L3`");
+
+  m_left_stick->SetControlExpression(0, "`Y0+`");
+  m_left_stick->SetControlExpression(1, "`Y0-`");
+  m_left_stick->SetControlExpression(2, "`X0-`");
+  m_left_stick->SetControlExpression(3, "`X0+`");
+
+  m_right_stick->SetControlExpression(0, "`Y1+`");
+  m_right_stick->SetControlExpression(1, "`Y1-`");
+  m_right_stick->SetControlExpression(2, "`X1-`");
+  m_right_stick->SetControlExpression(3, "`X1+`");
+
+  m_triggers->SetControlExpression(0, "`L`");
+  m_triggers->SetControlExpression(1, "`R`");
+  m_triggers->SetControlExpression(2, "`L`");
+  m_triggers->SetControlExpression(3, "`R`");
+
+  m_dpad->SetControlExpression(0, "`Up`");
+  m_dpad->SetControlExpression(1, "`Down`");
+  m_dpad->SetControlExpression(2, "`Left`");
+  m_dpad->SetControlExpression(3, "`Right`");
+#endif
+}
+
 void Classic::BuildDesiredExtensionState(DesiredExtensionState* target_state)
 {
   using ControllerEmu::MapFloat;

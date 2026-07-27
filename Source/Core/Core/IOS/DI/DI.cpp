@@ -182,8 +182,13 @@ std::optional<DIDevice::DIResult> DIDevice::StartIOCtl(const IOCtlRequest& reque
   {
     const u32 length = memory.Read_U32(request.buffer_in + 4);
     const u32 position = memory.Read_U32(request.buffer_in + 8);
+#ifdef __SWITCH__
+    DEBUG_LOG_FMT(IOS_DI, "DVDLowRead: offset {:#010x} (byte {:#011x}), length {:#x}", position,
+                  static_cast<u64>(position) << 2, length);
+#else
     INFO_LOG_FMT(IOS_DI, "DVDLowRead: offset {:#010x} (byte {:#011x}), length {:#x}", position,
                  static_cast<u64>(position) << 2, length);
+#endif
     if (m_current_partition == DiscIO::PARTITION_NONE)
     {
       ERROR_LOG_FMT(IOS_DI, "Attempted to perform a decrypting read when no partition is open!");

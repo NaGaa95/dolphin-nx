@@ -212,6 +212,7 @@ private:
   IPCMsgQueue m_reply_queue;    // arm -> ppc
   u64 m_last_reply_time = 0;
   bool m_ipc_paused = false;
+
 };
 
 // Used for controlling and accessing an IOS instance that is tied to emulation.

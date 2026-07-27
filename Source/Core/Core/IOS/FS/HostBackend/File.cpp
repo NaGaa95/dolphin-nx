@@ -4,6 +4,7 @@
 #include "Core/IOS/FS/HostBackend/FS.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <expected>
 #include <memory>
 
@@ -60,6 +61,12 @@ std::shared_ptr<File::IOFile> HostFileSystem::OpenHostFile(const std::string& ho
     }
   }
 
+#ifdef __SWITCH__
+  constexpr size_t NAND_WRITE_BUFFER_SIZE = 16 * 1024;
+  if (std::setvbuf(file.GetHandle(), nullptr, _IOFBF, NAND_WRITE_BUFFER_SIZE) != 0)
+    WARN_LOG_FMT(IOS_FS, "Failed to allocate the NAND write buffer for {}", host_path);
+#endif
+
   // This code will be called when all references to the shared pointer below have been removed.
   auto deleter = [this, host_path](File::IOFile* ptr) {
     delete ptr;                     // IOFile's deconstructor closes the file.
@@ -82,6 +89,37 @@ Result<FileHandle> HostFileSystem::OpenFile(Uid, Gid, const std::string& path, M
     return std::unexpected{ResultCode::NoFreeHandle};
 
   const std::string host_path = BuildFilename(path).host_path;
+
+#ifdef __SWITCH__
+  // Reuse native handles before querying a devoptab path again.
+  if (const auto existing = m_open_files.find(host_path); existing != m_open_files.end())
+    handle->host_file = existing->second.lock();
+#endif
+
+  if (handle->host_file)
+  {
+#ifdef __SWITCH__
+    const auto shared_handle = std::ranges::find_if(m_handles, [&](const Handle& other) {
+      return &other != handle && other.opened && other.host_file == handle->host_file;
+    });
+    if (shared_handle != m_handles.end())
+    {
+      handle->file_size = shared_handle->file_size;
+      handle->host_file_offset = shared_handle->host_file_offset;
+      handle->last_operation = shared_handle->last_operation;
+    }
+    else
+    {
+      handle->file_size = static_cast<u32>(handle->host_file->GetSize());
+      handle->host_file_offset = static_cast<u32>(handle->host_file->Tell());
+    }
+#endif
+    handle->wii_path = path;
+    handle->mode = mode;
+    handle->file_offset = 0;
+    return FileHandle{this, ConvertHandleToFd(handle)};
+  }
+
   if (File::IsDirectory(host_path))
   {
     *handle = Handle{};
@@ -104,6 +142,10 @@ Result<FileHandle> HostFileSystem::OpenFile(Uid, Gid, const std::string& path, M
   handle->wii_path = path;
   handle->mode = mode;
   handle->file_offset = 0;
+#ifdef __SWITCH__
+  handle->file_size = static_cast<u32>(handle->host_file->GetSize());
+  handle->host_file_offset = static_cast<u32>(handle->host_file->Tell());
+#endif
   return FileHandle{this, ConvertHandleToFd(handle)};
 }
 
@@ -128,14 +170,45 @@ Result<u32> HostFileSystem::ReadBytesFromFile(Fd fd, u8* ptr, u32 count)
   if ((u8(handle->mode) & u8(Mode::Read)) == 0)
     return std::unexpected{ResultCode::AccessDenied};
 
+#ifdef __SWITCH__
+  const u32 file_size = handle->file_size;
+#else
   const u32 file_size = static_cast<u32>(handle->host_file->GetSize());
+#endif
+  if (handle->file_offset > file_size)
+    return std::unexpected{ResultCode::Invalid};
+
   // IOS has this check in the read request handler.
-  if (count + handle->file_offset > file_size)
+  if (count > file_size - handle->file_offset)
     count = file_size - handle->file_offset;
 
+#ifdef __SWITCH__
+  if (count == 0)
+    return 0;
+
+  if (handle->last_operation != Handle::Operation::Read ||
+      handle->host_file_offset != handle->file_offset)
+  {
+    if (!handle->host_file->Seek(handle->file_offset, File::SeekOrigin::Begin))
+      return std::unexpected{ResultCode::AccessDenied};
+  }
+#else
   // File might be opened twice, need to seek before we read
   handle->host_file->Seek(handle->file_offset, File::SeekOrigin::Begin);
+#endif
   const u32 actually_read = static_cast<u32>(fread(ptr, 1, count, handle->host_file->GetHandle()));
+
+#ifdef __SWITCH__
+  const u32 new_host_offset = handle->file_offset + actually_read;
+  for (Handle& other : m_handles)
+  {
+    if (other.opened && other.host_file == handle->host_file)
+    {
+      other.host_file_offset = new_host_offset;
+      other.last_operation = Handle::Operation::Read;
+    }
+  }
+#endif
 
   if (actually_read != count && ferror(handle->host_file->GetHandle()))
     return std::unexpected{ResultCode::AccessDenied};
@@ -155,12 +228,35 @@ Result<u32> HostFileSystem::WriteBytesToFile(Fd fd, const u8* ptr, u32 count)
   if ((u8(handle->mode) & u8(Mode::Write)) == 0)
     return std::unexpected{ResultCode::AccessDenied};
 
+#ifdef __SWITCH__
+  if (count == 0)
+    return 0;
+
+  if (handle->last_operation != Handle::Operation::Write ||
+      handle->host_file_offset != handle->file_offset)
+  {
+    if (!handle->host_file->Seek(handle->file_offset, File::SeekOrigin::Begin))
+      return std::unexpected{ResultCode::AccessDenied};
+  }
+#else
   // File might be opened twice, need to seek before we read
   handle->host_file->Seek(handle->file_offset, File::SeekOrigin::Begin);
+#endif
   if (!handle->host_file->WriteBytes(ptr, count))
     return std::unexpected{ResultCode::AccessDenied};
 
   handle->file_offset += count;
+#ifdef __SWITCH__
+  for (Handle& other : m_handles)
+  {
+    if (other.opened && other.host_file == handle->host_file)
+    {
+      other.file_size = std::max(other.file_size, handle->file_offset);
+      other.host_file_offset = handle->file_offset;
+      other.last_operation = Handle::Operation::Write;
+    }
+  }
+#endif
   return count;
 }
 
@@ -180,14 +276,22 @@ Result<u32> HostFileSystem::SeekFile(Fd fd, std::uint32_t offset, SeekMode mode)
     new_position = handle->file_offset + offset;
     break;
   case SeekMode::End:
+#ifdef __SWITCH__
+    new_position = handle->file_size + offset;
+#else
     new_position = handle->host_file->GetSize() + offset;
+#endif
     break;
   default:
     return std::unexpected{ResultCode::Invalid};
   }
 
   // This differs from POSIX behaviour which allows seeking past the end of the file.
+#ifdef __SWITCH__
+  if (handle->file_size < new_position)
+#else
   if (handle->host_file->GetSize() < new_position)
+#endif
     return std::unexpected{ResultCode::Invalid};
 
   handle->file_offset = new_position;
@@ -201,7 +305,11 @@ Result<FileStatus> HostFileSystem::GetFileStatus(Fd fd)
     return std::unexpected{ResultCode::Invalid};
 
   FileStatus status;
+#ifdef __SWITCH__
+  status.size = handle->file_size;
+#else
   status.size = handle->host_file->GetSize();
+#endif
   status.offset = handle->file_offset;
   return status;
 }

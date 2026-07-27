@@ -9,7 +9,15 @@
 #include <dlfcn.h>
 #endif
 
+#ifdef __SWITCH__
+extern "C"
+{
+PFN_vkVoidFunction VKAPI_CALL vk_icdGetInstanceProcAddr(VkInstance instance, const char* name);
+VkResult VKAPI_CALL vk_icdNegotiateLoaderICDInterfaceVersion(uint32_t* supported_version);
+}
+#else
 #include "Common/DynamicLibrary.h"
+#endif
 #if defined(__APPLE__)
 #include "Common/FileUtil.h"
 #elif defined(ANDROID) && _M_ARM_64
@@ -39,6 +47,7 @@ static void ResetVulkanLibraryFunctionPointers()
 #undef VULKAN_MODULE_ENTRY_POINT
 }
 
+#ifndef __SWITCH__
 static Common::DynamicLibrary s_vulkan_module;
 
 static bool OpenVulkanLibrary(bool force_system_library)
@@ -91,9 +100,60 @@ static bool OpenVulkanLibrary(bool force_system_library)
   return s_vulkan_module.Open(filename.c_str());
 #endif
 }
+#endif
 
 bool LoadVulkanLibrary(bool force_system_library)
 {
+#ifdef __SWITCH__
+  (void)force_system_library;
+
+  uint32_t icd_version = 7;
+  const VkResult negotiation_result = vk_icdNegotiateLoaderICDInterfaceVersion(&icd_version);
+  if (negotiation_result != VK_SUCCESS)
+  {
+    ERROR_LOG_FMT(VIDEO, "Vulkan: NVK ICD interface negotiation failed: {}",
+                  static_cast<int>(negotiation_result));
+    ResetVulkanLibraryFunctionPointers();
+    return false;
+  }
+
+  // Mesa exposes device dispatch through an instance.
+  vkGetInstanceProcAddr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+      vk_icdGetInstanceProcAddr(VK_NULL_HANDLE, "vkGetInstanceProcAddr"));
+  if (!vkGetInstanceProcAddr)
+  {
+    vkGetInstanceProcAddr =
+        reinterpret_cast<PFN_vkGetInstanceProcAddr>(&vk_icdGetInstanceProcAddr);
+  }
+
+  vkGetDeviceProcAddr = nullptr;
+  vkCreateInstance = reinterpret_cast<PFN_vkCreateInstance>(
+      vk_icdGetInstanceProcAddr(VK_NULL_HANDLE, "vkCreateInstance"));
+  vkEnumerateInstanceExtensionProperties =
+      reinterpret_cast<PFN_vkEnumerateInstanceExtensionProperties>(
+          vk_icdGetInstanceProcAddr(VK_NULL_HANDLE,
+                                    "vkEnumerateInstanceExtensionProperties"));
+  vkEnumerateInstanceLayerProperties = reinterpret_cast<PFN_vkEnumerateInstanceLayerProperties>(
+      vk_icdGetInstanceProcAddr(VK_NULL_HANDLE, "vkEnumerateInstanceLayerProperties"));
+  vkEnumerateInstanceVersion = reinterpret_cast<PFN_vkEnumerateInstanceVersion>(
+      vk_icdGetInstanceProcAddr(VK_NULL_HANDLE, "vkEnumerateInstanceVersion"));
+
+  if (!vkGetInstanceProcAddr || !vkCreateInstance || !vkEnumerateInstanceExtensionProperties ||
+      !vkEnumerateInstanceLayerProperties)
+  {
+    ERROR_LOG_FMT(VIDEO,
+                  "Vulkan: static NVK global dispatch is incomplete: GIPA={} CreateInstance={} "
+                  "Extensions={} Layers={} Version={}",
+                  vkGetInstanceProcAddr != nullptr, vkCreateInstance != nullptr,
+                  vkEnumerateInstanceExtensionProperties != nullptr,
+                  vkEnumerateInstanceLayerProperties != nullptr,
+                  vkEnumerateInstanceVersion != nullptr);
+    ResetVulkanLibraryFunctionPointers();
+    return false;
+  }
+  INFO_LOG_FMT(VIDEO, "Vulkan: static NVK ICD bootstrapped (loader interface {})", icd_version);
+  return true;
+#else
   if (!s_vulkan_module.IsOpen() && !OpenVulkanLibrary(force_system_library))
     return false;
 
@@ -109,18 +169,34 @@ bool LoadVulkanLibrary(bool force_system_library)
 #undef VULKAN_MODULE_ENTRY_POINT
 
   return true;
+#endif
 }
 
 void UnloadVulkanLibrary()
 {
+#ifdef __SWITCH__
+  ResetVulkanLibraryFunctionPointers();
+#else
   s_vulkan_module.Close();
   if (!s_vulkan_module.IsOpen())
     ResetVulkanLibraryFunctionPointers();
+#endif
 }
 
 bool LoadVulkanInstanceFunctions(VkInstance instance)
 {
   bool required_functions_missing = false;
+#ifdef __SWITCH__
+  // Populate device dispatch before loading device entry points.
+  vkGetDeviceProcAddr = reinterpret_cast<PFN_vkGetDeviceProcAddr>(
+      vkGetInstanceProcAddr(instance, "vkGetDeviceProcAddr"));
+  if (!vkGetDeviceProcAddr)
+  {
+    ERROR_LOG_FMT(HOST_GPU,
+                  "Vulkan: static NVK did not expose vkGetDeviceProcAddr for the instance");
+    required_functions_missing = true;
+  }
+#endif
   auto LoadFunction = [&](PFN_vkVoidFunction* func_ptr, const char* name, bool is_required) {
     *func_ptr = vkGetInstanceProcAddr(instance, name);
     if (!(*func_ptr) && is_required)

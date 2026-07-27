@@ -265,8 +265,18 @@ struct PadDetails
 std::string GetPlayerMappingString(PlayerId pid, const PadMappingArray& pad_map,
                                    const GBAConfigArray& gba_config,
                                    const PadMappingArray& wiimote_map);
+#ifdef __SWITCH__
+inline bool IsNetPlayRunning()
+{
+  return false;
+}
+inline void SetSIPollBatching(bool state)
+{
+}
+#else
 bool IsNetPlayRunning();
 void SetSIPollBatching(bool state);
+#endif
 void SendPowerButtonEvent();
 std::string GetGBASavePath(int pad_num);
 PadDetails GetPadDetails(int pad_num);

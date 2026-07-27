@@ -724,7 +724,9 @@ std::optional<IPCReply> EmulationKernel::HandleIPCCommand(const Request& request
     return IPCReply{IPC_EINVAL, 550_tbticks};
 
   std::optional<IPCReply> ret;
+#ifndef __SWITCH__
   const u64 wall_time_before = Common::Timer::NowUs();
+#endif
 
   switch (request.command)
   {
@@ -755,13 +757,15 @@ std::optional<IPCReply> EmulationKernel::HandleIPCCommand(const Request& request
     break;
   }
 
-  const u64 wall_time_after = Common::Timer::NowUs();
+#ifndef __SWITCH__
+  const u64 elapsed_us = Common::Timer::NowUs() - wall_time_before;
   constexpr u64 BLOCKING_IPC_COMMAND_THRESHOLD_US = 2000;
-  if (wall_time_after - wall_time_before > BLOCKING_IPC_COMMAND_THRESHOLD_US)
+  if (elapsed_us > BLOCKING_IPC_COMMAND_THRESHOLD_US)
   {
     WARN_LOG_FMT(IOS, "Previous request to device {} blocked emulation for {} microseconds.",
-                 device->GetDeviceName(), wall_time_after - wall_time_before);
+                 device->GetDeviceName(), elapsed_us);
   }
+#endif
 
   return ret;
 }

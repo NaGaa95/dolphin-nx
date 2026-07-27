@@ -93,6 +93,7 @@ option(USE_MGBA "Enables GBA controllers emulation using libmgba" ON)
 option(ENABLE_AUTOUPDATE "Enables support for automatic updates" ON)
 option(USE_RETRO_ACHIEVEMENTS "Enables integration with retroachievements.org" ON)
 option(ENABLE_CCACHE "Enables CCache compiler cache" OFF)
+option(DOLPHIN_SWITCH "Build the standalone Nintendo Switch libnx frontend" OFF)
 
 # Maintainers: if you consider blanket disabling this for your users, please
 # consider the following points:
@@ -120,6 +121,40 @@ if(NOT ANDROID)
   option(ENABLE_SDL "Enables SDL as a generic controller backend" ON)
 else()
   option(ENABLE_SDL "Enables SDL as a generic controller backend" OFF)
+endif()
+
+if(DOLPHIN_SWITCH)
+  message(STATUS "Building the standalone Nintendo Switch libnx frontend")
+
+  set(ENABLE_ALSA OFF CACHE BOOL "" FORCE)
+  set(ENABLE_ANALYTICS OFF CACHE BOOL "" FORCE)
+  set(ENABLE_AUTOUPDATE OFF CACHE BOOL "" FORCE)
+  set(ENABLE_CLI_TOOL OFF CACHE BOOL "" FORCE)
+  set(ENABLE_CUBEB OFF CACHE BOOL "" FORCE)
+  set(ENABLE_EGL OFF CACHE BOOL "" FORCE)
+  set(ENABLE_LLVM OFF CACHE BOOL "" FORCE)
+  set(ENABLE_NOGUI OFF CACHE BOOL "" FORCE)
+  set(ENABLE_PULSEAUDIO OFF CACHE BOOL "" FORCE)
+  set(ENABLE_QT OFF CACHE BOOL "" FORCE)
+  set(ENABLE_SDL OFF CACHE BOOL "" FORCE)
+  set(ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+  set(ENABLE_VULKAN ON CACHE BOOL "" FORCE)
+  set(ENABLE_X11 OFF CACHE BOOL "" FORCE)
+  set(ENCODE_FRAMEDUMPS OFF CACHE BOOL "" FORCE)
+  set(USE_DISCORD_PRESENCE OFF CACHE BOOL "" FORCE)
+  set(USE_MGBA OFF CACHE BOOL "" FORCE)
+  set(USE_RETRO_ACHIEVEMENTS ON CACHE BOOL "" FORCE)
+  set(USE_UPNP OFF CACHE BOOL "" FORCE)
+  set(USE_SYSTEM_LIBS OFF CACHE STRING "" FORCE)
+  set(USE_SYSTEM_CURL ON CACHE STRING "" FORCE)
+
+  add_compile_definitions(
+    __SWITCH__
+    NINTENDO_SWITCH
+    VK_USE_PLATFORM_VI_NN
+    MBEDTLS_NO_PLATFORM_ENTROPY
+    MBEDTLS_USER_CONFIG_FILE="DolphinSwitch/MbedTLSConfig.h"
+  )
 endif()
 
 if(APPLE)
@@ -216,7 +251,9 @@ elseif(_ARCH_64 AND CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
   set(_M_ARM_64 1)
   add_definitions(-D_M_ARM_64=1)
   # CRC instruction set is used in the CRC32 hash function
-  check_and_add_flag(HAVE_ARCH_ARMV8 -march=armv8-a+crc)
+  if(NOT DOLPHIN_SWITCH)
+    check_and_add_flag(HAVE_ARCH_ARMV8 -march=armv8-a+crc)
+  endif()
 else()
   message(FATAL_ERROR "You're building on an unsupported platform: "
       "'${CMAKE_SYSTEM_PROCESSOR}' with ${CMAKE_SIZEOF_VOID_P}-byte pointers."
@@ -471,11 +508,13 @@ endif()
 include(CheckLib)
 include(CheckCXXSourceRuns)
 
-set(OpenGL_GL_PREFERENCE GLVND CACHE STRING "Linux-only: if GLVND, use the vendor-neutral GL libraries (default). If LEGACY, use the legacy ones (might be necessary to have optirun/primusrun work)")
-set_property(CACHE OpenGL_GL_PREFERENCE PROPERTY STRINGS GLVND LEGACY)
-find_package(OpenGL)
-if (OPENGL_GL)
-  include_directories(${OPENGL_INCLUDE_DIR})
+if(NOT DOLPHIN_SWITCH)
+  set(OpenGL_GL_PREFERENCE GLVND CACHE STRING "Linux-only: if GLVND, use the vendor-neutral GL libraries (default). If LEGACY, use the legacy ones (might be necessary to have optirun/primusrun work)")
+  set_property(CACHE OpenGL_GL_PREFERENCE PROPERTY STRINGS GLVND LEGACY)
+  find_package(OpenGL)
+  if (OPENGL_GL)
+    include_directories(${OPENGL_INCLUDE_DIR})
+  endif()
 endif()
 
 if(ENABLE_X11)
@@ -604,7 +643,9 @@ dolphin_find_optional_system_library_pkgconfig(FMT
 )
 
 add_subdirectory(Externals/imgui)
-add_subdirectory(Externals/implot)
+if(NOT DOLPHIN_SWITCH)
+  add_subdirectory(Externals/implot)
+endif()
 
 dolphin_find_optional_system_library(glslang Externals/glslang DOLPHIN_TRY_VERSIONS 15 16)
 
@@ -628,7 +669,7 @@ if(ENABLE_VULKAN)
   endif()
 endif()
 
-if(NOT (WIN32 AND _M_ARM_64))
+if(NOT DOLPHIN_SWITCH AND NOT (WIN32 AND _M_ARM_64))
   # OpenGL is available on all platforms except windows-arm64
   add_definitions(-DHAS_OPENGL)
 endif()
@@ -642,7 +683,9 @@ endif()
 
 dolphin_find_optional_system_library(pugixml Externals/pugixml)
 
-dolphin_find_optional_system_library_pkgconfig(ENET libenet>=1.3.18 enet::enet Externals/enet)
+if(NOT DOLPHIN_SWITCH)
+  dolphin_find_optional_system_library_pkgconfig(ENET libenet>=1.3.18 enet::enet Externals/enet)
+endif()
 
 dolphin_find_optional_system_library_pkgconfig(xxhash libxxhash>=0.8.2 xxhash::xxhash Externals/xxhash)
 
@@ -682,7 +725,7 @@ if(ENABLE_CUBEB)
   add_definitions(-DHAVE_CUBEB)
 endif()
 
-if(NOT ANDROID)
+if(NOT ANDROID AND NOT DOLPHIN_SWITCH)
   dolphin_find_optional_system_library(LibUSB Externals/libusb)
   add_definitions(-D__LIBUSB__)
 endif()
@@ -691,7 +734,11 @@ if(ENABLE_SDL)
   dolphin_find_optional_system_library(SDL3 Externals/SDL 3.2.0)
 endif()
 
-dolphin_find_optional_system_library(SFML Externals/SFML 3.0 COMPONENTS Network System)
+if(DOLPHIN_SWITCH)
+  add_subdirectory(Externals/SFML)
+else()
+  dolphin_find_optional_system_library(SFML Externals/SFML 3.0 COMPONENTS Network System)
+endif()
 
 if(USE_UPNP)
   dolphin_find_optional_system_library(MINIUPNPC Externals/miniupnpc 1.6)
@@ -702,7 +749,7 @@ dolphin_find_optional_system_library(MBEDTLS Externals/mbedtls 2.28)
 
 dolphin_find_optional_system_library(CURL Externals/curl)
 
-if(NOT ANDROID)
+if(NOT ANDROID AND NOT DOLPHIN_SWITCH)
   dolphin_find_optional_system_library(HIDAPI Externals/hidapi)
 endif()
 
@@ -716,12 +763,14 @@ if(USE_MGBA)
   dolphin_find_optional_system_library(LIBMGBA Externals/mGBA 0.11)
 endif()
 
-find_package(SYSTEMD)
-if(SYSTEMD_FOUND)
-  message(STATUS "libsystemd found, enabling traversal server watchdog support")
-  add_definitions(-DHAVE_LIBSYSTEMD)
-else()
-  message(STATUS "libsystemd not found, disabling traversal server watchdog support")
+if(NOT DOLPHIN_SWITCH)
+  find_package(SYSTEMD)
+  if(SYSTEMD_FOUND)
+    message(STATUS "libsystemd found, enabling traversal server watchdog support")
+    add_definitions(-DHAVE_LIBSYSTEMD)
+  else()
+    message(STATUS "libsystemd not found, disabling traversal server watchdog support")
+  endif()
 endif()
 
 if (WIN32)
@@ -739,7 +788,9 @@ if (USE_RETRO_ACHIEVEMENTS)
   add_subdirectory(Externals/rcheevos)
 endif()
 
-add_subdirectory(Externals/watcher)
+if(NOT DOLPHIN_SWITCH)
+  add_subdirectory(Externals/watcher)
+endif()
 
 # Any other platform or BSD is currently unsupported by cpp-ipc
 if(WIN32 OR LINUX OR CMAKE_SYSTEM_NAME STREQUAL "FreeBSD" OR CMAKE_SYSTEM_NAME STREQUAL "QNX")
@@ -810,6 +861,10 @@ endif()
 ########################################
 # Process Dolphin source now that all setup is complete
 #
+if(DOLPHIN_SWITCH)
+  include(SwitchDependencies)
+endif()
+
 add_subdirectory(Source)
 
 ########################################

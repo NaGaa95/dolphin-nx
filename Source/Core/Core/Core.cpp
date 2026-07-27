@@ -16,6 +16,10 @@
 #include <fmt/chrono.h>
 #include <fmt/format.h>
 
+#ifdef __SWITCH__
+#include <switch.h>
+#endif
+
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -96,7 +100,12 @@ namespace Core
 static bool s_wants_determinism;
 
 // Declarations and definitions
+#ifdef __SWITCH__
+static ::Thread s_emu_thread{};
+static bool s_emu_thread_joinable = false;
+#else
 static std::thread s_emu_thread;
+#endif
 static Common::HookableEvent<Core::State> s_state_changed_event;
 
 static bool s_is_throttler_temp_disabled = false;
@@ -131,6 +140,89 @@ static thread_local bool tls_is_gpu_thread = false;
 
 static void EmuThread(Core::System& system, std::unique_ptr<BootParameters> boot,
                       WindowSystemInfo wsi);
+
+#ifdef __SWITCH__
+struct SwitchEmuThreadArgs
+{
+  Core::System* system;
+  std::unique_ptr<BootParameters> boot;
+  WindowSystemInfo wsi;
+};
+
+static void SwitchEmuThreadEntry(void* raw)
+{
+  std::unique_ptr<SwitchEmuThreadArgs> args{static_cast<SwitchEmuThreadArgs*>(raw)};
+  EmuThread(*args->system, std::move(args->boot), std::move(args->wsi));
+}
+
+static bool IsEmuThreadJoinable()
+{
+  return s_emu_thread_joinable;
+}
+
+static bool StartEmuThread(Core::System& system, std::unique_ptr<BootParameters> boot,
+                           WindowSystemInfo wsi)
+{
+  auto args = std::make_unique<SwitchEmuThreadArgs>(
+      SwitchEmuThreadArgs{&system, std::move(boot), std::move(wsi)});
+
+  s_emu_thread = {};
+  Result result = threadCreate(&s_emu_thread, SwitchEmuThreadEntry, args.get(), nullptr,
+                               2 * 1024 * 1024, 0x2C, 0);
+  if (R_FAILED(result))
+  {
+    ERROR_LOG_FMT(BOOT, "Failed to create the Switch emulation thread: 0x{:X}", result);
+    return false;
+  }
+
+  result = threadStart(&s_emu_thread);
+  if (R_FAILED(result))
+  {
+    ERROR_LOG_FMT(BOOT, "Failed to start the Switch emulation thread: 0x{:X}", result);
+    threadClose(&s_emu_thread);
+    s_emu_thread = {};
+    return false;
+  }
+
+  args.release();
+  s_emu_thread_joinable = true;
+  return true;
+}
+
+static void JoinEmuThread()
+{
+  if (!s_emu_thread_joinable)
+    return;
+
+  const Result wait_result = threadWaitForExit(&s_emu_thread);
+  if (R_FAILED(wait_result))
+    ERROR_LOG_FMT(BOOT, "Failed to wait for the Switch emulation thread: 0x{:X}", wait_result);
+
+  const Result close_result = threadClose(&s_emu_thread);
+  if (R_FAILED(close_result))
+    ERROR_LOG_FMT(BOOT, "Failed to close the Switch emulation thread: 0x{:X}", close_result);
+
+  s_emu_thread = {};
+  s_emu_thread_joinable = false;
+}
+#else
+static bool IsEmuThreadJoinable()
+{
+  return s_emu_thread.joinable();
+}
+
+static bool StartEmuThread(Core::System& system, std::unique_ptr<BootParameters> boot,
+                           WindowSystemInfo wsi)
+{
+  s_emu_thread = std::thread(EmuThread, std::ref(system), std::move(boot), std::move(wsi));
+  return true;
+}
+
+static void JoinEmuThread()
+{
+  s_emu_thread.join();
+}
+#endif
 
 bool GetIsThrottlerTempDisabled()
 {
@@ -219,7 +311,7 @@ bool Init(Core::System& system, std::unique_ptr<BootParameters> boot, const Wind
 {
   std::lock_guard lock(s_core_mutex);
 
-  if (s_emu_thread.joinable())
+  if (IsEmuThreadJoinable())
   {
     if (!IsUninitialized(system))
     {
@@ -228,7 +320,7 @@ bool Init(Core::System& system, std::unique_ptr<BootParameters> boot, const Wind
     }
 
     // The Emu Thread was stopped, synchronize with it.
-    s_emu_thread.join();
+    JoinEmuThread();
   }
 
   // Drain any left over jobs
@@ -246,7 +338,11 @@ bool Init(Core::System& system, std::unique_ptr<BootParameters> boot, const Wind
 
   // Start the emu thread
   s_state.store(State::Starting);
-  s_emu_thread = std::thread(EmuThread, std::ref(system), std::move(boot), prepared_wsi);
+  if (!StartEmuThread(system, std::move(boot), std::move(prepared_wsi)))
+  {
+    s_state.store(State::Uninitialized);
+    return false;
+  }
   return true;
 }
 
@@ -327,6 +423,10 @@ static void CpuThread(Core::System& system, const std::optional<std::string>& sa
     Common::SetCurrentThreadName("CPU thread");
   else
     Common::SetCurrentThreadName("CPU-GPU thread");
+
+#ifdef __SWITCH__
+  Common::SetCurrentThreadAffinity(0);
+#endif
 
   // This needs to be delayed until after the video backend is ready.
   DolphinAnalytics::Instance().ReportGameStart();
@@ -410,6 +510,10 @@ static void FifoPlayerThread(Core::System& system, const std::optional<std::stri
   else
     Common::SetCurrentThreadName("FIFO-GPU thread");
 
+#ifdef __SWITCH__
+  Common::SetCurrentThreadAffinity(0);
+#endif
+
   // Enter CPU run loop. When we leave it - we are done.
   if (auto cpu_core = system.GetFifoPlayer().GetCPUCore())
   {
@@ -471,6 +575,9 @@ static void FifoPlayerThread(Core::System& system, const std::optional<std::stri
     // Spawn the GPU thread.
     std::thread gpu_thread{[&] {
       Common::SetCurrentThreadName("Video thread");
+#ifdef __SWITCH__
+      Common::SetCurrentThreadAffinity(1);
+#endif
 
       const bool is_init = init_video();
       init_from_thread.set_value(is_init);
@@ -525,6 +632,9 @@ static void EmuThread(Core::System& system, std::unique_ptr<BootParameters> boot
   }};
 
   Common::SetCurrentThreadName("Emuthread - Starting");
+#ifdef __SWITCH__
+  Common::SetCurrentThreadAffinity(0);
+#endif
 
   // This will become the CPU thread.
   DeclareAsCPUThread();
@@ -921,8 +1031,8 @@ void Shutdown(Core::System& system)
   // shut down.
   // For more info read "DirectX Graphics Infrastructure (DXGI): Best Practices"
   // on MSDN.
-  if (s_emu_thread.joinable())
-    s_emu_thread.join();
+  if (IsEmuThreadJoinable())
+    JoinEmuThread();
 
   // Make sure there's nothing left over in case we're about to exit.
   HostDispatchJobs(system);

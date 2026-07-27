@@ -185,6 +185,10 @@ void VideoConfig::Refresh()
   bImmediateXFB = Config::Get(Config::GFX_HACK_IMMEDIATE_XFB);
   bVISkip = Config::Get(Config::GFX_HACK_VI_SKIP);
   bSkipPresentingDuplicateXFBs = bVISkip || Config::Get(Config::GFX_HACK_SKIP_DUPLICATE_XFBS);
+#ifdef __SWITCH__
+  // LSFG interpolates unique emulated XFBs.
+  bSkipPresentingDuplicateXFBs |= Config::Get(Config::GFX_LSFG_ENABLED);
+#endif
   bCopyEFBScaled = Config::Get(Config::GFX_HACK_COPY_EFB_SCALED);
   bEFBEmulateFormatChanges = Config::Get(Config::GFX_HACK_EFB_EMULATE_FORMAT_CHANGES);
   bVertexRounding = Config::Get(Config::GFX_HACK_VERTEX_ROUNDING);

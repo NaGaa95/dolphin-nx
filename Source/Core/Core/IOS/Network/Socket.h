@@ -27,6 +27,16 @@ typedef pollfd pollfd_t;
 #include <sys/types.h>
 
 typedef struct pollfd pollfd_t;
+#elif defined(__SWITCH__)
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/fcntl.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+
+typedef struct pollfd pollfd_t;
 #else
 #include <fcntl.h>
 #include <netinet/in.h>

@@ -10,10 +10,29 @@
 #include "Common/Logging/Log.h"
 #include "Common/MsgHandler.h"
 
+#ifdef __SWITCH__
+#include <map>
+#include <mutex>
+
+#include <malloc.h>
+#include <switch.h>
+
+namespace
+{
+struct SwitchJITAllocation
+{
+  Jit jit{};
+};
+
+std::map<void*, SwitchJITAllocation> s_switch_jit_allocations;
+std::mutex s_switch_jit_mutex;
+}  // namespace
+#endif
+
 #ifdef _WIN32
 #include <windows.h>
 #include "Common/StringUtil.h"
-#else
+#elif !defined(__SWITCH__)
 #include <stdio.h>
 #include <sys/mman.h>
 #if defined(_M_ARM_64) && defined(__APPLE__)
@@ -33,24 +52,60 @@ namespace Common
 // This is purposely not a full wrapper for virtualalloc/mmap, but it
 // provides exactly the primitive operations that Dolphin needs.
 
-void* AllocateExecutableMemory(size_t size)
+ExecutableMemory AllocateExecutableMemory(size_t size)
 {
+  void* ptr = nullptr;
+  void* rx_ptr = nullptr;
 #if defined(_WIN32)
-  void* ptr = VirtualAlloc(nullptr, size, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+  ptr = VirtualAlloc(nullptr, size, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+  rx_ptr = ptr;
+#elif defined(__SWITCH__)
+  Jit jit{};
+  Result result = jitCreate(&jit, size);
+  if (R_FAILED(result) || jit.type != JitType_CodeMemory)
+  {
+    if (R_SUCCEEDED(result))
+      jitClose(&jit);
+    PanicAlertFmt("Failed to allocate Switch JIT memory: 0x{:08x}", result);
+    return {};
+  }
+
+  result = jitTransitionToExecutable(&jit);
+  if (R_FAILED(result))
+  {
+    jitClose(&jit);
+    PanicAlertFmt("Failed to make Switch JIT memory executable: 0x{:08x}", result);
+    return {};
+  }
+
+  ptr = jitGetRwAddr(&jit);
+  rx_ptr = jitGetRxAddr(&jit);
+  if (!ptr || !rx_ptr)
+  {
+    jitClose(&jit);
+    PanicAlertFmt("Switch JIT memory did not provide RW and RX aliases");
+    return {};
+  }
+
+  {
+    std::lock_guard lock{s_switch_jit_mutex};
+    s_switch_jit_allocations.emplace(ptr, SwitchJITAllocation{jit});
+  }
 #else
   int map_flags = MAP_ANON | MAP_PRIVATE;
 #if defined(__APPLE__)
   map_flags |= MAP_JIT;
 #endif
-  void* ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE | PROT_EXEC, map_flags, -1, 0);
+  ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE | PROT_EXEC, map_flags, -1, 0);
   if (ptr == MAP_FAILED)
     ptr = nullptr;
+  rx_ptr = ptr;
 #endif
 
   if (ptr == nullptr)
     PanicAlertFmt("Failed to allocate executable memory");
 
-  return ptr;
+  return {ptr, rx_ptr};
 }
 // This function is used to provide a counter for the JITPageWrite*Execute*
 // functions to enable nesting. The static variable is wrapped in a a function
@@ -124,6 +179,8 @@ void* AllocateMemoryPages(size_t size)
 {
 #ifdef _WIN32
   void* ptr = VirtualAlloc(nullptr, size, MEM_COMMIT, PAGE_READWRITE);
+#elif defined(__SWITCH__)
+  void* ptr = memalign(0x1000, (size + 0xfff) & ~size_t{0xfff});
 #else
   void* ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
 
@@ -141,6 +198,8 @@ void* AllocateAlignedMemory(size_t size, size_t alignment)
 {
 #ifdef _WIN32
   void* ptr = _aligned_malloc(size, alignment);
+#elif defined(__SWITCH__)
+  void* ptr = memalign(alignment, size);
 #else
   void* ptr = nullptr;
   if (posix_memalign(&ptr, alignment, size) != 0)
@@ -163,6 +222,8 @@ bool FreeMemoryPages(void* ptr, size_t size)
       PanicAlertFmt("FreeMemoryPages failed!\nVirtualFree: {}", GetLastErrorString());
       return false;
     }
+#elif defined(__SWITCH__)
+    free(ptr);
 #else
     if (munmap(ptr, size) != 0)
     {
@@ -186,6 +247,33 @@ void FreeAlignedMemory(void* ptr)
   }
 }
 
+void FreeExecutableMemory(void* ptr, size_t size)
+{
+#ifdef __SWITCH__
+  if (!ptr)
+    return;
+
+  Jit jit{};
+  {
+    std::lock_guard lock{s_switch_jit_mutex};
+    const auto it = s_switch_jit_allocations.find(ptr);
+    if (it == s_switch_jit_allocations.end())
+    {
+      WARN_LOG_FMT(MEMMAP, "Unknown Switch JIT allocation {}", fmt::ptr(ptr));
+      return;
+    }
+    jit = it->second.jit;
+    s_switch_jit_allocations.erase(it);
+  }
+
+  const Result result = jitClose(&jit);
+  if (R_FAILED(result))
+    ERROR_LOG_FMT(MEMMAP, "jitClose failed: 0x{:08x}", result);
+#else
+  FreeMemoryPages(ptr, size);
+#endif
+}
+
 bool ReadProtectMemory(void* ptr, size_t size)
 {
 #ifdef _WIN32
@@ -195,6 +283,8 @@ bool ReadProtectMemory(void* ptr, size_t size)
     PanicAlertFmt("ReadProtectMemory failed!\nVirtualProtect: {}", GetLastErrorString());
     return false;
   }
+#elif defined(__SWITCH__)
+  return false;
 #else
   if (mprotect(ptr, size, PROT_NONE) != 0)
   {
@@ -214,6 +304,8 @@ bool WriteProtectMemory(void* ptr, size_t size, bool allowExecute)
     PanicAlertFmt("WriteProtectMemory failed!\nVirtualProtect: {}", GetLastErrorString());
     return false;
   }
+#elif defined(__SWITCH__)
+  // libnx CodeMemory provides distinct writable and executable aliases.
 #elif !(defined(_M_ARM_64) && defined(__APPLE__))
   // MacOS 11.2 on ARM does not allow for changing the access permissions of pages
   // that were marked executable, instead it uses the protections offered by MAP_JIT
@@ -236,6 +328,8 @@ bool UnWriteProtectMemory(void* ptr, size_t size, bool allowExecute)
     PanicAlertFmt("UnWriteProtectMemory failed!\nVirtualProtect: {}", GetLastErrorString());
     return false;
   }
+#elif defined(__SWITCH__)
+  // libnx CodeMemory provides distinct writable and executable aliases.
 #elif !(defined(_M_ARM_64) && defined(__APPLE__))
   // MacOS 11.2 on ARM does not allow for changing the access permissions of pages
   // that were marked executable, instead it uses the protections offered by MAP_JIT
@@ -275,6 +369,11 @@ size_t MemPhysical()
   system_info sysinfo;
   get_system_info(&sysinfo);
   return static_cast<size_t>(sysinfo.max_pages * B_PAGE_SIZE);
+#elif defined(__SWITCH__)
+  u64 size = 0;
+  if (R_FAILED(svcGetInfo(&size, InfoType_TotalMemorySize, CUR_PROCESS_HANDLE, 0)))
+    return 0;
+  return static_cast<size_t>(size);
 #else
   struct sysinfo memInfo;
   sysinfo(&memInfo);

@@ -21,6 +21,10 @@
 #include "Core/ConfigManager.h"
 #include "Core/System.h"
 
+#ifdef __SWITCH__
+#include "DolphinSwitch/Audio.h"
+#endif
+
 namespace AudioCommon
 {
 constexpr int AUDIO_VOLUME_MIN = 0;
@@ -42,12 +46,21 @@ static std::unique_ptr<SoundStream> CreateSoundStreamForBackend(std::string_view
     return std::make_unique<OpenSLESStream>();
   else if (backend == BACKEND_WASAPI && WASAPIStream::IsValid())
     return std::make_unique<WASAPIStream>();
+#ifdef __SWITCH__
+  else if (backend == BACKEND_SWITCH && DolphinSwitch::Audio::SwitchStream::IsValid())
+    return std::make_unique<DolphinSwitch::Audio::SwitchStream>();
+#endif
   return {};
 }
 
 void InitSoundStream(Core::System& system)
 {
+#ifdef __SWITCH__
+  // Switch has one audio backend.
+  std::string backend = BACKEND_SWITCH;
+#else
   std::string backend = Config::Get(Config::MAIN_AUDIO_BACKEND);
+#endif
   std::unique_ptr<SoundStream> sound_stream = CreateSoundStreamForBackend(backend);
 
   if (!sound_stream)
@@ -94,7 +107,9 @@ void ShutdownSoundStream(Core::System& system)
 
 std::string GetDefaultSoundBackend()
 {
-#if defined(ANDROID)
+#if defined(__SWITCH__)
+  return BACKEND_SWITCH;
+#elif defined(ANDROID)
   return BACKEND_OPENSLES;
 #else
   if (CubebStream::IsValid())
@@ -131,6 +146,10 @@ std::vector<std::string> GetSoundBackends()
     backends.emplace_back(BACKEND_OPENSLES);
   if (WASAPIStream::IsValid())
     backends.emplace_back(BACKEND_WASAPI);
+#ifdef __SWITCH__
+  if (DolphinSwitch::Audio::SwitchStream::IsValid())
+    backends.emplace_back(BACKEND_SWITCH);
+#endif
 
   return backends;
 }

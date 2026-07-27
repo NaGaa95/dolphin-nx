@@ -17,6 +17,10 @@
 #define VK_USE_PLATFORM_ANDROID_KHR
 #endif
 
+#if defined(__SWITCH__) && !defined(VK_USE_PLATFORM_VI_NN)
+#define VK_USE_PLATFORM_VI_NN
+#endif
+
 #if defined(__APPLE__)
 #define VK_USE_PLATFORM_METAL_EXT
 #endif
@@ -64,10 +68,22 @@
 #endif  // #ifdef __GNUC__
 
 #define VMA_VULKAN_VERSION 1002000
+#if defined(__SWITCH__)
+// VMA receives the static ICD dispatch functions explicitly.
+#define VMA_STATIC_VULKAN_FUNCTIONS 0
+#define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
+#else
 #define VMA_STATIC_VULKAN_FUNCTIONS 1
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
+#endif
+#ifndef __SWITCH__
 #undef VK_NO_PROTOTYPES
+#endif
 #include "vk_mem_alloc.h"
+
+#ifndef VK_NO_PROTOTYPES
+#define VK_NO_PROTOTYPES
+#endif
 
 #ifdef _MSVC_LANG
 #pragma warning(pop)

@@ -197,6 +197,37 @@ void GCPad::LoadDefaults(const ControllerInterface& ciface)
 
   // Triforce Coin
   m_triforce->SetControlExpression(2, "pulse(`Android/0/Device Sensors:Accel Down` > 15, 0.1)");
+#elif defined(__SWITCH__)
+  // Rumble
+  m_rumble->SetControlExpression(0, "`Motor`");
+
+  // Keep GameCube face buttons aligned to the Switch button labels.
+  m_buttons->SetControlExpression(0, "`A`");
+  m_buttons->SetControlExpression(1, "`B`");
+  m_buttons->SetControlExpression(2, "`X`");
+  m_buttons->SetControlExpression(3, "`Y`");
+  m_buttons->SetControlExpression(4, "`R2`");
+  m_buttons->SetControlExpression(5, "`Start`");
+
+  m_dpad->SetControlExpression(0, "`Up`");
+  m_dpad->SetControlExpression(1, "`Down`");
+  m_dpad->SetControlExpression(2, "`Left`");
+  m_dpad->SetControlExpression(3, "`Right`");
+
+  m_c_stick->SetControlExpression(0, "`Y1+`");
+  m_c_stick->SetControlExpression(1, "`Y1-`");
+  m_c_stick->SetControlExpression(2, "`X1-`");
+  m_c_stick->SetControlExpression(3, "`X1+`");
+
+  m_main_stick->SetControlExpression(0, "`Y0+`");
+  m_main_stick->SetControlExpression(1, "`Y0-`");
+  m_main_stick->SetControlExpression(2, "`X0-`");
+  m_main_stick->SetControlExpression(3, "`X0+`");
+
+  m_triggers->SetControlExpression(0, "`L`");
+  m_triggers->SetControlExpression(1, "`R`");
+  m_triggers->SetControlExpression(2, "`Trigger L`");
+  m_triggers->SetControlExpression(3, "`Trigger R`");
 #else
   // Buttons: A, B, X, Y, Z
   m_buttons->SetControlExpression(0, "`X`");

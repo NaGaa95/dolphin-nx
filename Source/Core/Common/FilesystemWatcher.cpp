@@ -3,6 +3,36 @@
 
 #include "Common/FilesystemWatcher.h"
 
+#ifdef __SWITCH__
+
+namespace wtr
+{
+inline namespace watcher
+{
+class watch
+{
+};
+}  // namespace watcher
+}  // namespace wtr
+
+namespace Common
+{
+FilesystemWatcher::FilesystemWatcher() = default;
+FilesystemWatcher::~FilesystemWatcher() = default;
+
+void FilesystemWatcher::Watch(const std::string& path)
+{
+  (void)path;
+}
+
+void FilesystemWatcher::Unwatch(const std::string& path)
+{
+  (void)path;
+}
+}  // namespace Common
+
+#else
+
 #include <wtr/watcher.hpp>
 
 #include "Common/Logging/Log.h"
@@ -65,3 +95,5 @@ void FilesystemWatcher::Unwatch(const std::string& path)
   m_watched_paths.erase(path);
 }
 }  // namespace Common
+
+#endif

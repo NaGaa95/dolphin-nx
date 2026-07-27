@@ -448,7 +448,7 @@ bool MemArena::JoinRegionsAfterUnmap(void* start_address, size_t size)
   return true;
 }
 
-void MemArena::UnmapFromMemoryRegion(void* view, size_t size)
+void MemArena::UnmapFromMemoryRegion(void* view, size_t size, [[maybe_unused]] s64 shm_offset)
 {
   if (m_memory_functions.m_api_ms_win_core_memory_l1_1_6_handle.IsOpen())
   {

@@ -236,6 +236,12 @@ add_library(videocommon
   XFStructs.h
 )
 
+if(DOLPHIN_SWITCH)
+  get_target_property(_videocommon_sources videocommon SOURCES)
+  list(FILTER _videocommon_sources EXCLUDE REGEX "^NetPlay(Chat|Golf)UI\\.(cpp|h)$")
+  set_property(TARGET videocommon PROPERTY SOURCES "${_videocommon_sources}")
+endif()
+
 target_link_libraries(videocommon
 PUBLIC
   core
@@ -245,10 +251,13 @@ PRIVATE
   spng::spng
   xxhash::xxhash
   imgui
-  implot
   glslang::SPIRV
   tinygltf
 )
+
+if(NOT DOLPHIN_SWITCH)
+  target_link_libraries(videocommon PRIVATE implot)
+endif()
 
 if(_M_X86_64)
   target_sources(videocommon PRIVATE

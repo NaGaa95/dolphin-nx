@@ -27,11 +27,21 @@ using namespace Arm64Gen;
 
 void JitArm64::DoBacktrace(uintptr_t access_address, SContext* ctx)
 {
+#ifdef __SWITCH__
+  for (int i = 0; i < 28; i += 2)
+  {
+    ERROR_LOG_FMT(DYNA_REC, "R{}: {:#018x}\tR{}: {:#018x}", i, ctx->CTX_REG(i), i + 1,
+                  ctx->CTX_REG(i + 1));
+  }
+  // libnx stores x0-x28 in regs[], then x29 (FP) and x30 (LR) in distinct fields.
+  ERROR_LOG_FMT(DYNA_REC, "R28: {:#018x}\tR29: {:#018x}", ctx->CTX_REG(28), ctx->fp);
+#else
   for (int i = 0; i < 30; i += 2)
   {
     ERROR_LOG_FMT(DYNA_REC, "R{}: {:#018x}\tR{}: {:#018x}", i, ctx->CTX_REG(i), i + 1,
                   ctx->CTX_REG(i + 1));
   }
+#endif
 
   ERROR_LOG_FMT(DYNA_REC, "R30: {:#018x}\tSP: {:#018x}", ctx->CTX_LR, ctx->CTX_SP);
 
@@ -161,8 +171,8 @@ void JitArm64::EmitBackpatchRoutine(u32 flags, MemAccessMode mode, ARM64Reg RS, 
 
       if (jo.fastmem && !emitting_routine)
       {
-        FastmemArea* fastmem_area = &m_fault_to_handler[fast_access_end];
-        fastmem_area->fast_access_code = fast_access_start;
+        FastmemArea* fastmem_area = &m_fault_to_handler[ConvertToExecutable(fast_access_end)];
+        fastmem_area->fast_access_code = ConvertToExecutable(fast_access_start);
         fastmem_area->slow_access_code = GetCodePtr();
       }
     }
@@ -336,24 +346,29 @@ bool JitArm64::HandleFastmemFault(SContext* ctx)
   if (slow_handler_iter == m_fault_to_handler.end())
     return false;
 
-  const u8* fastmem_area_start = slow_handler_iter->second.fast_access_code;
-  const u8* fastmem_area_end = slow_handler_iter->first;
+  const u8* const fastmem_area_start = slow_handler_iter->second.fast_access_code;
+  const u8* const fastmem_area_end = slow_handler_iter->first;
 
   // no overlapping fastmem area found
   if (pc < fastmem_area_start)
     return false;
 
+  u8* const rw_start = const_cast<u8*>(ConvertToWritable(fastmem_area_start));
+  u8* const rw_end_bound = const_cast<u8*>(ConvertToWritable(fastmem_area_end));
+
   const Common::ScopedJITPageWriteAndNoExecute enable_jit_page_writes;
-  ARM64XEmitter emitter(const_cast<u8*>(fastmem_area_start), const_cast<u8*>(fastmem_area_end));
+  ARM64XEmitter emitter(rw_start, rw_end_bound);
 
   emitter.BL(slow_handler_iter->second.slow_access_code);
 
-  while (emitter.GetCodePtr() < fastmem_area_end)
+  while (emitter.GetCodePtr() < rw_end_bound)
     emitter.NOP();
 
   m_fault_to_handler.erase(slow_handler_iter);
 
-  emitter.FlushIcache();
+  u8* const rw_end = const_cast<u8*>(emitter.GetCodePtr());
+  emitter.FlushIcacheSection(rw_start, rw_end, const_cast<u8*>(fastmem_area_start),
+                             ConvertToExecutable(rw_end));
 
   ctx->CTX_PC = reinterpret_cast<std::uintptr_t>(fastmem_area_start);
   return true;

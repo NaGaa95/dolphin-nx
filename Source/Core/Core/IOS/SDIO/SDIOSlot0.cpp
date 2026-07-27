@@ -3,6 +3,7 @@
 
 #include "Core/IOS/SDIO/SDIOSlot0.h"
 
+#include <array>
 #include <cstdio>
 #include <memory>
 #include <vector>
@@ -24,6 +25,32 @@
 
 namespace IOS::HLE
 {
+#ifdef __SWITCH__
+namespace
+{
+bool IsCompleteSDCardImage(File::IOFile& card, u64* declared_size)
+{
+  constexpr u64 bytes_per_sector = 512;
+  std::array<u8, bytes_per_sector> boot_sector{};
+  const u64 actual_size = card.GetSize();
+  if (!card.Seek(0, File::SeekOrigin::Begin) ||
+      !card.ReadBytes(boot_sector.data(), boot_sector.size()))
+  {
+    *declared_size = 0;
+    return false;
+  }
+
+  const u32 sectors = static_cast<u32>(boot_sector[0x20]) |
+                      (static_cast<u32>(boot_sector[0x21]) << 8) |
+                      (static_cast<u32>(boot_sector[0x22]) << 16) |
+                      (static_cast<u32>(boot_sector[0x23]) << 24);
+  *declared_size = static_cast<u64>(sectors) * bytes_per_sector;
+  return boot_sector[510] == 0x55 && boot_sector[511] == 0xaa && sectors != 0 &&
+         actual_size == *declared_size;
+}
+}  // namespace
+#endif
+
 SDIOSlot0Device::SDIOSlot0Device(EmulationKernel& ios, const std::string& device_name)
     : EmulationDevice(ios, device_name),
       m_sdhc_supported(HasFeature(ios.GetVersion(), Feature::SDv2))
@@ -88,6 +115,24 @@ void SDIOSlot0Device::OpenInternal()
 {
   const std::string filename = File::GetUserPath(F_WIISDCARDIMAGE_IDX);
   m_card.Open(filename, "r+b");
+#ifdef __SWITCH__
+  if (m_card)
+  {
+    const u64 actual_size = m_card.GetSize();
+    u64 declared_size = 0;
+    if (!IsCompleteSDCardImage(m_card, &declared_size))
+    {
+      WARN_LOG_FMT(IOS_SD,
+                   "Discarding incomplete SD Card image (actual {} bytes, declared {} bytes)",
+                   actual_size, declared_size);
+      m_card.Close();
+    }
+    else
+    {
+      m_card.Seek(0, File::SeekOrigin::Begin);
+    }
+  }
+#endif
   if (!m_card)
   {
     WARN_LOG_FMT(IOS_SD, "Failed to open SD Card image, trying to create a new 128 MB image...");

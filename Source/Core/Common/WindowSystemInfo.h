@@ -13,6 +13,9 @@ enum class WindowSystemType
   Wayland,
   FBDev,
   Haiku,
+#ifdef __SWITCH__
+  Switch,
+#endif
 };
 
 struct WindowSystemInfo

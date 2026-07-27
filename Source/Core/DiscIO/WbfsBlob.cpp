@@ -25,7 +25,8 @@ static constexpr u64 WII_SECTOR_COUNT = 143432 * 2;
 static constexpr u64 WII_DISC_HEADER_SIZE = 256;
 
 WbfsFileReader::WbfsFileReader(File::DirectIOFile file, const std::string& path)
-    : m_size(0), m_good(false)
+    : m_size(0), m_hd_sector_size(0), m_wbfs_sector_size(0), m_wbfs_sector_count(0),
+      m_disc_info_size(0), m_header{}, m_blocks_per_disc(0), m_good(false)
 {
   if (!AddFileToList(std::move(file)))
     return;
@@ -33,25 +34,36 @@ WbfsFileReader::WbfsFileReader(File::DirectIOFile file, const std::string& path)
     OpenAdditionalFiles(path);
   if (!ReadHeader())
     return;
-  m_good = true;
 
   // Grab disc info (assume slot 0, checked in ReadHeader())
   m_wlba_table.resize(m_blocks_per_disc);
-  m_files[0].file.Seek(m_hd_sector_size + WII_DISC_HEADER_SIZE /*+ i * m_disc_info_size*/,
-                       File::SeekOrigin::Begin);
-  m_files[0].file.Read(Common::AsWritableU8Span(m_wlba_table));
+  if (!m_files[0].file.OffsetRead(
+          m_hd_sector_size + WII_DISC_HEADER_SIZE /*+ i * m_disc_info_size*/,
+          Common::AsWritableU8Span(m_wlba_table)))
+  {
+    m_wlba_table.clear();
+    return;
+  }
   for (size_t i = 0; i < m_blocks_per_disc; i++)
     m_wlba_table[i] = Common::swap16(m_wlba_table[i]);
+
+  m_good = true;
+}
+
+WbfsFileReader::WbfsFileReader(const WbfsFileReader& other)
+    : m_files(other.m_files), m_size(other.m_size), m_hd_sector_size(other.m_hd_sector_size),
+      m_wbfs_sector_size(other.m_wbfs_sector_size),
+      m_wbfs_sector_count(other.m_wbfs_sector_count), m_disc_info_size(other.m_disc_info_size),
+      m_header(other.m_header), m_wlba_table(other.m_wlba_table),
+      m_blocks_per_disc(other.m_blocks_per_disc), m_good(other.m_good)
+{
 }
 
 WbfsFileReader::~WbfsFileReader() = default;
 
 std::unique_ptr<BlobReader> WbfsFileReader::CopyReader() const
 {
-  auto retval = std::unique_ptr<WbfsFileReader>(new WbfsFileReader(m_files[0].file));
-  for (size_t ix = 1; ix < m_files.size(); ix++)
-    retval->AddFileToList(m_files[ix].file);
-  return retval;
+  return std::unique_ptr<WbfsFileReader>(new WbfsFileReader(*this));
 }
 
 u64 WbfsFileReader::GetDataSize() const
@@ -93,9 +105,12 @@ bool WbfsFileReader::AddFileToList(File::DirectIOFile file)
 bool WbfsFileReader::ReadHeader()
 {
   // Read hd size info
-  m_files[0].file.Seek(0, File::SeekOrigin::Begin);
-  m_files[0].file.Read(Common::AsWritableU8Span(m_header));
+  if (!m_files[0].file.OffsetRead(0, Common::AsWritableU8Span(m_header)))
+    return false;
   if (m_header.magic != WBFS_MAGIC)
+    return false;
+
+  if (m_header.hd_sector_shift >= 64 || m_header.wbfs_sector_shift >= 64)
     return false;
 
   m_header.hd_sector_count = Common::swap32(m_header.hd_sector_count);
@@ -121,7 +136,8 @@ bool WbfsFileReader::ReadHeader()
 
 bool WbfsFileReader::Read(u64 offset, u64 nbytes, u8* out_ptr)
 {
-  if (offset + nbytes > GetDataSize())
+  if (!m_good || m_files.empty() || m_wlba_table.size() != m_blocks_per_disc ||
+      offset > GetDataSize() || nbytes > GetDataSize() - offset)
     return false;
 
   while (nbytes)
@@ -148,7 +164,7 @@ bool WbfsFileReader::Read(u64 offset, u64 nbytes, u8* out_ptr)
 File::DirectIOFile& WbfsFileReader::SeekToCluster(u64 offset, u64* available)
 {
   u64 base_cluster = (offset >> m_header.wbfs_sector_shift);
-  if (base_cluster < m_blocks_per_disc)
+  if (base_cluster < m_wlba_table.size())
   {
     u64 cluster_address = m_wbfs_sector_size * m_wlba_table[base_cluster];
     u64 cluster_offset = offset & (m_wbfs_sector_size - 1);

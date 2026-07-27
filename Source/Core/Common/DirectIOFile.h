@@ -6,11 +6,19 @@
 #include <span>
 #include <string>
 
+#ifdef __SWITCH__
+#include <memory>
+#endif
+
 #include "Common/CommonTypes.h"
 #include "Common/IOFile.h"
 
 namespace File
 {
+#ifdef __SWITCH__
+struct SwitchFileState;
+#endif
+
 enum class AccessMode
 {
   Read,
@@ -130,6 +138,9 @@ private:
 #else
   using HandleType = int;
   HandleType m_fd{-1};
+#ifdef __SWITCH__
+  std::shared_ptr<SwitchFileState> m_switch_file_state;
+#endif
 #endif
 
   u64 m_current_offset{};

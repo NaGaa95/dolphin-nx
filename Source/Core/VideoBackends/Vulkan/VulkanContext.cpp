@@ -12,6 +12,10 @@
 #include "Common/Logging/Log.h"
 #include "Common/MsgHandler.h"
 
+#ifdef __SWITCH__
+#include "VideoBackends/Vulkan/LSFG.h"
+#endif
+
 #include "VideoCommon/DriverDetails.h"
 #include "VideoCommon/VideoCommon.h"
 
@@ -375,6 +379,13 @@ bool VulkanContext::SelectInstanceExtensions(std::vector<const char*>* extension
     return false;
   }
 #endif
+#if defined(VK_USE_PLATFORM_VI_NN)
+  if (wstype == WindowSystemType::Switch &&
+      !AddExtension(VK_NN_VI_SURFACE_EXTENSION_NAME, true))
+  {
+    return false;
+  }
+#endif
 
   AddExtension(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME, false);
   if (wstype != WindowSystemType::Headless)
@@ -659,7 +670,17 @@ bool VulkanContext::SelectDeviceExtensions(bool enable_surface)
 #endif
 
   AddExtension(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME, false);
+#ifdef __SWITCH__
+  if (LSFG::IsSessionPrepared() && m_device_info.apiVersion < VK_API_VERSION_1_2 &&
+      !AddExtension(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME, true))
+  {
+    LSFG::DisableSession("VK_KHR_timeline_semaphore is unavailable");
+  }
+
+  // NVK cannot currently service VK_EXT_memory_budget queries.
+#else
   AddExtension(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME, false);
+#endif
 
   if (!DriverDetails::HasBug(DriverDetails::BUG_BROKEN_DEPTH_CLAMP_CONTROL))
   {
@@ -803,6 +824,33 @@ bool VulkanContext::CreateDevice(VkSurfaceKHR surface, bool enable_validation_la
   VkPhysicalDeviceFeatures device_features = m_device_info.features();
   device_info.pEnabledFeatures = &device_features;
 
+#ifdef __SWITCH__
+  VkPhysicalDeviceTimelineSemaphoreFeatures timeline_support{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES};
+  VkPhysicalDeviceFeatures2 features2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+  features2.pNext = &timeline_support;
+  if (LSFG::IsSessionPrepared())
+  {
+    if (!vkGetPhysicalDeviceFeatures2)
+    {
+      LSFG::DisableSession("Vulkan feature queries required by LSFG are unavailable");
+    }
+    else
+    {
+      vkGetPhysicalDeviceFeatures2(m_physical_device, &features2);
+    }
+    if (LSFG::IsSessionPrepared() && timeline_support.timelineSemaphore != VK_TRUE)
+    {
+      LSFG::DisableSession("Timeline semaphores are unavailable on this Vulkan device");
+    }
+    else if (LSFG::IsSessionPrepared())
+    {
+      timeline_support.timelineSemaphore = VK_TRUE;
+      device_info.pNext = &timeline_support;
+    }
+  }
+#endif
+
   // Enable debug layer on debug builds
   if (enable_validation_layer)
   {
@@ -840,7 +888,14 @@ bool VulkanContext::CreateAllocator(u32 vk_api_version)
   allocator_info.pAllocationCallbacks = nullptr;
   allocator_info.pDeviceMemoryCallbacks = nullptr;
   allocator_info.pHeapSizeLimit = nullptr;
+#ifdef __SWITCH__
+  VmaVulkanFunctions functions{};
+  functions.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
+  functions.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
+  allocator_info.pVulkanFunctions = &functions;
+#else
   allocator_info.pVulkanFunctions = nullptr;
+#endif
   allocator_info.instance = m_instance;
   allocator_info.vulkanApiVersion = vk_api_version;
   allocator_info.pTypeExternalMemoryHandleTypes = nullptr;

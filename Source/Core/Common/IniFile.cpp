@@ -36,7 +36,11 @@ void IniFile::ParseLine(std::string_view line, std::string* keyOut, std::string*
   }
 }
 
+#ifdef __SWITCH__
+const std::string IniFile::NULL_STRING = "";
+#else
 const std::string& IniFile::NULL_STRING = "";
+#endif
 
 IniFile::Section::Section() = default;
 

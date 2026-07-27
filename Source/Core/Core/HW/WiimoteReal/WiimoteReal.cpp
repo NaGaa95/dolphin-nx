@@ -7,7 +7,9 @@
 #include <mutex>
 #include <unordered_set>
 
+#ifndef __SWITCH__
 #include <SFML/Network/UdpSocket.hpp>
+#endif
 
 #include "Common/CommonTypes.h"
 #include "Common/Config/Config.h"
@@ -299,12 +301,14 @@ bool Wiimote::Read()
   // Drop the report if not connected.
   if (m_is_linked && result > 0)
   {
+#ifndef __SWITCH__
     if (m_balance_board_dump_port > 0 && m_index == WIIMOTE_BALANCE_BOARD)
     {
       static sf::UdpSocket Socket;
       (void)Socket.send(rpt.data(), rpt.size(), sf::IpAddress::LocalHost,
                         m_balance_board_dump_port);
     }
+#endif
 
     // Add it to queue
     rpt.resize(result);
@@ -318,12 +322,14 @@ bool Wiimote::Write(const TimedReport& timed_report)
 {
   auto const& rpt = timed_report.report;
 
+#ifndef __SWITCH__
   if (m_balance_board_dump_port > 0 && m_index == WIIMOTE_BALANCE_BOARD)
   {
     static sf::UdpSocket Socket;
     (void)Socket.send((char*)rpt.data(), rpt.size(), sf::IpAddress::LocalHost,
                       m_balance_board_dump_port);
   }
+#endif
 
   // Write the report at the proper time, mainly for speaker data, not that it will help much.
   std::this_thread::sleep_until(timed_report.time);

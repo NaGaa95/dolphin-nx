@@ -5,6 +5,13 @@
 
 #include <utility>
 
+#ifdef __SWITCH__
+#include <algorithm>
+#include <cerrno>
+#include <limits>
+#include <mutex>
+#endif
+
 #if defined(_WIN32)
 #include <windows.h>
 
@@ -34,6 +41,65 @@
 
 namespace File
 {
+#ifdef __SWITCH__
+struct SwitchFileState
+{
+  explicit SwitchFileState(int file_descriptor) : fd(file_descriptor) {}
+  ~SwitchFileState() { Close(); }
+
+  bool Close()
+  {
+    if (fd == -1)
+      return true;
+    return close(std::exchange(fd, -1)) == 0;
+  }
+
+  int fd;
+  std::mutex offset_io_mutex;
+};
+
+namespace
+{
+template <typename Buffer, auto Transfer>
+bool SwitchOffsetTransfer(int fd, std::mutex& offset_io_mutex, u64 offset, Buffer* data, u64 size)
+{
+  if (offset > static_cast<u64>(std::numeric_limits<off_t>::max()))
+    return false;
+
+  // libnx has no pread/pwrite. Copies share a descriptor, so serialize seek + transfer operations.
+  std::lock_guard lock{offset_io_mutex};
+  if (lseek(fd, static_cast<off_t>(offset), SEEK_SET) == -1)
+    return false;
+
+  bool success = true;
+  while (size != 0)
+  {
+    const size_t chunk = static_cast<size_t>(
+        std::min<u64>(size, static_cast<u64>(std::numeric_limits<ssize_t>::max())));
+
+    ssize_t transferred;
+    do
+    {
+      transferred = Transfer(fd, data, chunk);
+    } while (transferred < 0 && errno == EINTR);
+
+    // A zero-byte transfer before satisfying the request is EOF for reads and no progress for
+    // writes. Both mean the all-or-nothing DirectIOFile operation failed.
+    if (transferred <= 0)
+    {
+      success = false;
+      break;
+    }
+
+    data += transferred;
+    size -= static_cast<u64>(transferred);
+  }
+
+  return success;
+}
+}  // namespace
+#endif
+
 DirectIOFile::DirectIOFile() = default;
 
 DirectIOFile::~DirectIOFile()
@@ -156,6 +222,11 @@ bool DirectIOFile::Open(const std::string& path, AccessMode access_mode, OpenMod
 
   m_fd = open(path.c_str(), flags, 0666);
 
+#ifdef __SWITCH__
+  if (m_fd != -1)
+    m_switch_file_state = std::make_shared<SwitchFileState>(m_fd);
+#endif
+
 #endif
 
   return IsOpen();
@@ -171,7 +242,17 @@ bool DirectIOFile::Close()
 #if defined(_WIN32)
   return CloseHandle(std::exchange(m_handle, INVALID_HANDLE_VALUE)) != 0;
 #else
+#ifdef __SWITCH__
+  m_fd = -1;
+  ASSERT(m_switch_file_state);
+  bool success = true;
+  if (m_switch_file_state.use_count() == 1)
+    success = m_switch_file_state->Close();
+  m_switch_file_state.reset();
+  return success;
+#else
   return close(std::exchange(m_fd, -1)) == 0;
+#endif
 #endif
 }
 
@@ -218,6 +299,10 @@ bool DirectIOFile::OffsetRead(u64 offset, u8* out_ptr, u64 size)
 {
 #if defined(_WIN32)
   return OverlappedTransfer<ReadFile>(m_handle, offset, out_ptr, size);
+#elif defined(__SWITCH__)
+  ASSERT(m_switch_file_state);
+  return SwitchOffsetTransfer<u8, read>(m_fd, m_switch_file_state->offset_io_mutex, offset,
+                                        out_ptr, size);
 #else
   return pread(m_fd, out_ptr, size, off_t(offset)) == ssize_t(size);
 #endif
@@ -227,6 +312,10 @@ bool DirectIOFile::OffsetWrite(u64 offset, const u8* in_ptr, u64 size)
 {
 #if defined(_WIN32)
   return OverlappedTransfer<WriteFile>(m_handle, offset, in_ptr, size);
+#elif defined(__SWITCH__)
+  ASSERT(m_switch_file_state);
+  return SwitchOffsetTransfer<const u8, write>(m_fd, m_switch_file_state->offset_io_mutex, offset,
+                                               in_ptr, size);
 #else
   return pwrite(m_fd, in_ptr, size, off_t(offset)) == ssize_t(size);
 #endif
@@ -288,6 +377,9 @@ void DirectIOFile::Swap(DirectIOFile& other)
   std::swap(m_handle, other.m_handle);
 #else
   std::swap(m_fd, other.m_fd);
+#ifdef __SWITCH__
+  std::swap(m_switch_file_state, other.m_switch_file_state);
+#endif
 #endif
   std::swap(m_current_offset, other.m_current_offset);
 }
@@ -307,7 +399,12 @@ DirectIOFile DirectIOFile::Duplicate() const
     ERROR_LOG_FMT(COMMON, "DuplicateHandle: {}", Common::GetLastErrorString());
   }
 #else
+#ifdef __SWITCH__
+  result.m_fd = m_fd;
+  result.m_switch_file_state = m_switch_file_state;
+#else
   result.m_fd = dup(m_fd);
+#endif
 #endif
 
   ASSERT(result.IsOpen());

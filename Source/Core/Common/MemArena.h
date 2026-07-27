@@ -1,4 +1,5 @@
 // Copyright 2008 Dolphin Emulator Project
+// Copyright 2026 Dan | ticoverse.com
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
@@ -125,7 +126,7 @@ public:
   /// @param view Pointer returned by MapInMemoryRegion().
   /// @param size Size passed to the corresponding MapInMemoryRegion() call.
   ///
-  void UnmapFromMemoryRegion(void* view, size_t size);
+  void UnmapFromMemoryRegion(void* view, size_t size, s64 shm_offset = -1);
 
   ///
   /// Return the system's page size or required page alignment, whichever is larger.
@@ -148,6 +149,14 @@ private:
 
   vm_address_t m_region_address = 0;
   vm_size_t m_region_size = 0;
+#elif defined(__SWITCH__)
+  void* m_shm_buffer = nullptr;
+  std::size_t m_shm_size = 0;
+  void* m_reserved_region = nullptr;
+  std::size_t m_reserved_region_size = 0;
+  void* m_reservation = nullptr;
+  void* m_rw_mirror = nullptr;
+  void* m_code_mirror = nullptr;
 #else
   int m_shm_fd = 0;
   void* m_reserved_region = nullptr;
@@ -201,6 +210,10 @@ public:
     const size_t block_index = offset / BLOCK_SIZE;
     if (m_writable_block_handles[block_index] == nullptr)
       MakeMemoryBlockWritable(block_index);
+#elif defined(__SWITCH__)
+    const size_t page_index = offset / SWITCH_PAGE_SIZE;
+    if (page_index < m_committed_pages.size() && !m_committed_pages[page_index])
+      MakeMemoryPageCommitted(page_index);
 #endif
   }
 
@@ -208,6 +221,9 @@ public:
   {
 #ifdef _WIN32
     for (const auto end_offset = offset + size; offset < end_offset; offset += BLOCK_SIZE)
+      EnsureMemoryPageWritable(offset);
+#elif defined(__SWITCH__)
+    for (const auto end_offset = offset + size; offset < end_offset; offset += SWITCH_PAGE_SIZE)
       EnsureMemoryPageWritable(offset);
 #endif
   }
@@ -223,6 +239,11 @@ private:
   std::vector<void*> m_writable_block_handles;
 
   void MakeMemoryBlockWritable(size_t offset);
+#elif defined(__SWITCH__)
+  constexpr static size_t SWITCH_PAGE_SIZE = 0x1000;
+  std::vector<u8> m_committed_pages;
+
+  void MakeMemoryPageCommitted(size_t page_index);
 #endif
 };
 

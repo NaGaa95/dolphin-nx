@@ -52,9 +52,19 @@ ControlState IMUCursor::GetTotalYaw() const
   return m_yaw_setting.GetValue() * MathUtil::TAU / 360;
 }
 
+void IMUCursor::SetTotalYawDegrees(ControlState degrees)
+{
+  m_yaw_setting.SetValue(degrees);
+}
+
 ControlState IMUCursor::GetAccelWeight() const
 {
   return m_accel_weight_setting.GetValue() / 100;
+}
+
+void IMUCursor::SetAccelWeightPercent(ControlState percent)
+{
+  m_accel_weight_setting.SetValue(percent);
 }
 
 }  // namespace ControllerEmu

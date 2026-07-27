@@ -55,6 +55,10 @@ void DSPLLE::DSPThread(DSPLLE* dsp_lle)
 {
   Common::SetCurrentThreadName("DSP thread");
 
+#ifdef __SWITCH__
+  Common::SetCurrentThreadAffinity(2);
+#endif
+
   while (dsp_lle->m_is_running.IsSet())
   {
     const int cycles = static_cast<int>(dsp_lle->m_cycle_count.load());

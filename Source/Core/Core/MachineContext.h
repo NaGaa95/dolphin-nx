@@ -242,6 +242,23 @@ typedef mcontext_t SContext;
 #else
 #error No context definition for machine
 #endif
+#elif defined(__SWITCH__)
+#include <stdint.h>
+typedef struct
+{
+  uint64_t regs[29];
+  uint64_t fp;
+  uint64_t lr;
+  uint64_t sp;
+  uint64_t pc;
+  uint64_t pstate;
+  uint64_t far;
+} SContext;
+
+#define CTX_REG(x) regs[x]
+#define CTX_LR lr
+#define CTX_SP sp
+#define CTX_PC pc
 #else
 #error No context definition for OS
 #endif

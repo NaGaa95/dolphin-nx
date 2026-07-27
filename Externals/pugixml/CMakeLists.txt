@@ -1,6 +1,7 @@
 set(PUGIXML_NO_EXCEPTIONS ON)
 set(PUGIXML_STATIC_CRT OFF)
-set(PUGIXML_BUILD_DEFINES OFF)
+# Avoid propagating -DOFF to dependents.
+set(PUGIXML_BUILD_DEFINES "")
 set(PUGIXML_INSTALL OFF)
 
 add_subdirectory(pugixml)

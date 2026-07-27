@@ -13,6 +13,14 @@ add_library(audiocommon
   WaveFile.h
 )
 
+if(DOLPHIN_SWITCH)
+  target_sources(audiocommon PRIVATE
+    ${CMAKE_SOURCE_DIR}/Source/Core/DolphinSwitch/Audio.cpp
+    ${CMAKE_SOURCE_DIR}/Source/Core/DolphinSwitch/Audio.h
+  )
+  target_link_libraries(audiocommon PRIVATE Switch::SDL2)
+endif()
+
 if(ENABLE_CUBEB)
   message(STATUS "Cubeb found, enabling Cubeb sound backend")
   target_sources(audiocommon PRIVATE

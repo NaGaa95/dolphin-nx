@@ -28,6 +28,9 @@
 #include "VideoCommon/NativeVertexFormat.h"
 #include "VideoCommon/Statistics.h"
 #include "VideoCommon/VertexLoaderBase.h"
+#if defined(_M_ARM_64) || defined(__aarch64__)
+#include "VideoCommon/VertexLoaderARM64.h"
+#endif
 #include "VideoCommon/VertexManagerBase.h"
 #include "VideoCommon/VertexShaderManager.h"
 #include "VideoCommon/VideoConfig.h"
@@ -74,6 +77,9 @@ void Clear()
   std::lock_guard<std::mutex> lk(s_vertex_loader_map_lock);
   s_vertex_loader_map.clear();
   s_native_vertex_map.clear();
+#if defined(__SWITCH__) && (defined(_M_ARM_64) || defined(__aarch64__))
+  VertexLoaderARM64::ShutdownSwitchJitPool();
+#endif
 }
 
 void UpdateVertexArrayPointers()

@@ -11,6 +11,10 @@
 #include <utility>
 #include <vector>
 
+#ifdef __SWITCH__
+#include <switch.h>
+#endif
+
 #include "Common/Projection.h"
 
 namespace Config
@@ -131,6 +135,9 @@ void Save()
     for (auto& layer : s_layers)
       layer.second->Save();
   }
+#ifdef __SWITCH__
+  (void)fsdevCommitDevice("sdmc");
+#endif
   OnConfigChanged();
 }
 

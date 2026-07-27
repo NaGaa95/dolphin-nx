@@ -1,4 +1,5 @@
 // Copyright 2015 Dolphin Emulator Project
+// Copyright 2026 Dan | ticoverse.com
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
@@ -20,6 +21,11 @@
 #include "Common/CommonTypes.h"
 #include "Common/MathUtil.h"
 #include "Common/SmallVector.h"
+
+// libnx defines BIT(n) which conflicts with ARM64XEmitter::BIT
+#ifdef BIT
+#undef BIT
+#endif
 
 namespace Arm64Gen
 {
@@ -620,6 +626,9 @@ private:
 
   u8* m_lastCacheFlushEnd = nullptr;
 
+  // Difference between the writable address we emit into and the executable address the CPU uses.
+  intptr_t m_executable_code_offset = 0;
+
   // Set to true when a write request happens that would write past m_code_end.
   // Must be cleared with SetCodePtr() afterwards.
   bool m_write_failed = false;
@@ -681,14 +690,26 @@ public:
 
   void SetCodePtrUnsafe(u8* ptr, u8* end, bool write_failed = false);
   const u8* GetCodePtr() const { return m_code; }
+  const u8* GetExecutableCodePtr() const
+  {
+    return reinterpret_cast<const u8*>(reinterpret_cast<uintptr_t>(m_code) +
+                                       m_executable_code_offset);
+  }
   u8* GetWritableCodePtr() { return m_code; }
   const u8* GetCodeEnd() const { return m_code_end; }
   u8* GetWritableCodeEnd() { return m_code_end; }
+  void SetExecutableCodeOffset(intptr_t offset) { m_executable_code_offset = offset; }
+  intptr_t GetExecutableCodeOffset() const { return m_executable_code_offset; }
   void ReserveCodeSpace(u32 bytes);
   u8* AlignCode16();
   u8* AlignCodePage();
   void FlushIcache();
   void FlushIcacheSection(u8* start, u8* end);
+  // W^X overload: dcache is RW (where code was written), icache is RX (where it executes)
+  void FlushIcacheSection(u8* dcache_start, u8* dcache_end, u8* icache_start, u8* icache_end);
+  // Accessors for W^X-aware cache flush in CodeBlock
+  u8* GetLastCacheFlushEnd() const { return m_lastCacheFlushEnd; }
+  void SetLastCacheFlushEnd(u8* end) { m_lastCacheFlushEnd = end; }
 
   // Should be checked after a block of code has been generated to see if the code has been
   // successfully written to memory. Do not call the generated code when this returns true!
@@ -1094,7 +1115,7 @@ public:
 
     std::array<u8, 32> source_gpr_uses{};
 
-    auto check_argument = [&](auto& arg) {
+    [[maybe_unused]] auto check_argument = [&](auto& arg) {
       using Arg = std::decay_t<decltype(arg)>;
 
       if constexpr (std::is_same_v<Arg, ARM64Reg>)
@@ -1118,7 +1139,7 @@ public:
 
       size_t i = 0;
 
-      auto handle_register_argument = [&](auto& arg) {
+      [[maybe_unused]] auto handle_register_argument = [&](auto& arg) {
         using Arg = std::decay_t<decltype(arg)>;
 
         if constexpr (std::is_same_v<Arg, ARM64Reg>)
@@ -1161,7 +1182,7 @@ public:
     {
       size_t i = 0;
 
-      auto handle_immediate_argument = [&](auto& arg) {
+      [[maybe_unused]] auto handle_immediate_argument = [&](auto& arg) {
         using Arg = std::decay_t<decltype(arg)>;
 
         if constexpr (!std::is_same_v<Arg, ARM64Reg>)

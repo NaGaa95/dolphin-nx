@@ -11,6 +11,10 @@
 #include <unistd.h>
 #endif
 
+#ifdef __SWITCH__
+#include <switch.h>
+#endif
+
 #ifdef __APPLE__
 #include <mach/mach.h>
 #elif defined BSD4_4 || defined __FreeBSD__ || defined __OpenBSD__
@@ -121,7 +125,9 @@ void SetCurrentThreadName(const char* name)
 
 void SetThreadAffinity(std::thread::native_handle_type thread, u32 mask)
 {
-#ifdef __APPLE__
+#ifdef __SWITCH__
+  (void)thread;
+#elif defined(__APPLE__)
   thread_policy_set(pthread_mach_thread_np(thread), THREAD_AFFINITY_POLICY, (integer_t*)&mask, 1);
 #elif (defined __linux__ || defined BSD4_4 || defined __FreeBSD__ || defined __NetBSD__) &&        \
     !(defined ANDROID)
@@ -153,7 +159,32 @@ void SetThreadAffinity(std::thread::native_handle_type thread, u32 mask)
 
 void SetCurrentThreadAffinity(u32 mask)
 {
+#ifdef __SWITCH__
+  int32_t core = static_cast<int32_t>(mask);
+  if (core > 2)
+    core = 2;
+  svcSetThreadCoreMask(CUR_THREAD_HANDLE, core, (1ULL << core));
+#else
   SetThreadAffinity(pthread_self(), mask);
+#endif
+}
+
+bool AdjustCurrentThreadPriority(int offset)
+{
+#ifdef __SWITCH__
+  s32 current_priority = 0;
+  if (R_FAILED(svcGetThreadPriority(&current_priority, CUR_THREAD_HANDLE)))
+    return false;
+
+  // Horizon uses 6-bit priorities.
+  const s64 adjusted = static_cast<s64>(current_priority) + offset;
+  const u32 priority = static_cast<u32>(adjusted < 0 ? 0 : adjusted > 0x3f ? 0x3f : adjusted);
+  return priority == static_cast<u32>(current_priority) ||
+         R_SUCCEEDED(svcSetThreadPriority(CUR_THREAD_HANDLE, priority));
+#else
+  (void)offset;
+  return false;
+#endif
 }
 
 void SleepCurrentThread(int ms)
@@ -176,6 +207,10 @@ void SetCurrentThreadName(const char* name)
   pthread_setname_np(pthread_self(), "%s", const_cast<char*>(name));
 #elif defined __HAIKU__
   rename_thread(find_thread(nullptr), name);
+#elif defined(__SWITCH__)
+  // Unpinned workers share application core 2.
+  SetCurrentThreadAffinity(2);
+  (void)name;
 #else
   // linux doesn't allow to set more than 16 bytes, including \0.
   pthread_setname_np(pthread_self(), std::string(name).substr(0, 15).c_str());
@@ -192,6 +227,39 @@ std::tuple<void*, size_t> GetCurrentThreadStack()
   void* stack_addr;
   size_t stack_size;
 
+#ifdef __SWITCH__
+  void* sp;
+  __asm__ volatile("mov %0, sp" : "=r"(sp));
+
+  Thread* self = threadGetSelf();
+
+  if (self && self->stack_sz != 0)
+  {
+    const uintptr_t sp_addr = reinterpret_cast<uintptr_t>(sp);
+    const auto contains_sp = [sp_addr, self](void* base) {
+      if (!base)
+        return false;
+      const uintptr_t start = reinterpret_cast<uintptr_t>(base);
+      return sp_addr >= start && sp_addr < start + self->stack_sz;
+    };
+
+    stack_size = self->stack_sz;
+    if (contains_sp(self->stack_mem))
+      stack_addr = self->stack_mem;
+    else if (contains_sp(self->stack_mirror))
+      stack_addr = self->stack_mirror;
+    else if (self->stack_mem)
+      stack_addr = self->stack_mem;
+    else
+      stack_addr = self->stack_mirror;
+  }
+  else
+  {
+    stack_size = 0x200000;
+    stack_addr = reinterpret_cast<void*>(
+        (reinterpret_cast<uintptr_t>(sp) & ~0xFFFULL) - stack_size + 0x1000);
+  }
+#else
   pthread_t self = pthread_self();
 
 #ifdef __APPLE__
@@ -218,6 +286,7 @@ std::tuple<void*, size_t> GetCurrentThreadStack()
 
   pthread_attr_destroy(&attr);
 #endif
+#endif  // __SWITCH__
 
   return std::make_tuple(stack_addr, stack_size);
 }

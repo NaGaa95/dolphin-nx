@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <utility>
 
 #include "Common/Crypto/AES.h"
 #include "Common/FileUtil.h"
@@ -19,7 +20,11 @@ namespace DiscIO
 constexpr size_t NAND_SIZE = 0x20000000;
 constexpr size_t NAND_KEYS_SIZE = 0x400;
 
-NANDImporter::NANDImporter() : m_nand_root(File::GetUserPath(D_WIIROOT_IDX))
+NANDImporter::NANDImporter() : NANDImporter(File::GetUserPath(D_WIIROOT_IDX))
+{
+}
+
+NANDImporter::NANDImporter(std::string nand_root) : m_nand_root(std::move(nand_root))
 {
 }
 NANDImporter::~NANDImporter() = default;
@@ -219,7 +224,19 @@ std::vector<u8> NANDImporter::GetEntryData(const NANDFSTEntry& entry) const
 
 bool NANDImporter::ExtractCertificates()
 {
+  return ExtractCertificates(m_nand_root);
+}
+
+bool NANDImporter::ExtractCertificates(const std::string& output_root)
+{
   const std::string content_dir = m_nand_root + "/title/00000001/0000000d/content/";
+
+  if (output_root.empty() || !File::CreateDirs(output_root))
+  {
+    ERROR_LOG_FMT(DISCIO, "ExtractCertificates: Could not create output directory '{}'",
+                  output_root);
+    return false;
+  }
 
   File::IOFile tmd_file(content_dir + "title.tmd", "rb");
   std::vector<u8> tmd_bytes(tmd_file.GetSize());
@@ -268,7 +285,7 @@ bool NANDImporter::ExtractCertificates()
       return false;
     }
 
-    const std::string pem_file_path = m_nand_root + std::string(certificate.filename);
+    const std::string pem_file_path = output_root + std::string(certificate.filename);
     const ptrdiff_t certificate_offset =
         std::distance(content_bytes.begin(), search_result.begin());
     constexpr int min_offset = 2;

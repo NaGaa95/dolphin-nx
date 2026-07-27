@@ -1,4 +1,5 @@
 // Copyright 2015 Dolphin Emulator Project
+// Copyright 2026 Dan | ticoverse.com
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "Common/Arm64Emitter.h"
@@ -72,6 +73,23 @@ std::optional<u8> FPImm8FromFloat(float value)
 
   return imm8;
 }
+
+size_t s_arm64_icache_line_size = 0xffff;
+size_t s_arm64_dcache_line_size = 0xffff;
+
+void GetArm64CacheLineSizes(size_t& isize, size_t& dsize)
+{
+  u64 ctr_el0;
+  __asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr_el0));
+  const size_t observed_isize = size_t(4) << ((ctr_el0 >> 0) & 0xf);
+  const size_t observed_dsize = size_t(4) << ((ctr_el0 >> 16) & 0xf);
+  if (observed_isize < s_arm64_icache_line_size)
+    s_arm64_icache_line_size = observed_isize;
+  if (observed_dsize < s_arm64_dcache_line_size)
+    s_arm64_dcache_line_size = observed_dsize;
+  isize = s_arm64_icache_line_size;
+  dsize = s_arm64_dcache_line_size;
+}
 }  // Anonymous namespace
 
 void ARM64XEmitter::SetCodePtrUnsafe(u8* ptr, u8* end, bool write_failed)
@@ -142,27 +160,64 @@ void ARM64XEmitter::FlushIcacheSection(u8* start, u8* end)
   // Don't rely on GCC's __clear_cache implementation, as it caches
   // icache/dcache cache line sizes, that can vary between cores on
   // big.LITTLE architectures.
-  u64 addr, ctr_el0;
-  static size_t icache_line_size = 0xffff, dcache_line_size = 0xffff;
   size_t isize, dsize;
+  GetArm64CacheLineSizes(isize, dsize);
 
-  __asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr_el0));
-  isize = 4 << ((ctr_el0 >> 0) & 0xf);
-  dsize = 4 << ((ctr_el0 >> 16) & 0xf);
-
-  // use the global minimum cache line size
-  icache_line_size = isize = icache_line_size < isize ? icache_line_size : isize;
-  dcache_line_size = dsize = dcache_line_size < dsize ? dcache_line_size : dsize;
-
-  addr = (u64)start & ~(u64)(dsize - 1);
+  u64 addr = (u64)start & ~(u64)(dsize - 1);
   for (; addr < (u64)end; addr += dsize)
+#if defined(__SWITCH__)
+    __asm__ volatile("dc cvau, %0" : : "r"(addr) : "memory");
+#else
     // use "civac" instead of "cvau", as this is the suggested workaround for
     // Cortex-A53 errata 819472, 826319, 827319 and 824069.
     __asm__ volatile("dc civac, %0" : : "r"(addr) : "memory");
+#endif
   __asm__ volatile("dsb ish" : : : "memory");
 
   addr = (u64)start & ~(u64)(isize - 1);
   for (; addr < (u64)end; addr += isize)
+    __asm__ volatile("ic ivau, %0" : : "r"(addr) : "memory");
+
+  __asm__ volatile("dsb ish" : : : "memory");
+  __asm__ volatile("isb" : : : "memory");
+#endif
+}
+
+void ARM64XEmitter::FlushIcacheSection(u8* dcache_start, u8* dcache_end, u8* icache_start,
+                                       u8* icache_end)
+{
+  if (dcache_start == dcache_end)
+    return;
+
+  // If RW == RX, use the simple path
+  if (dcache_start == icache_start)
+  {
+    FlushIcacheSection(dcache_start, dcache_end);
+    return;
+  }
+
+#if defined(IOS) || defined(__APPLE__)
+  // Apple handles this transparently
+  sys_cache_control(kCacheFunctionPrepareForExecution, icache_start, icache_end - icache_start);
+#elif defined(WIN32)
+  FlushInstructionCache(GetCurrentProcess(), icache_start, icache_end - icache_start);
+#else
+  size_t isize, dsize;
+  GetArm64CacheLineSizes(isize, dsize);
+
+  // Flush data cache on RW region (where we wrote the code)
+  u64 addr = (u64)dcache_start & ~(u64)(dsize - 1);
+  for (; addr < (u64)dcache_end; addr += dsize)
+#if defined(__SWITCH__)
+    __asm__ volatile("dc cvau, %0" : : "r"(addr) : "memory");
+#else
+    __asm__ volatile("dc civac, %0" : : "r"(addr) : "memory");
+#endif
+  __asm__ volatile("dsb ish" : : : "memory");
+
+  // Invalidate instruction cache on RX region (where we'll execute)
+  addr = (u64)icache_start & ~(u64)(isize - 1);
+  for (; addr < (u64)icache_end; addr += isize)
     __asm__ volatile("ic ivau, %0" : : "r"(addr) : "memory");
 
   __asm__ volatile("dsb ish" : : : "memory");
@@ -1892,7 +1947,7 @@ void ARM64XEmitter::MOVI2RImpl(ARM64Reg Rd, T imm)
   const auto sext_21_bit = [](u64 x) {
     return static_cast<s64>((x & 0x1FFFFF) | (x & 0x100000 ? ~0x1FFFFF : 0));
   };
-  const u64 pc = reinterpret_cast<u64>(GetCodePtr());
+  const u64 pc = reinterpret_cast<u64>(GetExecutableCodePtr());
   const s64 adrp_offset = sext_21_bit((imm >> 12) - (pc >> 12)) << 12;
   const s64 adr_offset = sext_21_bit(imm - pc);
   const u64 adrp_base = (pc & ~0xFFF) + adrp_offset;

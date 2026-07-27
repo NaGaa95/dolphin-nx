@@ -11,6 +11,7 @@
 #ifdef _WIN32
 #include <ws2ipdef.h>
 #else
+#include <arpa/inet.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #endif

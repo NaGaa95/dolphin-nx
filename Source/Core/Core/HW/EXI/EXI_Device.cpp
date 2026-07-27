@@ -11,10 +11,12 @@
 #include "Core/HW/EXI/EXI_DeviceBaseboard.h"
 #include "Core/HW/EXI/EXI_DeviceDummy.h"
 #include "Core/HW/EXI/EXI_DeviceEthernet.h"
+#include "Core/HW/EXI/EXI_DeviceModem.h"
+#ifndef __SWITCH__
 #include "Core/HW/EXI/EXI_DeviceGecko.h"
+#endif
 #include "Core/HW/EXI/EXI_DeviceIPL.h"
 #include "Core/HW/EXI/EXI_DeviceMemoryCard.h"
-#include "Core/HW/EXI/EXI_DeviceModem.h"
 #include "Core/HW/Memmap.h"
 #include "Core/System.h"
 
@@ -146,7 +148,12 @@ std::unique_ptr<IEXIDevice> EXIDevice_Create(Core::System& system, const EXIDevi
     break;
 
   case EXIDeviceType::Ethernet:
+#ifdef __SWITCH__
+    // Use the socket-based BBA when TAP is unavailable.
+    result = std::make_unique<CEXIETHERNET>(system, BBADeviceType::BuiltIn);
+#else
     result = std::make_unique<CEXIETHERNET>(system, BBADeviceType::TAP);
+#endif
     break;
 
   case EXIDeviceType::EthernetTapServer:
@@ -169,9 +176,11 @@ std::unique_ptr<IEXIDevice> EXIDevice_Create(Core::System& system, const EXIDevi
     result = std::make_unique<CEXIModem>(system, ModemDeviceType::TAPSERVER);
     break;
 
+#ifndef __SWITCH__
   case EXIDeviceType::Gecko:
     result = std::make_unique<CEXIGecko>(system);
     break;
+#endif
 
   case EXIDeviceType::AGP:
     result = std::make_unique<CEXIAgp>(system, slot);

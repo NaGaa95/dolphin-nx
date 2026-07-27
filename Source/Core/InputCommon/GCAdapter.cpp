@@ -3,7 +3,10 @@
 
 #include "InputCommon/GCAdapter.h"
 
-#ifndef ANDROID
+#if defined(__SWITCH__)
+#define GCADAPTER_USE_LIBUSB_IMPLEMENTATION false
+#define GCADAPTER_USE_ANDROID_IMPLEMENTATION false
+#elif !defined(ANDROID)
 #define GCADAPTER_USE_LIBUSB_IMPLEMENTATION true
 #define GCADAPTER_USE_ANDROID_IMPLEMENTATION false
 #else
@@ -70,10 +73,12 @@ static void ResetRumbleLockNeeded();
 #endif
 
 static void Reset();
+#if GCADAPTER_USE_LIBUSB_IMPLEMENTATION || GCADAPTER_USE_ANDROID_IMPLEMENTATION
 static void Setup();
 static void ProcessInputPayload(const u8* data, std::size_t size);
 static void ReadThreadFunc();
 static void WriteThreadFunc();
+#endif
 
 #if GCADAPTER_USE_LIBUSB_IMPLEMENTATION
 enum class AdapterStatus
@@ -171,6 +176,7 @@ static std::array<std::atomic_bool, SerialInterface::MAX_SI_CHANNELS> s_config_r
 
 static std::atomic<double> s_adapter_poll_rate{};
 
+#if GCADAPTER_USE_LIBUSB_IMPLEMENTATION || GCADAPTER_USE_ANDROID_IMPLEMENTATION
 static void ReadThreadFunc()
 {
   Common::SetCurrentThreadName("GCAdapter Read Thread");
@@ -353,6 +359,7 @@ static void WriteThreadFunc()
 
   NOTICE_LOG_FMT(CONTROLLERINTERFACE, "GCAdapter write thread stopped");
 }
+#endif
 
 #if GCADAPTER_USE_LIBUSB_IMPLEMENTATION
 #if LIBUSB_API_HAS_HOTPLUG
@@ -573,6 +580,7 @@ void Init()
   RefreshConfig();
 }
 
+#if GCADAPTER_USE_LIBUSB_IMPLEMENTATION || GCADAPTER_USE_ANDROID_IMPLEMENTATION
 static void Setup()
 {
 #if GCADAPTER_USE_LIBUSB_IMPLEMENTATION
@@ -612,6 +620,7 @@ static void Setup()
   s_read_adapter_thread = std::thread(ReadThreadFunc);
 #endif
 }
+#endif
 
 #if GCADAPTER_USE_LIBUSB_IMPLEMENTATION
 static bool CheckDeviceAccess(libusb_device* device)
@@ -858,6 +867,7 @@ GCPadStatus Input(int chan)
   return pad_state.status;
 }
 
+#if GCADAPTER_USE_LIBUSB_IMPLEMENTATION || GCADAPTER_USE_ANDROID_IMPLEMENTATION
 // Get ControllerType from first byte in input payload.
 static ControllerType IdentifyControllerType(u8 data)
 {
@@ -958,6 +968,7 @@ void ProcessInputPayload(const u8* data, std::size_t size)
     }
   }
 }
+#endif
 
 bool DeviceConnected(int chan)
 {
@@ -1070,6 +1081,8 @@ bool IsDetected(const char** error_message)
   return false;
 #elif GCADAPTER_USE_ANDROID_IMPLEMENTATION
   return s_detected;
+#else
+  return false;
 #endif
 }
 

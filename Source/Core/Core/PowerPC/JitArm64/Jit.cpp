@@ -1,9 +1,9 @@
 // Copyright 2014 Dolphin Emulator Project
+// Copyright 2026 Dan | ticoverse.com
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "Core/PowerPC/JitArm64/Jit.h"
 
-#include <cstdio>
 #include <optional>
 #include <span>
 #include <sstream>
@@ -28,6 +28,7 @@
 #include "Core/HW/CPU.h"
 #include "Core/HW/GPFifo.h"
 #include "Core/HW/Memmap.h"
+#include "Core/MemTools.h"
 #include "Core/HW/ProcessorInterface.h"
 #include "Core/Host.h"
 #include "Core/PatchEngine.h"
@@ -71,6 +72,8 @@ void JitArm64::Init()
   AddChildCodeSpace(&m_near_code_1, NEAR_CODE_SIZE);
   AddChildCodeSpace(&m_near_code_0, NEAR_CODE_SIZE);
   AddChildCodeSpace(&m_far_code_0, FAR_CODE_SIZE);
+
+  MirrorRegionTo(&m_far_code);
   ASSERT(m_far_code_0.GetCodeEnd() == m_near_code_0.GetCodePtr());
   ASSERT(m_near_code_0.GetCodeEnd() == m_near_code_1.GetCodePtr());
   ASSERT(m_near_code_1.GetCodeEnd() == m_far_code_1.GetCodePtr());
@@ -115,7 +118,7 @@ void JitArm64::SetOptimizationEnabled(bool enabled)
 bool JitArm64::HandleFault(uintptr_t access_address, SContext* ctx)
 {
   // Ifdef this since the exception handler runs on a separate thread on macOS (ARM)
-#if !(defined(__APPLE__) && defined(_M_ARM_64))
+#if !(defined(__APPLE__) && defined(_M_ARM_64)) && !defined(__SWITCH__)
   // We can't handle any fault from other threads.
   if (!Core::IsCPUThread())
   {
@@ -129,7 +132,7 @@ bool JitArm64::HandleFault(uintptr_t access_address, SContext* ctx)
 
   // Handle BLR stack faults, may happen in C++ code.
   const uintptr_t stack_guard = reinterpret_cast<uintptr_t>(m_stack_guard);
-  if (access_address >= stack_guard && access_address < stack_guard + GUARD_SIZE)
+  if (m_stack_guard && access_address >= stack_guard && access_address < stack_guard + GUARD_SIZE)
     success = HandleStackFault();
 
   // If the fault is in JIT code space, look for fastmem areas.
@@ -160,7 +163,14 @@ bool JitArm64::HandleFault(uintptr_t access_address, SContext* ctx)
 
   if (!success)
   {
-    ERROR_LOG_FMT(DYNA_REC, "Exception handler - Unhandled fault");
+    auto& memory = m_system.GetMemory();
+    bool in_jit = IsInSpaceOrChildSpace(reinterpret_cast<u8*>(ctx->CTX_PC));
+    bool in_fastmem = memory.IsAddressInFastmemArea(reinterpret_cast<u8*>(access_address));
+    ERROR_LOG_FMT(DYNA_REC,
+                  "Exception handler - Unhandled fault: FAR={:#018x} PC={:#018x} LR={:#018x} "
+                  "InJIT={} InFastmem={} IsCPU={}",
+                  access_address, ctx->CTX_PC, ctx->lr, in_jit, in_fastmem,
+                  Core::IsCPUThread());
     DoBacktrace(access_address, ctx);
   }
   return success;
@@ -207,10 +217,12 @@ void JitArm64::FreeRanges()
   // the local rangesets to allow overwriting them with new code.
   for (const auto& [from, to] : blocks.GetRangesToFreeNear())
   {
-    const auto first_fastmem_area = m_fault_to_handler.upper_bound(from);
+    const u8* from_rx = ConvertToExecutable(from);
+    const u8* to_rx = ConvertToExecutable(to);
+    const auto first_fastmem_area = m_fault_to_handler.upper_bound(from_rx);
     auto last_fastmem_area = first_fastmem_area;
     const auto end = m_fault_to_handler.end();
-    while (last_fastmem_area != end && last_fastmem_area->first <= to)
+    while (last_fastmem_area != end && last_fastmem_area->first <= to_rx)
       ++last_fastmem_area;
     m_fault_to_handler.erase(first_fastmem_area, last_fastmem_area);
 
@@ -1097,7 +1109,7 @@ std::vector<JitBase::MemoryStats> JitArm64::GetMemoryStats() const
 
 std::size_t JitArm64::DisassembleNearCode(const JitBlock& block, std::ostream& stream) const
 {
-  return m_disassembler->Disassemble(block.normalEntry, block.near_end, stream);
+  return m_disassembler->Disassemble(ConvertToWritable(block.normalEntry), block.near_end, stream);
 }
 
 std::size_t JitArm64::DisassembleFarCode(const JitBlock& block, std::ostream& stream) const
@@ -1170,7 +1182,7 @@ bool JitArm64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
   js.numLoadStoreInst = 0;
   js.numFloatingPointInst = 0;
 
-  b->normalEntry = GetWritableCodePtr();
+  b->normalEntry = ConvertToExecutable(GetWritableCodePtr());
 
   // Conditionally add profiling code.
   if (IsProfilingEnabled())
@@ -1455,8 +1467,8 @@ bool JitArm64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
     return false;
   }
 
-  FlushIcache();
-  m_far_code.FlushIcache();
+  FlushIcacheWxX();
+  m_far_code.FlushIcacheWxX();
 
   return true;
 }
@@ -1475,7 +1487,7 @@ void JitArm64::LogGeneratedCode() const
 
   const JitBlock* const block = js.curBlock;
   stream << "\nHost Near Code:\n";
-  m_disassembler->Disassemble(block->normalEntry, block->near_end, stream);
+  m_disassembler->Disassemble(ConvertToWritable(block->normalEntry), block->near_end, stream);
   stream << "\nHost Far Code:\n";
   m_disassembler->Disassemble(block->far_begin, block->far_end, stream);
 

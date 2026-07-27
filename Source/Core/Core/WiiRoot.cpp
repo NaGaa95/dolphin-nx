@@ -132,11 +132,13 @@ static void InitializeDeterministicWiiSaves(FS::FileSystem* session_fs,
   const auto configured_fs = FS::MakeFileSystem(FS::Location::Configured);
   if (movie.IsRecordingInput())
   {
+#ifndef __SWITCH__
     if (NetPlay::IsNetPlayRunning() && !SConfig::GetInstance().bCopyWiiSaveNetplay)
     {
       movie.SetClearSave(true);
     }
     else
+#endif
     {
       // TODO: Check for the actual save data
       const std::string path = Common::GetTitleDataPath(title_id) + "/banner.bin";
@@ -144,8 +146,12 @@ static void InitializeDeterministicWiiSaves(FS::FileSystem* session_fs,
     }
   }
 
+#ifndef __SWITCH__
   if ((NetPlay::IsNetPlayRunning() && SConfig::GetInstance().bCopyWiiSaveNetplay) ||
       (movie.IsMovieActive() && !movie.IsStartingFromClearSave()))
+#else
+  if (movie.IsMovieActive() && !movie.IsStartingFromClearSave())
+#endif
   {
     auto* sync_fs = boot_session_data.GetWiiSyncFS();
     auto& sync_titles = boot_session_data.GetWiiSyncTitles();
@@ -155,7 +161,11 @@ static void InitializeDeterministicWiiSaves(FS::FileSystem* session_fs,
                  sync_fs ? "sync_fs" : "configured_fs");
 
     // Copy the current user's save to the Blank NAND
+#ifndef __SWITCH__
     if (movie.IsMovieActive() && !NetPlay::IsNetPlayRunning())
+#else
+    if (movie.IsMovieActive())
+#endif
     {
       INFO_LOG_FMT(CORE, "Wii Save Init: Copying {0:016x}.", title_id);
       CopySave(source_fs, session_fs, title_id);
@@ -176,12 +186,14 @@ static void InitializeDeterministicWiiSaves(FS::FileSystem* session_fs,
       WARN_LOG_FMT(CORE, "Failed to copy Mii database to the NAND");
     }
 
+#ifndef __SWITCH__
     const auto& netplay_redirect_folder = boot_session_data.GetWiiSyncRedirectFolder();
     if (!netplay_redirect_folder.empty())
     {
       File::CreateDirs(s_temp_redirect_root);
       File::Copy(netplay_redirect_folder, s_temp_redirect_root);
     }
+#endif
   }
 }
 
@@ -372,6 +384,7 @@ void CleanUpWiiFileSystemContents(const BootSessionData& boot_session_data)
   // In TAS mode, copy back always.
   // In Netplay, only copy back when we're the host and writing back is enabled.
   const bool wii_root_is_temporary = WiiRootIsTemporary();
+#ifndef __SWITCH__
   const auto* netplay_settings = boot_session_data.GetNetplaySettings();
   const bool is_netplay_write = netplay_settings && netplay_settings->savedata_write;
   const bool is_netplay_host = netplay_settings && netplay_settings->is_hosting;
@@ -383,6 +396,9 @@ void CleanUpWiiFileSystemContents(const BootSessionData& boot_session_data)
                "is netplay = {}, is_netplay_write = {}, is_netplay_host = {})",
                cleanup_required, wii_root_is_temporary, !!netplay_settings, is_netplay_write,
                is_netplay_host);
+#else
+  const bool cleanup_required = wii_root_is_temporary;
+#endif
 
   if (!cleanup_required)
     return;
@@ -415,9 +431,13 @@ void CleanUpWiiFileSystemContents(const BootSessionData& boot_session_data)
   // This prevents a situation where you change game and create a new save that was not loaded from
   // the real NAND during netplay, and that then overwrites your existing local save during this
   // cleanup process.
+#ifndef __SWITCH__
   const bool copy_all = !netplay_settings || netplay_settings->savedata_sync_all_wii;
   for (const u64 title_id :
        (copy_all ? ios->GetESCore().GetInstalledTitles() : boot_session_data.GetWiiSyncTitles()))
+#else
+  for (const u64 title_id : ios->GetESCore().GetInstalledTitles())
+#endif
   {
     INFO_LOG_FMT(CORE, "Wii FS Cleanup: Copying {0:016x}.", title_id);
 

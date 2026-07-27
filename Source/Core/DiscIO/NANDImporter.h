@@ -22,6 +22,7 @@ class NANDImporter final
 {
 public:
   NANDImporter();
+  explicit NANDImporter(std::string nand_root);
   ~NANDImporter();
 
   enum class Step
@@ -38,6 +39,8 @@ public:
   void ImportNANDBin(const std::string& path_to_bin, UpdateCallback update_callback,
                      const std::function<std::string()>& get_otp_dump_path);
   bool ExtractCertificates();
+  // Writes extracted certificates below output_root.
+  bool ExtractCertificates(const std::string& output_root);
 
   enum class Type
   {

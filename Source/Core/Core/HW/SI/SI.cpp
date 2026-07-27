@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "Core/HW/SI/SI.h"
+#include "Core/HW/SI/SI_Device.h"
 
 #include <array>
 #include <cstring>
@@ -23,7 +24,9 @@
 #include "Core/CoreTiming.h"
 #include "Core/HW/MMIO.h"
 #include "Core/HW/ProcessorInterface.h"
+#ifndef __SWITCH__
 #include "Core/HW/SI/SI_DeviceGBA.h"
+#endif
 #include "Core/HW/SystemTimers.h"
 #include "Core/Movie.h"
 #include "Core/NetPlayProto.h"
@@ -291,7 +294,9 @@ void SerialInterfaceManager::Shutdown()
 {
   for (int i = 0; i < MAX_SI_CHANNELS; i++)
     RemoveDevice(i);
+#ifndef __SWITCH__
   GBAConnectionWaiter_Shutdown();
+#endif
 }
 
 void SerialInterfaceManager::RegisterMMIO(MMIO::Mapping* mmio, u32 base)

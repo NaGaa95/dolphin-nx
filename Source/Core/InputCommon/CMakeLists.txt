@@ -77,15 +77,29 @@ add_library(inputcommon
   DynamicInputTextures/DITSpecification.h
 )
 
+if(DOLPHIN_SWITCH)
+  get_target_property(_inputcommon_sources inputcommon SOURCES)
+  list(FILTER _inputcommon_sources EXCLUDE REGEX "^ControllerInterface/DualShockUDPClient/")
+  set_property(TARGET inputcommon PROPERTY SOURCES "${_inputcommon_sources}")
+  target_sources(inputcommon PRIVATE
+    ControllerInterface/Switch/Switch.cpp
+    ControllerInterface/Switch/Switch.h
+  )
+  target_compile_definitions(inputcommon PRIVATE CIFACE_USE_SWITCH=1)
+endif()
+
 target_link_libraries(inputcommon
 PUBLIC
   common
 
 PRIVATE
   fmt::fmt
-  sfml-network
   spng::spng
 )
+
+if(NOT DOLPHIN_SWITCH)
+  target_link_libraries(inputcommon PRIVATE sfml-network)
+endif()
 
 if(WIN32)
   target_sources(inputcommon PRIVATE
@@ -144,7 +158,7 @@ elseif(ANDROID)
   )
 endif()
 
-if(NOT ANDROID)
+if(NOT ANDROID AND NOT DOLPHIN_SWITCH)
   target_link_libraries(inputcommon PUBLIC LibUSB::LibUSB)
 endif()
 

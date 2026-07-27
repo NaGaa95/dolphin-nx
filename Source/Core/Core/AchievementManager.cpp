@@ -5,7 +5,10 @@
 
 #include "Core/AchievementManager.h"
 
+#include <chrono>
 #include <memory>
+#include <mutex>
+#include <string_view>
 
 #include <fmt/format.h>
 
@@ -41,6 +44,27 @@
 #include "VideoCommon/OnScreenDisplay.h"
 #include "VideoCommon/VideoEvents.h"
 
+#ifdef __SWITCH__
+namespace
+{
+void StoreRetroAchievementsToken(std::string_view token)
+{
+  Config::SetBase(Config::RA_API_TOKEN, std::string(token));
+}
+
+void StoreRetroAchievementsUsername(std::string_view username)
+{
+  Config::SetBase(Config::RA_USERNAME, std::string(username));
+}
+
+bool IsRejectedRetroAchievementsToken(int result)
+{
+  return result == RC_INVALID_CREDENTIALS || result == RC_EXPIRED_TOKEN ||
+         result == RC_LOGIN_REQUIRED;
+}
+}  // namespace
+#endif
+
 #ifdef RC_CLIENT_SUPPORTS_RAINTEGRATION
 #include <libloaderapi.h>
 #include <rcheevos/include/rc_client_raintegration.h>
@@ -74,10 +98,12 @@ void AchievementManager::Init(void* hwnd)
     if (!host_url.empty())
       rc_client_set_host(m_client, host_url.c_str());
     rc_client_set_event_handler(m_client, EventHandler);
+#ifndef __SWITCH__
     rc_client_enable_logging(m_client, RC_CLIENT_LOG_LEVEL_VERBOSE,
                              [](const char* message, const rc_client_t* client) {
                                INFO_LOG_FMT(ACHIEVEMENTS, "{}", message);
                              });
+#endif
     m_config_changed_callback_id = Config::AddConfigChangedCallback([this] { SetHardcoreMode(); });
     SetHardcoreMode();
     m_queue.Reset("AchievementManagerQueue");
@@ -786,7 +812,11 @@ void AchievementManager::Logout()
     m_player_badge.width = 0;
     m_player_badge.height = 0;
     m_player_badge.data.clear();
+#ifdef __SWITCH__
+    StoreRetroAchievementsToken({});
+#else
     Config::SetBaseOrCurrent(Config::RA_API_TOKEN, "");
+#endif
   }
 
   update_event.Trigger(UpdatedItems{.all = true});
@@ -799,6 +829,7 @@ void AchievementManager::Shutdown()
   {
     CloseGame();
     m_queue.Shutdown();
+    m_image_queue.Shutdown();
     Config::RemoveConfigChangedCallback(m_config_changed_callback_id);
     std::lock_guard lg{m_lock};
     // DON'T log out - keep those credentials for next run.
@@ -933,7 +964,12 @@ void AchievementManager::LoginCallback(int result, const char* error_message, rc
   {
     WARN_LOG_FMT(ACHIEVEMENTS, "Failed to login {} to RetroAchievements server.",
                  Config::Get(Config::RA_USERNAME));
+#ifdef __SWITCH__
+    if (IsRejectedRetroAchievementsToken(result))
+      StoreRetroAchievementsToken({});
+#else
     Config::SetBaseOrCurrent(Config::RA_API_TOKEN, "");
+#endif
     instance.update_event.Trigger({.failed_login_code = result});
     instance.login_event.Trigger(result);
     return;
@@ -956,15 +992,24 @@ void AchievementManager::LoginCallback(int result, const char* error_message, rc
   if (config_username != user->username)
   {
     INFO_LOG_FMT(ACHIEVEMENTS, "Username alias {} -> {}.", config_username, user->username);
+#ifdef __SWITCH__
+    StoreRetroAchievementsUsername(user->username);
+#else
     Config::SetBaseOrCurrent(Config::RA_USERNAME, user->username);
+#endif
   }
-  instance.login_event.Trigger(RC_OK);
-
   INFO_LOG_FMT(ACHIEVEMENTS, "Successfully logged in {} to RetroAchievements server.",
                user->username);
-  std::lock_guard lg{instance.GetLock()};
-  Config::SetBaseOrCurrent(Config::RA_API_TOKEN, user->token);
-  instance.FetchPlayerBadge();
+  {
+    std::lock_guard lg{instance.GetLock()};
+#ifdef __SWITCH__
+    StoreRetroAchievementsToken(user->token);
+#else
+    Config::SetBaseOrCurrent(Config::RA_API_TOKEN, user->token);
+#endif
+    instance.FetchPlayerBadge();
+  }
+  instance.login_event.Trigger(RC_OK);
 }
 
 void AchievementManager::FetchBoardInfo(AchievementId leaderboard_id)
@@ -1011,6 +1056,7 @@ void AchievementManager::LoadGameCallback(int result, const char* error_message,
 {
   auto& instance = AchievementManager::GetInstance();
   instance.m_loading_volume.reset(nullptr);
+  auto* game = rc_client_get_game_info(client);
   if (result == RC_API_FAILURE)
   {
     WARN_LOG_FMT(ACHIEVEMENTS, "Load data request rejected for old Dolphin version.");
@@ -1028,12 +1074,15 @@ void AchievementManager::LoadGameCallback(int result, const char* error_message,
         OSD::Duration::VERY_LONG, OSD::Color::RED);
     OSD::AddMessage("Please close the game to log back in before continuing.",
                     OSD::Duration::VERY_LONG, OSD::Color::RED);
+#ifdef __SWITCH__
+    StoreRetroAchievementsToken({});
+#else
     Config::SetBaseOrCurrent(Config::RA_API_TOKEN, "");
+#endif
     instance.update_event.Trigger(UpdatedItems{.failed_login_code = result});
     return;
   }
 
-  auto* game = rc_client_get_game_info(client);
   if (result == RC_OK)
   {
     if (!game)
@@ -1067,6 +1116,8 @@ void AchievementManager::LoadGameCallback(int result, const char* error_message,
   std::lock_guard lg{instance.GetLock()};
   auto* leaderboard_list =
       rc_client_create_leaderboard_list(client, RC_CLIENT_LEADERBOARD_LIST_GROUPING_NONE);
+  if (!leaderboard_list)
+    return;
   for (u32 bucket = 0; bucket < leaderboard_list->num_buckets; bucket++)
   {
     const auto& leaderboard_bucket = leaderboard_list->buckets[bucket];
@@ -1260,6 +1311,8 @@ void AchievementManager::HandleAchievementChallengeIndicatorHideEvent(
 void AchievementManager::HandleAchievementProgressIndicatorShowEvent(
     const rc_client_event_t* client_event)
 {
+  if (!Config::Get(Config::RA_PROGRESS_ENABLED))
+    return;
   auto& instance = AchievementManager::GetInstance();
   auto current_time = std::chrono::steady_clock::now();
   const auto message_wait_time = std::chrono::milliseconds{OSD::Duration::SHORT};

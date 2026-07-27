@@ -168,6 +168,23 @@ add_library(common
   WorkQueueThread.h
 )
 
+if(DOLPHIN_SWITCH)
+  get_target_property(_common_sources common SOURCES)
+  list(REMOVE_ITEM _common_sources
+    DynamicLibrary.cpp
+    DynamicLibrary.h
+    ENet.cpp
+    ENet.h
+    SFMLHelper.cpp
+    SFMLHelper.h
+    TraversalClient.cpp
+    TraversalClient.h
+    QoSSession.cpp
+    QoSSession.h
+  )
+  set_property(TARGET common PROPERTY SOURCES "${_common_sources}")
+endif()
+
 add_dependencies(common dolphin_scmrev)
 
 if(NOT MSVC AND _M_ARM_64)
@@ -180,19 +197,26 @@ endif()
 target_link_libraries(common
 PUBLIC
   ${CMAKE_THREAD_LIBS_INIT}
-  enet::enet
   fmt::fmt
   MbedTLS::mbedtls
   MINIZIP::minizip-ng
-  sfml-network
 
 PRIVATE
   CURL::libcurl
   FatFs
   spng::spng
-  watcher
   ${VTUNE_LIBRARIES}
 )
+
+if(NOT DOLPHIN_SWITCH)
+  target_link_libraries(common
+  PUBLIC
+    enet::enet
+    sfml-network
+  PRIVATE
+    watcher
+  )
+endif()
 
 if ((DEFINED CMAKE_ANDROID_ARCH_ABI AND CMAKE_ANDROID_ARCH_ABI MATCHES "x86|x86_64") OR
     (NOT DEFINED CMAKE_ANDROID_ARCH_ABI AND _M_X86_64))
@@ -244,6 +268,11 @@ elseif(APPLE)
     Logging/ConsoleListenerNix.cpp
     MemArenaDarwin.cpp
   )
+elseif(DOLPHIN_SWITCH)
+  target_sources(common PRIVATE
+    Logging/ConsoleListenerNix.cpp
+    MemArenaSwitch.cpp
+  )
 else()
   target_sources(common PRIVATE
     Logging/ConsoleListenerNix.cpp
@@ -279,14 +308,16 @@ else()
 endif()
 
 # OpenGL Interface
-target_sources(common PRIVATE
-  GL/GLContext.cpp
-  GL/GLContext.h
-  GL/GLUtil.cpp
-  GL/GLUtil.h
-  GL/GLExtensions/GLExtensions.cpp
-  GL/GLExtensions/GLExtensions.h
-)
+if(NOT DOLPHIN_SWITCH)
+  target_sources(common PRIVATE
+    GL/GLContext.cpp
+    GL/GLContext.h
+    GL/GLUtil.cpp
+    GL/GLUtil.h
+    GL/GLExtensions/GLExtensions.cpp
+    GL/GLExtensions/GLExtensions.h
+  )
+endif()
 
 if(ENABLE_EGL AND EGL_FOUND)
   target_sources(common PRIVATE

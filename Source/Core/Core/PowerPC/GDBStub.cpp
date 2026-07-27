@@ -15,10 +15,13 @@
 typedef SSIZE_T ssize_t;
 #define SHUT_RDWR SD_BOTH
 #else
+#include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/select.h>
 #include <sys/socket.h>
+#ifndef __SWITCH__
 #include <sys/un.h>
+#endif
 #include <unistd.h>
 #endif
 
@@ -1050,6 +1053,7 @@ static void InitGeneric(int domain, const sockaddr* server_addr, socklen_t serve
 #ifndef _WIN32
 void InitLocal(const char* socket)
 {
+#ifndef __SWITCH__
   unlink(socket);
 
   sockaddr_un addr = {};
@@ -1057,6 +1061,9 @@ void InitLocal(const char* socket)
   strcpy(addr.sun_path, socket);
 
   InitGeneric(PF_LOCAL, (const sockaddr*)&addr, sizeof(addr), nullptr, nullptr);
+#else
+  ERROR_LOG_FMT(GDB_STUB, "Unix sockets not supported on Switch");
+#endif
 }
 #endif
 

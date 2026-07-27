@@ -18,6 +18,10 @@ class VertexLoaderARM64 : public VertexLoaderBase, public Arm64Gen::ARM64CodeBlo
 {
 public:
   VertexLoaderARM64(const TVtxDesc& vtx_desc, const VAT& vtx_att);
+#ifdef __SWITCH__
+  ~VertexLoaderARM64() override;
+  static void ShutdownSwitchJitPool();
+#endif
 
 protected:
   int RunVertices(const u8* src, u8* dst, int count) override;

@@ -6,7 +6,9 @@
 #include <algorithm>
 
 #include <imgui.h>
+#ifndef __SWITCH__
 #include <implot.h>
+#endif
 
 #include "Common/HookableEvent.h"
 #include "Core/Config/GraphicsSettings.h"
@@ -205,6 +207,7 @@ void PerformanceMetrics::DrawImGuiStats(const float backbuffer_scale)
     ImGui::SetNextWindowBgAlpha(bg_alpha);
     if (ImGui::Begin("PerformanceGraphs", nullptr, graph_flags))
     {
+#ifndef __SWITCH__
       static constexpr std::size_t num_ticks = 17;
       static constexpr std::array<double, num_ticks> tick_marks = {0.0,
                                                                    1000.0 / 360.0,
@@ -265,6 +268,7 @@ void PerformanceMetrics::DrawImGuiStats(const float backbuffer_scale)
         ImPlot::PopStyleVar(2);
         ImPlot::PopStyleColor(2);
       }
+#endif
       ImGui::PopStyleVar();
     }
     ImGui::End();

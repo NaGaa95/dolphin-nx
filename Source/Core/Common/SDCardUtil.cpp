@@ -34,11 +34,16 @@
 #include "Common/SDCardUtil.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <string>
+
+#ifdef __SWITCH__
+#include <switch.h>
+#endif
 
 #include "Common/CommonFuncs.h"
 #include "Common/CommonTypes.h"
@@ -177,6 +182,13 @@ static bool write_sector(File::IOFile& file, const u8* sector)
   return file.WriteBytes(sector, BYTES_PER_SECTOR);
 }
 
+#ifdef __SWITCH__
+static bool write_sector_at(File::IOFile& file, u64 sector, const u8* data)
+{
+  return file.Seek(static_cast<s64>(sector * BYTES_PER_SECTOR), File::SeekOrigin::Begin) &&
+         write_sector(file, data);
+}
+#else
 static bool write_empty(File::IOFile& file, std::size_t count)
 {
   static constexpr u8 empty[64 * 1024] = {};
@@ -193,6 +205,7 @@ static bool write_empty(File::IOFile& file, std::size_t count)
   }
   return true;
 }
+#endif
 
 bool SDCardCreate(u64 disk_size /*in MB*/, const std::string& filename)
 {
@@ -206,17 +219,45 @@ bool SDCardCreate(u64 disk_size /*in MB*/, const std::string& filename)
     return false;
   }
 
+  const u32 sectors_per_fat = get_sectors_per_fat(disk_size, get_sectors_per_cluster(disk_size));
+#ifndef __SWITCH__
   // Pretty unlikely to overflow.
   const u32 sectors_per_disk = static_cast<u32>(disk_size / BYTES_PER_SECTOR);
-  const u32 sectors_per_fat = get_sectors_per_fat(disk_size, get_sectors_per_cluster(disk_size));
+#endif
 
   boot_sector_init(s_boot_sector, s_fsinfo_sector, disk_size, nullptr);
   fat_init(s_fat_head);
 
+#ifdef __SWITCH__
+  // Allocate sparse image storage before writing FAT metadata.
+  INFO_LOG_FMT(COMMON, "Creating {} MB SD Card image with the Switch filesystem allocator",
+               disk_size / (1024 * 1024));
+  if (std::remove(filename.c_str()) != 0 && errno != ENOENT)
+  {
+    ERROR_LOG_FMT(COMMON, "Could not replace existing SD Card image '{}': {}", filename,
+                  LastStrerrorString());
+    return false;
+  }
+
+  const Result create_result =
+      fsdevCreateFile(filename.c_str(), static_cast<std::size_t>(disk_size), 0);
+  if (R_FAILED(create_result))
+  {
+    ERROR_LOG_FMT(COMMON, "fsdevCreateFile('{}', {}) failed: 0x{:08x}", filename, disk_size,
+                  static_cast<u32>(create_result));
+    return false;
+  }
+  INFO_LOG_FMT(COMMON, "Switch SD Card image allocation complete; writing FAT32 metadata");
+  File::IOFile file(filename, "r+b");
+#else
   File::IOFile file(filename, "wb");
+#endif
   if (!file)
   {
     ERROR_LOG_FMT(COMMON, "Could not create file '{}', aborting...", filename);
+#ifdef __SWITCH__
+    std::remove(filename.c_str());
+#endif
     return false;
   }
 
@@ -233,6 +274,28 @@ bool SDCardCreate(u64 disk_size /*in MB*/, const std::string& filename)
    *  zero sectors
    */
 
+#ifdef __SWITCH__
+  if (!write_sector_at(file, 0, s_boot_sector))
+    goto FailWrite;
+  if (!write_sector_at(file, 1, s_fsinfo_sector))
+    goto FailWrite;
+  if constexpr (BACKUP_BOOT_SECTOR > 0)
+  {
+    if (!write_sector_at(file, BACKUP_BOOT_SECTOR, s_boot_sector))
+      goto FailWrite;
+    if (!write_sector_at(file, BACKUP_BOOT_SECTOR + 1, s_fsinfo_sector))
+      goto FailWrite;
+  }
+  if (!write_sector_at(file, RESERVED_SECTORS, s_fat_head))
+    goto FailWrite;
+  if (!write_sector_at(file, RESERVED_SECTORS + sectors_per_fat, s_fat_head))
+    goto FailWrite;
+  if (!file.Flush())
+    goto FailWrite;
+
+  INFO_LOG_FMT(COMMON, "Switch SD Card image creation complete");
+  return true;
+#else
   if (!write_sector(file, s_boot_sector))
     goto FailWrite;
 
@@ -275,6 +338,7 @@ bool SDCardCreate(u64 disk_size /*in MB*/, const std::string& filename)
     goto FailWrite;
 
   return true;
+#endif
 
 FailWrite:
   ERROR_LOG_FMT(COMMON, "Could not write to '{}', aborting...", filename);

@@ -4,12 +4,84 @@
 #include "VideoCommon/VertexLoaderARM64.h"
 
 #include <array>
+#include <mutex>
+#include <vector>
 
 #include "Common/CommonTypes.h"
+#include "Common/MemoryUtil.h"
 #include "VideoCommon/CPMemory.h"
 #include "VideoCommon/VertexLoaderManager.h"
 
 using namespace Arm64Gen;
+
+#ifdef __SWITCH__
+namespace
+{
+constexpr size_t VERTEX_LOADER_SLOT_SIZE = 4096;
+constexpr size_t VERTEX_LOADER_SLOT_COUNT = 1024;
+constexpr size_t VERTEX_LOADER_POOL_SIZE = VERTEX_LOADER_SLOT_SIZE * VERTEX_LOADER_SLOT_COUNT;
+
+std::mutex s_vertex_loader_pool_mutex;
+u8* s_vertex_loader_pool_rw = nullptr;
+u8* s_vertex_loader_pool_rx = nullptr;
+size_t s_vertex_loader_pool_high_water = 0;
+std::vector<size_t> s_vertex_loader_free_slots;
+
+std::pair<u8*, u8*> AllocateVertexLoaderSlot()
+{
+  std::lock_guard lock{s_vertex_loader_pool_mutex};
+  if (!s_vertex_loader_pool_rw)
+  {
+    const Common::ExecutableMemory memory =
+        Common::AllocateExecutableMemory(VERTEX_LOADER_POOL_SIZE);
+    s_vertex_loader_pool_rw = static_cast<u8*>(memory.rw_ptr);
+    s_vertex_loader_pool_rx = static_cast<u8*>(memory.rx_ptr);
+    ASSERT_MSG(VIDEO, s_vertex_loader_pool_rw && s_vertex_loader_pool_rx,
+               "Failed to allocate the Switch vertex-loader JIT pool");
+  }
+
+  size_t slot = 0;
+  if (!s_vertex_loader_free_slots.empty())
+  {
+    slot = s_vertex_loader_free_slots.back();
+    s_vertex_loader_free_slots.pop_back();
+  }
+  else
+  {
+    ASSERT_MSG(VIDEO, s_vertex_loader_pool_high_water < VERTEX_LOADER_SLOT_COUNT,
+               "Switch vertex-loader JIT pool exhausted");
+    slot = s_vertex_loader_pool_high_water++;
+  }
+
+  const size_t offset = slot * VERTEX_LOADER_SLOT_SIZE;
+  return {s_vertex_loader_pool_rw + offset, s_vertex_loader_pool_rx + offset};
+}
+
+void FreeVertexLoaderSlot(u8* rw)
+{
+  std::lock_guard lock{s_vertex_loader_pool_mutex};
+  if (!s_vertex_loader_pool_rw || rw < s_vertex_loader_pool_rw ||
+      rw >= s_vertex_loader_pool_rw + VERTEX_LOADER_POOL_SIZE)
+  {
+    return;
+  }
+
+  s_vertex_loader_free_slots.push_back(
+      static_cast<size_t>(rw - s_vertex_loader_pool_rw) / VERTEX_LOADER_SLOT_SIZE);
+}
+}  // namespace
+
+void VertexLoaderARM64::ShutdownSwitchJitPool()
+{
+  std::lock_guard lock{s_vertex_loader_pool_mutex};
+  if (s_vertex_loader_pool_rw)
+    Common::FreeExecutableMemory(s_vertex_loader_pool_rw, VERTEX_LOADER_POOL_SIZE);
+  s_vertex_loader_pool_rw = nullptr;
+  s_vertex_loader_pool_rx = nullptr;
+  s_vertex_loader_pool_high_water = 0;
+  s_vertex_loader_free_slots.clear();
+}
+#endif
 
 constexpr ARM64Reg src_reg = ARM64Reg::X0;
 constexpr ARM64Reg dst_reg = ARM64Reg::X1;
@@ -52,12 +124,33 @@ alignas(16) static const float scale_factors[] = {
 VertexLoaderARM64::VertexLoaderARM64(const TVtxDesc& vtx_desc, const VAT& vtx_att)
     : VertexLoaderBase(vtx_desc, vtx_att), m_float_emit(this)
 {
+#ifdef __SWITCH__
+  const auto [rw, rx] = AllocateVertexLoaderSlot();
+  region = rw;
+  rx_region = rx;
+  region_size = VERTEX_LOADER_SLOT_SIZE;
+  total_region_size = VERTEX_LOADER_SLOT_SIZE;
+  m_is_child = true;
+  SetExecutableCodeOffset(reinterpret_cast<intptr_t>(rx) - reinterpret_cast<intptr_t>(rw));
+  SetCodePtr(region, region + region_size);
+#else
   AllocCodeSpace(4096);
+#endif
   const Common::ScopedJITPageWriteAndNoExecute enable_jit_page_writes;
   ClearCodeSpace();
   GenerateVertexLoader();
   WriteProtect(true);
 }
+
+#ifdef __SWITCH__
+VertexLoaderARM64::~VertexLoaderARM64()
+{
+  if (region)
+    FreeVertexLoaderSlot(region);
+  region = nullptr;
+  rx_region = nullptr;
+}
+#endif
 
 // Returns the register to use as the base and an offset from that register.
 // For indexed attributes, the index is read into scratch1_reg, and then scratch1_reg with no offset
@@ -136,6 +229,11 @@ void VertexLoaderARM64::ReadVertex(VertexComponentFormat attribute, ComponentFor
     case ComponentFormat::Short:
       m_float_emit.REV16(8, EncodeRegToDouble(coords), EncodeRegToDouble(coords));
       m_float_emit.SXTL(16, EncodeRegToDouble(coords), EncodeRegToDouble(coords));
+      break;
+    case ComponentFormat::Float:
+    case ComponentFormat::InvalidFloat5:
+    case ComponentFormat::InvalidFloat6:
+    case ComponentFormat::InvalidFloat7:
       break;
     }
 
@@ -517,7 +615,7 @@ void VertexLoaderARM64::GenerateVertexLoader()
     RET(ARM64Reg::X30);
   }
 
-  FlushIcache();
+  FlushIcacheWxX();
 
   ASSERT_MSG(VIDEO, m_vertex_size == m_src_ofs,
              "Vertex size from vertex loader ({}) does not match expected vertex size ({})!\nVtx "
@@ -530,5 +628,5 @@ void VertexLoaderARM64::GenerateVertexLoader()
 int VertexLoaderARM64::RunVertices(const u8* src, u8* dst, int count)
 {
   m_numLoadedVertices += count;
-  return ((int (*)(const u8* src, u8* dst, int count))region)(src, dst, count - 1);
+  return reinterpret_cast<int (*)(const u8*, u8*, int)>(GetRxRegionPtr())(src, dst, count - 1);
 }

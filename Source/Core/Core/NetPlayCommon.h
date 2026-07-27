@@ -3,7 +3,9 @@
 
 #pragma once
 
+#ifndef __SWITCH__
 #include <SFML/Network/Packet.hpp>
+#endif
 
 #include <chrono>
 #include <optional>
@@ -22,10 +24,12 @@ constexpr std::chrono::milliseconds PEER_TIMEOUT = 30s;
 
 std::string GetExternalIPAddress();
 
+#ifndef __SWITCH__
 bool CompressFileIntoPacket(const std::string& file_path, sf::Packet& packet);
 bool CompressFolderIntoPacket(const std::string& folder_path, sf::Packet& packet);
 bool CompressBufferIntoPacket(std::span<const u8> in_buffer, sf::Packet& packet);
 bool DecompressPacketIntoFile(sf::Packet& packet, const std::string& file_path);
 bool DecompressPacketIntoFolder(sf::Packet& packet, const std::string& folder_path);
 std::optional<std::vector<u8>> DecompressPacketIntoBuffer(sf::Packet& packet);
+#endif
 }  // namespace NetPlay

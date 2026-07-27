@@ -147,6 +147,9 @@ private:
   void ThreadLoop(const std::string& thread_name, const FunctionType& function)
   {
     Common::SetCurrentThreadName(thread_name.c_str());
+#ifdef __SWITCH__
+    Common::SetCurrentThreadAffinity(2);
+#endif
 
     while (true)
     {

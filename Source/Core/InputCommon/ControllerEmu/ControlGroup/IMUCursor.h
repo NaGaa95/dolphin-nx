@@ -18,8 +18,10 @@ public:
 
   // Yaw movement in radians.
   ControlState GetTotalYaw() const;
+  void SetTotalYawDegrees(ControlState degrees);
 
   ControlState GetAccelWeight() const;
+  void SetAccelWeightPercent(ControlState percent);
 
 private:
   SettingValue<double> m_yaw_setting;

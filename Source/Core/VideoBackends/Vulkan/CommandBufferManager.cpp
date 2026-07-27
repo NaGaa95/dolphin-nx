@@ -9,6 +9,9 @@
 #include "Common/Assert.h"
 #include "Common/MsgHandler.h"
 
+#ifdef __SWITCH__
+#include "VideoBackends/Vulkan/LSFG.h"
+#endif
 #include "VideoBackends/Vulkan/VulkanContext.h"
 #include "VideoCommon/Constants.h"
 #include "vulkan/vulkan_core.h"
@@ -280,7 +283,7 @@ void CommandBufferManager::WaitForCommandBufferCompletion(u32 index)
   }
 
   // Wait for this command buffer to be completed.
-  VkResult res =
+  const VkResult res =
       vkWaitForFences(g_vulkan_context->GetDevice(), 1, &resources.fence, VK_TRUE, UINT64_MAX);
   if (res != VK_SUCCESS)
     LOG_VULKAN_ERROR(res, "vkWaitForFences failed: ");
@@ -426,7 +429,7 @@ void CommandBufferManager::SubmitCommandBuffer(u32 command_buffer_index,
     submit_info.pSignalSemaphores = &m_present_semaphores[present_image_index];
   }
 
-  VkResult res =
+  const VkResult res =
       vkQueueSubmit(g_vulkan_context->GetGraphicsQueue(), 1, &submit_info, resources.fence);
   if (res != VK_SUCCESS)
   {
@@ -448,7 +451,11 @@ void CommandBufferManager::SubmitCommandBuffer(u32 command_buffer_index,
                                      &present_image_index,
                                      nullptr};
 
+#ifdef __SWITCH__
+    m_last_present_result = LSFG::Present(g_vulkan_context->GetPresentQueue(), present_info);
+#else
     m_last_present_result = vkQueuePresentKHR(g_vulkan_context->GetPresentQueue(), &present_info);
+#endif
     if (m_last_present_result != VK_SUCCESS)
     {
       // VK_ERROR_OUT_OF_DATE_KHR is not fatal, just means we need to recreate our swap chain.

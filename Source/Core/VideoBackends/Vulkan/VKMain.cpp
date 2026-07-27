@@ -7,6 +7,9 @@
 #include "Common/MsgHandler.h"
 
 #include "VideoBackends/Vulkan/CommandBufferManager.h"
+#ifdef __SWITCH__
+#include "VideoBackends/Vulkan/LSFG.h"
+#endif
 #include "VideoBackends/Vulkan/ObjectCache.h"
 #include "VideoBackends/Vulkan/StateTracker.h"
 #include "VideoBackends/Vulkan/VKBoundingBox.h"
@@ -96,6 +99,10 @@ bool VideoBackend::Initialize(const WindowSystemInfo& wsi)
     return false;
   }
 
+#ifdef __SWITCH__
+  LSFG::BeginSession();
+#endif
+
   // Check for presence of the validation layers before trying to enable it
   bool enable_validation_layer = g_Config.bEnableValidationLayer;
   if (enable_validation_layer && !VulkanContext::CheckValidationLayerAvailablility())
@@ -111,9 +118,16 @@ bool VideoBackend::Initialize(const WindowSystemInfo& wsi)
   u32 vk_api_version = 0;
   VkInstance instance = VulkanContext::CreateVulkanInstance(
       wsi.type, enable_debug_utils, enable_validation_layer, &vk_api_version);
+#ifdef __SWITCH__
+  // Restore NVK_DEBUG after instance creation.
+  LSFG::FinishInstanceCreation();
+#endif
   if (instance == VK_NULL_HANDLE)
   {
     PanicAlertFmt("Failed to create Vulkan instance.");
+#ifdef __SWITCH__
+    LSFG::EndSession();
+#endif
     UnloadVulkanLibrary();
     return false;
   }
@@ -123,6 +137,9 @@ bool VideoBackend::Initialize(const WindowSystemInfo& wsi)
   {
     PanicAlertFmt("Failed to load Vulkan instance functions.");
     vkDestroyInstance(instance, nullptr);
+#ifdef __SWITCH__
+    LSFG::EndSession();
+#endif
     UnloadVulkanLibrary();
     return false;
   }
@@ -134,6 +151,9 @@ bool VideoBackend::Initialize(const WindowSystemInfo& wsi)
   {
     PanicAlertFmt("No Vulkan physical devices available.");
     vkDestroyInstance(instance, nullptr);
+#ifdef __SWITCH__
+    LSFG::EndSession();
+#endif
     UnloadVulkanLibrary();
     return false;
   }
@@ -151,6 +171,9 @@ bool VideoBackend::Initialize(const WindowSystemInfo& wsi)
     {
       PanicAlertFmt("Failed to create Vulkan surface.");
       vkDestroyInstance(instance, nullptr);
+#ifdef __SWITCH__
+      LSFG::EndSession();
+#endif
       UnloadVulkanLibrary();
       return false;
     }
@@ -172,6 +195,9 @@ bool VideoBackend::Initialize(const WindowSystemInfo& wsi)
   if (!g_vulkan_context)
   {
     PanicAlertFmt("Failed to create Vulkan device");
+#ifdef __SWITCH__
+    LSFG::EndSession();
+#endif
     UnloadVulkanLibrary();
     return false;
   }
@@ -245,6 +271,10 @@ void VideoBackend::Shutdown()
     g_object_cache->Shutdown();
 
   ShutdownShared();
+
+#ifdef __SWITCH__
+  LSFG::EndSession();
+#endif
 
   g_object_cache.reset();
   StateTracker::DestroyInstance();

@@ -58,6 +58,7 @@ struct LogicalMemoryView
 {
   void* mapped_pointer;
   u32 mapped_size;
+  s64 shm_offset;
 };
 
 class MemoryManager
@@ -272,7 +273,7 @@ private:
   std::array<PhysicalMemoryRegion, 4> m_physical_regions{};
 
   // The key is the logical address
-  std::map<u32, LogicalMemoryView> m_dbat_mapped_entries;
+  std::multimap<u32, LogicalMemoryView> m_dbat_mapped_entries;
   std::map<u32, LogicalMemoryView> m_page_table_mapped_entries;
 
   std::array<void*, PowerPC::BAT_PAGE_COUNT> m_physical_page_mappings{};

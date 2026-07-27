@@ -349,4 +349,18 @@ DataResponse CSIDevice_TaruKonga::GetData(u32& hi, u32& low)
   return DataResponse::Success;
 }
 
+#ifdef __SWITCH__
+bool CSIDevice_GCController::NetPlay_GetInput(int pad_num, GCPadStatus* pad_status)
+{
+  (void)pad_num;
+  (void)pad_status;
+  return false;
+}
+
+int CSIDevice_GCController::NetPlay_InGamePadToLocalPad(int pad_num)
+{
+  return pad_num;
+}
+#endif
+
 }  // namespace SerialInterface

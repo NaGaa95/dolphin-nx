@@ -141,6 +141,10 @@ public:
 private:
   std::list<Section> sections;
 
+#ifdef __SWITCH__
+  static const std::string NULL_STRING;
+#else
   static const std::string& NULL_STRING;
+#endif
 };
 }  // namespace Common

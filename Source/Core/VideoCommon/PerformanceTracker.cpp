@@ -8,7 +8,9 @@
 #include <iomanip>
 #include <utility>
 
+#ifndef __SWITCH__
 #include <implot.h>
+#endif
 
 #include "Common/CommonTypes.h"
 #include "Common/FileUtil.h"
@@ -169,7 +171,9 @@ void PerformanceTracker::ImPlotPlotLines(const char* label) const
   for (auto dt : m_dt_queue)
     add_point(dt, dt, x[point_index - 1]);
 
+#ifndef __SWITCH__
   ImPlot::PlotLine(label, x.data(), y.data(), static_cast<int>(point_index));
+#endif
 }
 
 void PerformanceTracker::PushFront(DT value)

@@ -117,6 +117,9 @@ extern const Info<bool> MAIN_WIIMOTE_CONTINUOUS_SCANNING;
 extern const Info<std::string> MAIN_WIIMOTE_AUTO_CONNECT_ADDRESSES;
 extern const Info<bool> MAIN_WIIMOTE_ENABLE_SPEAKER;
 extern const Info<bool> MAIN_CONNECT_WIIMOTES_FOR_CONTROLLER_INTERFACE;
+#ifdef __SWITCH__
+extern const Info<bool> MAIN_SWITCH_TOUCHSCREEN_POINTER;
+#endif
 extern const Info<bool> MAIN_MMU;
 extern const Info<bool> MAIN_PAUSE_ON_PANIC;
 extern const Info<int> MAIN_BB_DUMP_PORT;
@@ -183,6 +186,9 @@ extern const Info<bool> MAIN_AUDIO_MUTED;
 extern const Info<bool> MAIN_AUDIO_MUTE_ON_DISABLED_SPEED_LIMIT;
 #ifdef _WIN32
 extern const Info<std::string> MAIN_WASAPI_DEVICE;
+#endif
+#ifdef __SWITCH__
+#define BACKEND_SWITCH "Switch"
 #endif
 
 bool ShouldUseDPL2Decoder();

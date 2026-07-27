@@ -591,6 +591,18 @@ add_library(core
   WiiUtils.h
 )
 
+if(DOLPHIN_SWITCH)
+  get_target_property(_core_sources core SOURCES)
+  list(FILTER _core_sources EXCLUDE REGEX "^NetPlay(Client|Common|Server)\\.(cpp|h)$")
+  # The native Wii socket devices use libnx's BSD-compatible socket service.
+  # GameCube BBA/modem support is also kept: the built-in BBA backend provides
+  # direct TCP/UDP access without requiring a privileged TAP device, while the
+  # tapserver and XLink backends can connect to a helper on the local network.
+  list(FILTER _core_sources EXCLUDE REGEX "^HW/EXI/EXI_DeviceGecko\\.(cpp|h)$")
+  list(FILTER _core_sources EXCLUDE REGEX "^HW/SI/SI_DeviceGBA\\.(cpp|h)$")
+  set_property(TARGET core PROPERTY SOURCES "${_core_sources}")
+endif()
+
 if(_M_X86_64)
   target_sources(core PRIVATE
     DSP/Jit/x64/DSPEmitter.cpp
@@ -673,15 +685,10 @@ PUBLIC
   audiocommon
   common
   discio
-  enet::enet
   expr
   inputcommon
   MbedTLS::mbedtls
   pugixml
-  sfml-network
-  videonull
-  videoogl
-  videosoftware
 
 PRIVATE
   FatFs
@@ -690,6 +697,18 @@ PRIVATE
   LZ4::LZ4
   ZLIB::ZLIB
 )
+
+if(NOT DOLPHIN_SWITCH)
+  target_link_libraries(core PUBLIC
+    enet::enet
+    sfml-network
+    videonull
+    videoogl
+    videosoftware
+  )
+else()
+  target_link_libraries(core PUBLIC sfml-network)
+endif()
 
 if(LIBUDEV_FOUND)
   target_include_directories(core PRIVATE ${LIBUDEV_INCLUDE_DIR})
