@@ -483,13 +483,6 @@ bool ApplyRuntimeControllerMode(RuntimeControllerSession* session, int player,
   if (!session || !session->is_wii || player < 0 || player >= 4)
     return false;
 
-  WiimoteEmu::Wiimote* const wiimote = GetEmulatedWiimote(player);
-  ControllerEmu::Attachments* const attachments = GetWiimoteAttachments(wiimote);
-  if (!wiimote || !attachments)
-    return false;
-
-  const auto state_lock = ControllerEmu::EmulatedController::GetStateLock();
-
   WiimoteEmu::ExtensionNumber extension = WiimoteEmu::ExtensionNumber::NONE;
   bool sideways = false;
   switch (mode)
@@ -511,6 +504,12 @@ bool ApplyRuntimeControllerMode(RuntimeControllerSession* session, int player,
 
   if (mode != RuntimeControllerMode::GameCube)
   {
+    WiimoteEmu::Wiimote* const wiimote = GetEmulatedWiimote(player);
+    ControllerEmu::Attachments* const attachments = GetWiimoteAttachments(wiimote);
+    if (!wiimote || !attachments)
+      return false;
+
+    const auto state_lock = ControllerEmu::EmulatedController::GetStateLock();
     attachments->SetSelectedAttachment(extension);
     auto* const options = wiimote->GetWiimoteGroup(WiimoteEmu::WiimoteGroup::Options);
     SetBoolSetting(options, WiimoteEmu::Wiimote::SIDEWAYS_OPTION, sideways);
@@ -518,6 +517,9 @@ bool ApplyRuntimeControllerMode(RuntimeControllerSession* session, int player,
     wiimote->UpdateReferences(g_controller_interface);
   }
 
+  // Changing the Wii Remote source synchronously pauses the CPU and refreshes input devices.
+  // Never run those callbacks while holding EmulatedController's state lock: the refresh path can
+  // acquire the device mutex in the opposite order and deadlock when switching to GameCube input.
   {
     Config::ConfigChangeCallbackGuard config_guard;
     Config::SetCurrent(Config::GetInfoForSIDevice(player), mode == RuntimeControllerMode::GameCube ?
