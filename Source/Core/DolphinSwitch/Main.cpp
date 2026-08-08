@@ -575,6 +575,8 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
   const u32 width = docked ? 1920 : 1280;
   const u32 height = docked ? 1080 : 720;
   (void)nwindowSetDimensions(window, width, height);
+  (void)nwindowSetCrop(window, 0, 0, width, height);
+  (void)nwindowSetSwapInterval(window, 1);
   const WindowSystemInfo wsi{WindowSystemType::Switch, nullptr, window, window};
   UICommon::InitControllers(wsi);
   Common::ScopeGuard controller_guard([] { UICommon::ShutdownControllers(); });
@@ -601,6 +603,12 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
   // page-table fallback because those SVCs are unavailable there.
   if (disable_fastmem_arena)
     Config::SetCurrent(Config::MAIN_FASTMEM_ARENA, false);
+
+  // The launcher uses the same SDL device for UI sounds, but handing that long-lived device to
+  // Dolphin can leave Horizon's audio output stopped even though SDL still reports a valid handle.
+  // Give every game a fresh device, matching direct launches and avoiding a full application
+  // restart when the launcher device has become stale.
+  DolphinSwitch::Audio::ResetSharedAudioDevice();
 
   if (!BootManager::BootCore(system, std::move(boot), wsi))
   {

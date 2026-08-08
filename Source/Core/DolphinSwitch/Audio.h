@@ -16,6 +16,7 @@ void SetFrontendAudioEnabled(bool enabled);
 void QueueFrontendAudio(const s16* samples, std::size_t sample_count);
 void ReleaseFrontendAudio();
 void ResumeSharedAudio();
+void ResetSharedAudioDevice();
 void ShutdownSharedAudio();
 
 class SwitchStream final : public SoundStream

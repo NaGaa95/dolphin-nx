@@ -63,12 +63,14 @@ bool EnsureSharedDevice()
   if (s_device != 0)
     return true;
 
-  if (SDL_InitSubSystem(SDL_INIT_AUDIO) < 0)
+  const bool initialized_here = !s_audio_subsystem_initialized;
+  if (initialized_here && SDL_InitSubSystem(SDL_INIT_AUDIO) < 0)
   {
     ERROR_LOG_FMT(AUDIO, "SDL audio initialization failed: {}", SDL_GetError());
     return false;
   }
-  s_audio_subsystem_initialized = true;
+  if (initialized_here)
+    s_audio_subsystem_initialized = true;
 
   SDL_AudioSpec requested{};
   requested.freq = SAMPLE_RATE;
@@ -83,8 +85,11 @@ bool EnsureSharedDevice()
   if (s_device == 0)
   {
     ERROR_LOG_FMT(AUDIO, "SDL_OpenAudioDevice failed: {}", SDL_GetError());
-    SDL_QuitSubSystem(SDL_INIT_AUDIO);
-    s_audio_subsystem_initialized = false;
+    if (initialized_here)
+    {
+      SDL_QuitSubSystem(SDL_INIT_AUDIO);
+      s_audio_subsystem_initialized = false;
+    }
     return false;
   }
 
@@ -129,7 +134,7 @@ void DetachTarget(void* userdata)
   SDL_UnlockAudioDevice(s_device);
 }
 
-void CloseSharedDevice()
+void CloseSharedDevice(bool shutdown_subsystem)
 {
   if (s_device != 0)
   {
@@ -148,7 +153,7 @@ void CloseSharedDevice()
     s_audio_thread_configured.store(false, std::memory_order_release);
   }
 
-  if (s_audio_subsystem_initialized)
+  if (shutdown_subsystem && s_audio_subsystem_initialized)
   {
     SDL_QuitSubSystem(SDL_INIT_AUDIO);
     s_audio_subsystem_initialized = false;
@@ -231,9 +236,17 @@ void ResumeSharedAudio()
     SDL_PauseAudioDevice(s_device, 0);
 }
 
+void ResetSharedAudioDevice()
+{
+  // The libnx audio output can become stale after it has served launcher sounds. Reopen only the
+  // device here: repeatedly quitting and reinitializing an SDL subsystem in the same Horizon
+  // process can disturb the other SDL platform drivers used by the launcher.
+  CloseSharedDevice(false);
+}
+
 void ShutdownSharedAudio()
 {
-  CloseSharedDevice();
+  CloseSharedDevice(true);
 }
 
 SwitchStream::~SwitchStream()
@@ -244,7 +257,9 @@ SwitchStream::~SwitchStream()
     DetachTarget(this);
     m_attached = false;
   }
-  CloseSharedDevice();
+  // Keep SDL's audio subsystem alive across game/launcher transitions. The process-level guard
+  // performs the matching SDL_QuitSubSystem once when Dolphin actually exits.
+  CloseSharedDevice(false);
 }
 
 bool SwitchStream::Init()
