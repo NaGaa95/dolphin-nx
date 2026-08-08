@@ -9,6 +9,7 @@
 
 namespace DolphinSwitch::Forwarder
 {
+bool IsForwarderLaunch(int argc, char** argv);
 void SetSelfPath(std::string path);
 
 bool Create(const std::string& game_path, const std::string& name, const std::string& author,

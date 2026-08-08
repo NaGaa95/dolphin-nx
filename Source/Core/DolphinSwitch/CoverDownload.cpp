@@ -6,6 +6,7 @@
 
 #include <curl/curl.h>
 
+#include <cerrno>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -14,6 +15,10 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+
+#ifndef DOLPHIN_SWITCH_RELEASE_VERSION
+#define DOLPHIN_SWITCH_RELEASE_VERSION "1.0.1"
+#endif
 
 namespace DolphinSwitch::CoverDownload
 {
@@ -73,7 +78,7 @@ bool HttpGet(const std::string& url, const std::string& bearer, std::string* out
   curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
   curl_easy_setopt(curl, CURLOPT_TIMEOUT, 25L);
   curl_easy_setopt(curl, CURLOPT_MAXFILESIZE_LARGE, static_cast<curl_off_t>(MAX_BODY_SIZE));
-  curl_easy_setopt(curl, CURLOPT_USERAGENT, "Dolphin-NX/0.3.21");
+  curl_easy_setopt(curl, CURLOPT_USERAGENT, "Dolphin-NX/" DOLPHIN_SWITCH_RELEASE_VERSION);
   const CURLcode result = curl_easy_perform(curl);
   long code = 0;
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
@@ -452,11 +457,39 @@ Result DownloadImage(const std::string& url, const std::string& output_path)
     return Result::Error;
   const bool written = std::fwrite(data.data(), 1, data.size(), file) == data.size();
   const bool closed = std::fclose(file) == 0;
-  if (!written || !closed || std::rename(temporary.c_str(), output_path.c_str()) != 0)
+  if (!written || !closed)
   {
     std::remove(temporary.c_str());
     return Result::Error;
   }
+
+  // Horizon's filesystem rename does not replace an existing destination. Preserve the current
+  // image until the completed download has been moved into place so changing covers is safe.
+  const std::string backup = output_path + ".bak";
+  errno = 0;
+  if (std::remove(backup.c_str()) != 0 && errno != ENOENT)
+  {
+    std::remove(temporary.c_str());
+    return Result::Error;
+  }
+
+  errno = 0;
+  const bool had_existing = std::rename(output_path.c_str(), backup.c_str()) == 0;
+  if (!had_existing && errno != ENOENT)
+  {
+    std::remove(temporary.c_str());
+    return Result::Error;
+  }
+
+  if (std::rename(temporary.c_str(), output_path.c_str()) != 0)
+  {
+    if (had_existing)
+      std::rename(backup.c_str(), output_path.c_str());
+    std::remove(temporary.c_str());
+    return Result::Error;
+  }
+  if (had_existing)
+    std::remove(backup.c_str());
   return Result::Ok;
 }
 

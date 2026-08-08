@@ -32,6 +32,7 @@ enum class ActionType
   ToggleCheat,
   ToggleFrameGeneration,
   ToggleFPS,
+  ToggleVBISkip,
   SetControllerMode,
 };
 
@@ -67,6 +68,7 @@ void ToggleCheatsForSession();
 void ToggleCheatForSession(int flat_index);
 void ToggleFrameGenerationForSession();
 void ToggleFPSForSession();
+void ToggleVBISkipForSession();
 void SetControllerModeResult(int player, ControllerMode mode, bool success);
 
 void Draw();

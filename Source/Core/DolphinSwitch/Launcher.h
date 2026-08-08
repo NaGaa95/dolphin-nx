@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace DolphinSwitch
 {
@@ -17,7 +18,10 @@ struct LaunchRequest
   std::optional<std::uint64_t> nand_title;
 };
 
-std::optional<LaunchRequest> RunLauncher(std::string startup_message = {});
+std::optional<LaunchRequest> RunLauncher(std::string startup_message = {},
+                                         std::string launcher_path = {});
+
+bool RecordInstalledReleaseTag(std::string_view tag);
 
 bool PrepareLaunchStorage(const std::string& path, std::string* resolved_path = nullptr);
 

@@ -544,8 +544,11 @@ void ZeldaUCode::RunPendingCommands()
       else if (m_flags & WEIRD_CMD_0C)
       {
         // TODO
-        NOTICE_LOG_FMT(DSPHLE, "Received an unhandled 0C command, params: {:08x} {:08x}", Read32(),
-                       Read32());
+        // Command data must be consumed even when logging is compiled out.
+        const u32 param1 = Read32();
+        const u32 param2 = Read32();
+        NOTICE_LOG_FMT(DSPHLE, "Received an unhandled 0C command, params: {:08x} {:08x}", param1,
+                       param2);
       }
       else
       {
@@ -557,6 +560,7 @@ void ZeldaUCode::RunPendingCommands()
     // Command 0D: TODO: find a name and implement.
     // Used by Wind Waker.
     case 0x0D:
+    {
       if (m_flags & NO_CMD_0D)
       {
         WARN_LOG_FMT(DSPHLE, "Received a 0D command which is NOP'd on this UCode.");
@@ -564,9 +568,12 @@ void ZeldaUCode::RunPendingCommands()
         break;
       }
 
-      WARN_LOG_FMT(DSPHLE, "CMD0D: {:08x}", Read32());
+      // The parameter is part of the command stream and must be consumed independently of logging.
+      const u32 param = Read32();
+      WARN_LOG_FMT(DSPHLE, "CMD0D: {:08x}", param);
       SendCommandAck(CommandAck::STANDARD, sync);
       break;
+    }
 
     // Command 0E: Sets the base address of the ARAM for Wii UCodes. Used
     // because the Wii does not have an ARAM, so it simulates it with MRAM

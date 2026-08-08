@@ -228,6 +228,12 @@ void GCPad::LoadDefaults(const ControllerInterface& ciface)
   m_triggers->SetControlExpression(1, "`R`");
   m_triggers->SetControlExpression(2, "`Trigger L`");
   m_triggers->SetControlExpression(3, "`Trigger R`");
+
+  // Triforce cabinet controls. Keep these off the normal face buttons so arcade gameplay
+  // mappings remain unchanged.
+  m_triforce->SetControlExpression(0, "`L3`");      // Test
+  m_triforce->SetControlExpression(1, "`R3`");      // Service
+  m_triforce->SetControlExpression(2, "`Select`");  // Coin
 #else
   // Buttons: A, B, X, Y, Z
   m_buttons->SetControlExpression(0, "`X`");

@@ -49,6 +49,7 @@
 #include "DolphinSwitch/Launcher.h"
 #include "DolphinSwitch/RuntimeOverlay.h"
 #include "DolphinSwitch/SystemLanguage.h"
+#include "DolphinSwitch/Updater.h"
 #include "InputCommon/ControllerEmu/ControlGroup/Attachments.h"
 #include "InputCommon/ControllerEmu/ControlGroup/ControlGroup.h"
 #include "InputCommon/ControllerEmu/ControllerEmu.h"
@@ -61,8 +62,7 @@
 #include "VideoCommon/VideoBackendBase.h"
 #include "VideoCommon/VideoConfig.h"
 
-extern "C"
-{
+extern "C" {
 u32 __nx_applet_type = AppletType_Application;
 }
 
@@ -90,8 +90,8 @@ std::optional<DolphinSwitch::LaunchRequest> GetDirectLaunchRequest(int argc, cha
     if (!argv[index] || argv[index][0] == '\0')
       continue;
     const std::string_view argument(argv[index]);
-    if ((argument == "--game" || argument == "--exec" || argument == "-g") &&
-        index + 1 < argc && argv[index + 1])
+    if ((argument == "--game" || argument == "--exec" || argument == "-g") && index + 1 < argc &&
+        argv[index + 1])
       return DolphinSwitch::LaunchRequest{argv[index + 1], {}, 0};
     if (argument == "--nand-title" && index + 1 < argc && argv[index + 1])
     {
@@ -171,8 +171,7 @@ void AppletHook(AppletHookType hook, void*)
   }
 }
 
-std::unique_ptr<BootParameters>
-GenerateBootParameters(const DolphinSwitch::LaunchRequest& request)
+std::unique_ptr<BootParameters> GenerateBootParameters(const DolphinSwitch::LaunchRequest& request)
 {
   BootSessionData session(std::nullopt, DeleteSavestateAfterBoot::No);
   if (request.nand_title)
@@ -192,25 +191,58 @@ std::vector<std::string> Host_GetPreferredLocales()
   return DolphinSwitch::GetSystemPreferredLocales();
 }
 
-void Host_PPCSymbolsChanged() {}
-void Host_PPCBreakpointsChanged() {}
+void Host_PPCSymbolsChanged()
+{
+}
+void Host_PPCBreakpointsChanged()
+{
+}
 bool Host_UIBlocksControllerState()
 {
   return !s_host_focused.load(std::memory_order_acquire) ||
          DolphinSwitch::RuntimeOverlay::IsInputCaptured();
 }
-void Host_UpdateTitle(const std::string& title) {}
-void Host_UpdateDisasmDialog() {}
-void Host_JitCacheInvalidation() {}
-void Host_JitProfileDataWiped() {}
-void Host_RequestRenderWindowSize(int width, int height) {}
-bool Host_RendererHasFocus() { return s_host_focused.load(std::memory_order_acquire); }
-bool Host_RendererHasFullFocus() { return s_host_focused.load(std::memory_order_acquire); }
-bool Host_RendererIsFullscreen() { return true; }
-bool Host_TASInputHasFocus() { return false; }
-void Host_YieldToUI() { svcSleepThread(0); }
-void Host_TitleChanged() {}
-void Host_UpdateDiscordClientID(const std::string& client_id) {}
+void Host_UpdateTitle(const std::string& title)
+{
+}
+void Host_UpdateDisasmDialog()
+{
+}
+void Host_JitCacheInvalidation()
+{
+}
+void Host_JitProfileDataWiped()
+{
+}
+void Host_RequestRenderWindowSize(int width, int height)
+{
+}
+bool Host_RendererHasFocus()
+{
+  return s_host_focused.load(std::memory_order_acquire);
+}
+bool Host_RendererHasFullFocus()
+{
+  return s_host_focused.load(std::memory_order_acquire);
+}
+bool Host_RendererIsFullscreen()
+{
+  return true;
+}
+bool Host_TASInputHasFocus()
+{
+  return false;
+}
+void Host_YieldToUI()
+{
+  svcSleepThread(0);
+}
+void Host_TitleChanged()
+{
+}
+void Host_UpdateDiscordClientID(const std::string& client_id)
+{
+}
 
 bool Host_UpdateDiscordPresenceRaw(const std::string& details, const std::string& state,
                                    const std::string& large_image_key,
@@ -259,8 +291,7 @@ ControllerEmu::Attachments* GetWiimoteAttachments(WiimoteEmu::Wiimote* wiimote)
       wiimote->GetWiimoteGroup(WiimoteEmu::WiimoteGroup::Attachments));
 }
 
-bool GetBoolSetting(const ControllerEmu::ControlGroup* group, std::string_view name,
-                    bool fallback)
+bool GetBoolSetting(const ControllerEmu::ControlGroup* group, std::string_view name, bool fallback)
 {
   if (!group)
     return fallback;
@@ -353,15 +384,15 @@ void UpdateWiiTouchPointerState(bool enabled)
     return;
   }
 
-  const double x = std::clamp(
-      (x_in_backbuffer - left) / std::max(1, right - left - 1) * 2.0 - 1.0, -1.0, 1.0);
-  const double y = std::clamp(
-      1.0 - (y_in_backbuffer - top) / std::max(1, bottom - top - 1) * 2.0, -1.0, 1.0);
+  const double x =
+      std::clamp((x_in_backbuffer - left) / std::max(1, right - left - 1) * 2.0 - 1.0, -1.0, 1.0);
+  const double y =
+      std::clamp(1.0 - (y_in_backbuffer - top) / std::max(1, bottom - top - 1) * 2.0, -1.0, 1.0);
   const auto quantize = [](double value) {
     return static_cast<std::uint16_t>(std::lround((value + 1.0) * 32767.5));
   };
-  const std::uint64_t packed = pressed_bit | quantize(x) |
-                               (static_cast<std::uint64_t>(quantize(y)) << 16);
+  const std::uint64_t packed =
+      pressed_bit | quantize(x) | (static_cast<std::uint64_t>(quantize(y)) << 16);
   s_wii_touch_pointer_state.store(packed, std::memory_order_release);
 }
 
@@ -372,27 +403,25 @@ bool InstallWiiTouchPointerOverride()
     return false;
 
   const auto state_lock = ControllerEmu::EmulatedController::GetStateLock();
-  wiimote->SetInputOverrideFunction(
-      [](std::string_view group_name, std::string_view control_name,
-         ControlState) -> std::optional<ControlState> {
-        constexpr std::uint64_t pressed_bit = 1ULL << 63;
-        const std::uint64_t packed =
-            s_wii_touch_pointer_state.load(std::memory_order_acquire);
-        if ((packed & pressed_bit) == 0 || Host_UIBlocksControllerState() ||
-            group_name != WiimoteEmu::Wiimote::IR_GROUP)
-        {
-          return std::nullopt;
-        }
+  wiimote->SetInputOverrideFunction([](std::string_view group_name, std::string_view control_name,
+                                       ControlState) -> std::optional<ControlState> {
+    constexpr std::uint64_t pressed_bit = 1ULL << 63;
+    const std::uint64_t packed = s_wii_touch_pointer_state.load(std::memory_order_acquire);
+    if ((packed & pressed_bit) == 0 || Host_UIBlocksControllerState() ||
+        group_name != WiimoteEmu::Wiimote::IR_GROUP)
+    {
+      return std::nullopt;
+    }
 
-        const auto decode = [](std::uint16_t value) {
-          return static_cast<ControlState>(value) / 32767.5 - 1.0;
-        };
-        if (control_name == ControllerEmu::ReshapableInput::X_INPUT_OVERRIDE)
-          return decode(static_cast<std::uint16_t>(packed));
-        if (control_name == ControllerEmu::ReshapableInput::Y_INPUT_OVERRIDE)
-          return decode(static_cast<std::uint16_t>(packed >> 16));
-        return std::nullopt;
-      });
+    const auto decode = [](std::uint16_t value) {
+      return static_cast<ControlState>(value) / 32767.5 - 1.0;
+    };
+    if (control_name == ControllerEmu::ReshapableInput::X_INPUT_OVERRIDE)
+      return decode(static_cast<std::uint16_t>(packed));
+    if (control_name == ControllerEmu::ReshapableInput::Y_INPUT_OVERRIDE)
+      return decode(static_cast<std::uint16_t>(packed >> 16));
+    return std::nullopt;
+  });
   return true;
 }
 
@@ -426,8 +455,7 @@ RuntimeControllerMode DetectRuntimeControllerMode(int player)
   if (extension == WiimoteEmu::ExtensionNumber::CLASSIC)
     return RuntimeControllerMode::ClassicController;
 
-  const auto* const options =
-      wiimote->GetWiimoteGroup(WiimoteEmu::WiimoteGroup::Options);
+  const auto* const options = wiimote->GetWiimoteGroup(WiimoteEmu::WiimoteGroup::Options);
   return GetBoolSetting(options, WiimoteEmu::Wiimote::SIDEWAYS_OPTION, false) ?
              RuntimeControllerMode::WiiRemoteSideways :
              RuntimeControllerMode::WiiRemote;
@@ -439,12 +467,10 @@ RuntimeControllerSession CreateRuntimeControllerSession(Core::System& system)
   session.is_wii = system.IsWii();
   for (int player = 0; player < 4; ++player)
   {
-    const SerialInterface::SIDevices configured =
-        Config::Get(Config::GetInfoForSIDevice(player));
-    session.gamecube_devices[player] =
-        configured == SerialInterface::SIDEVICE_NONE ?
-            SerialInterface::SIDEVICE_GC_CONTROLLER :
-            configured;
+    const SerialInterface::SIDevices configured = Config::Get(Config::GetInfoForSIDevice(player));
+    session.gamecube_devices[player] = configured == SerialInterface::SIDEVICE_NONE ?
+                                           SerialInterface::SIDEVICE_GC_CONTROLLER :
+                                           configured;
     session.modes[player] =
         session.is_wii ? DetectRuntimeControllerMode(player) : RuntimeControllerMode::GameCube;
   }
@@ -494,13 +520,12 @@ bool ApplyRuntimeControllerMode(RuntimeControllerSession* session, int player,
 
   {
     Config::ConfigChangeCallbackGuard config_guard;
-    Config::SetCurrent(Config::GetInfoForSIDevice(player),
-                       mode == RuntimeControllerMode::GameCube ?
-                           session->gamecube_devices[player] :
-                           SerialInterface::SIDEVICE_NONE);
+    Config::SetCurrent(Config::GetInfoForSIDevice(player), mode == RuntimeControllerMode::GameCube ?
+                                                               session->gamecube_devices[player] :
+                                                               SerialInterface::SIDEVICE_NONE);
     Config::SetCurrent(Config::GetInfoForWiimoteSource(player),
                        mode == RuntimeControllerMode::GameCube ? WiimoteSource::None :
-                                                                WiimoteSource::Emulated);
+                                                                 WiimoteSource::Emulated);
   }
 
   session->modes[player] = mode;
@@ -531,7 +556,8 @@ void UpdateSessionPauseState(Core::System& system, bool focused, bool user_pause
   }
 }
 
-SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request)
+SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
+                             bool disable_fastmem_arena)
 {
   Core::System& system = Core::System::GetInstance();
   DolphinSwitch::LaunchRequest resolved_request = request;
@@ -554,8 +580,8 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request)
   std::unique_ptr<BootParameters> boot = GenerateBootParameters(resolved_request);
   if (!boot)
   {
-    return {false, CollectAlertText(
-                       "Dolphin could not create boot parameters for the selected title.")};
+    return {false,
+            CollectAlertText("Dolphin could not create boot parameters for the selected title.")};
   }
 
   std::atomic_bool ever_running{false};
@@ -567,23 +593,28 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request)
       s_session_running.store(false, std::memory_order_release);
   });
 
+  // HOME Menu forwarders grant the process-mapping SVCs needed by the Switch fastmem arena.
+  // Faults from the JIT's fixed quantized load/store helpers cannot be backpatched, so an MMIO
+  // access through that arena terminates the process. The hbmenu path already uses this checked
+  // page-table fallback because those SVCs are unavailable there.
+  if (disable_fastmem_arena)
+    Config::SetCurrent(Config::MAIN_FASTMEM_ARENA, false);
+
   if (!BootManager::BootCore(system, std::move(boot), wsi))
   {
     s_session_running.store(false, std::memory_order_release);
-    return {false, CollectAlertText(
-                       "Dolphin failed to initialize the selected title.")};
+    return {false, CollectAlertText("Dolphin failed to initialize the selected title.")};
   }
 
   RuntimeControllerSession runtime_controllers = CreateRuntimeControllerSession(system);
-  DolphinSwitch::RuntimeOverlay::BeginSession(
-      resolved_request.path, resolved_request.game_id, resolved_request.revision,
-      runtime_controllers.is_wii, runtime_controllers.modes);
+  DolphinSwitch::RuntimeOverlay::BeginSession(resolved_request.path, resolved_request.game_id,
+                                              resolved_request.revision, runtime_controllers.is_wii,
+                                              runtime_controllers.modes);
   Common::ScopeGuard overlay_guard([] { DolphinSwitch::RuntimeOverlay::EndSession(); });
 
   const bool touch_pointer_enabled =
       runtime_controllers.is_wii && Config::Get(Config::MAIN_SWITCH_TOUCHSCREEN_POINTER);
-  const bool touch_pointer_installed =
-      touch_pointer_enabled && InstallWiiTouchPointerOverride();
+  const bool touch_pointer_installed = touch_pointer_enabled && InstallWiiTouchPointerOverride();
   Common::ScopeGuard touch_pointer_guard([touch_pointer_installed] {
     if (touch_pointer_installed)
       RemoveWiiTouchPointerOverride();
@@ -610,8 +641,7 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request)
   std::uint64_t handled_operation_mode_generation =
       s_operation_mode_generation.load(std::memory_order_acquire);
 
-  while (s_session_running.load(std::memory_order_acquire) &&
-         (applet_alive = appletMainLoop()))
+  while (s_session_running.load(std::memory_order_acquire) && (applet_alive = appletMainLoop()))
   {
     Core::HostDispatchJobs(system);
 
@@ -656,9 +686,9 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request)
         if (s_host_focused.load(std::memory_order_acquire))
         {
           // Apply pause after the overlay's final frame is replaced.
-          Core::SetState(system, overlay_visible ? Core::State::Running :
-                                                   (user_paused ? Core::State::Paused :
-                                                                  Core::State::Running));
+          Core::SetState(system, overlay_visible ?
+                                     Core::State::Running :
+                                     (user_paused ? Core::State::Paused : Core::State::Running));
         }
         if (!user_paused)
           pause_after_render_generation.reset();
@@ -684,8 +714,8 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request)
       case DolphinSwitch::RuntimeOverlay::ActionType::LoadState:
         if (State::GetUnixTimeOfSlot(action.value) == 0)
         {
-          DolphinSwitch::RuntimeOverlay::SetStatus("State slot " +
-                                                   std::to_string(action.value) + " is empty");
+          DolphinSwitch::RuntimeOverlay::SetStatus("State slot " + std::to_string(action.value) +
+                                                   " is empty");
         }
         else
         {
@@ -725,12 +755,15 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request)
       case DolphinSwitch::RuntimeOverlay::ActionType::ToggleFPS:
         DolphinSwitch::RuntimeOverlay::ToggleFPSForSession();
         break;
+      case DolphinSwitch::RuntimeOverlay::ActionType::ToggleVBISkip:
+        DolphinSwitch::RuntimeOverlay::ToggleVBISkipForSession();
+        break;
       case DolphinSwitch::RuntimeOverlay::ActionType::SetControllerMode:
       {
         const auto mode = static_cast<RuntimeControllerMode>(action.value2);
-        const bool valid_mode = action.value2 >= static_cast<int>(RuntimeControllerMode::GameCube) &&
-                                action.value2 <=
-                                    static_cast<int>(RuntimeControllerMode::ClassicController);
+        const bool valid_mode =
+            action.value2 >= static_cast<int>(RuntimeControllerMode::GameCube) &&
+            action.value2 <= static_cast<int>(RuntimeControllerMode::ClassicController);
         const bool success =
             valid_mode && ApplyRuntimeControllerMode(&runtime_controllers, action.value, mode);
         DolphinSwitch::RuntimeOverlay::SetControllerModeResult(action.value, mode, success);
@@ -746,8 +779,7 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request)
     }
     else if (previous_overlay_visible && user_paused)
     {
-      pause_after_render_generation =
-          DolphinSwitch::RuntimeOverlay::GetRenderFrameGeneration() + 1;
+      pause_after_render_generation = DolphinSwitch::RuntimeOverlay::GetRenderFrameGeneration() + 1;
     }
     previous_overlay_visible = now_overlay_visible;
 
@@ -756,8 +788,7 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request)
                             &lifecycle_owned_pause);
 
     if (pause_after_render_generation && s_host_focused.load(std::memory_order_acquire) &&
-        DolphinSwitch::RuntimeOverlay::GetRenderFrameGeneration() >=
-            *pause_after_render_generation)
+        DolphinSwitch::RuntimeOverlay::GetRenderFrameGeneration() >= *pause_after_render_generation)
     {
       if (Core::GetState(system) == Core::State::Running)
         Core::SetState(system, Core::State::Paused);
@@ -800,6 +831,8 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request)
 
 int main(int argc, char** argv)
 {
+  const bool forwarder_launch = DolphinSwitch::Forwarder::IsForwarderLaunch(argc, argv);
+
   Common::ScopeGuard audio_guard([] { DolphinSwitch::Audio::ShutdownSharedAudio(); });
 
   u64 allowed_core_mask = 0;
@@ -813,18 +846,24 @@ int main(int argc, char** argv)
     Common::SetCurrentThreadAffinity(2);
   }
 
+  const std::string launcher_path = DolphinSwitch::Updater::ResolveLauncherPath(
+      argc > 0 && argv[0] ? std::string_view(argv[0]) : std::string_view{});
+  std::string update_recovery_error;
+  const bool update_recovery_ok =
+      DolphinSwitch::Updater::RecoverInstallation(launcher_path, update_recovery_error);
+
   const Result romfs_result = romfsInit();
   const Result sockets_result = socketInitializeDefault();
-  const bool romfs_initialized = R_SUCCEEDED(romfs_result);
+  bool romfs_mounted = R_SUCCEEDED(romfs_result);
   const bool sockets_initialized = R_SUCCEEDED(sockets_result);
   Common::ScopeGuard platform_guard([&] {
     DolphinSwitch::ShutdownLauncherStorage();
     if (sockets_initialized)
       socketExit();
-    if (romfs_initialized)
+    if (romfs_mounted)
       romfsExit();
   });
-  if (!romfs_initialized)
+  if (!romfs_mounted)
     return EXIT_FAILURE;
 
   File::SetSysDirectory("romfs:");
@@ -860,9 +899,9 @@ int main(int argc, char** argv)
   Common::ScopeGuard overlay_renderer_guard(
       [] { DolphinSwitch::RuntimeOverlay::ShutdownRendererHook(); });
 
-  std::optional<DolphinSwitch::LaunchRequest> direct_request =
-      GetDirectLaunchRequest(argc, argv);
-  std::string launcher_message;
+  std::optional<DolphinSwitch::LaunchRequest> direct_request = GetDirectLaunchRequest(argc, argv);
+  std::string launcher_message =
+      update_recovery_ok ? std::string{} : "Update recovery failed: " + update_recovery_error;
   while (!s_applet_exit_requested.load(std::memory_order_acquire))
   {
     std::optional<DolphinSwitch::LaunchRequest> request;
@@ -873,16 +912,40 @@ int main(int argc, char** argv)
     }
     else
     {
-      request = DolphinSwitch::RunLauncher(std::move(launcher_message));
+      request = DolphinSwitch::RunLauncher(std::move(launcher_message), launcher_path);
       launcher_message.clear();
     }
 
     if (!request)
     {
+      if (DolphinSwitch::Updater::ConsumeInstallationRequest())
+      {
+        DolphinSwitch::ShutdownLauncherStorage();
+        if (romfs_mounted)
+        {
+          romfsExit();
+          romfs_mounted = false;
+        }
+        if (DolphinSwitch::Updater::InstallDownloaded(launcher_path))
+        {
+          const DolphinSwitch::Updater::Snapshot installed = DolphinSwitch::Updater::GetSnapshot();
+          (void)DolphinSwitch::RecordInstalledReleaseTag(installed.release.tag);
+          break;
+        }
+
+        const DolphinSwitch::Updater::Snapshot snapshot = DolphinSwitch::Updater::GetSnapshot();
+        launcher_message =
+            "Update installation failed: " +
+            (snapshot.error.empty() ? std::string("Unknown error.") : snapshot.error);
+        romfs_mounted = R_SUCCEEDED(romfsInit());
+        if (romfs_mounted)
+          continue;
+        return EXIT_FAILURE;
+      }
       break;
     }
 
-    const SessionResult result = RunGameSession(*request);
+    const SessionResult result = RunGameSession(*request, forwarder_launch);
     if (result.exit_application)
       break;
     launcher_message = result.launcher_message;

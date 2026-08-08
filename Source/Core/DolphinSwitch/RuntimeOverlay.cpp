@@ -96,7 +96,7 @@ struct StateSaveMonitorRequest
 
 constexpr std::uint64_t MENU_CHORD =
     HidNpadButton_L | HidNpadButton_R | HidNpadButton_Plus;
-constexpr int MAIN_ITEM_COUNT = 12;
+constexpr int MAIN_ITEM_COUNT = 13;
 constexpr int DISC_ITEM_COUNT = 3;
 constexpr int CONTROLLER_ITEM_COUNT = 5;
 constexpr int CONTROLLER_MODE_ITEM_COUNT = 6;
@@ -108,6 +108,7 @@ std::atomic<std::uint64_t> s_render_frame_generation{0};
 bool s_initialized = false;
 bool s_user_paused = false;
 bool s_show_fps = false;
+bool s_vbi_skip = false;
 bool s_is_wii = false;
 Page s_page = Page::Main;
 int s_selection = 0;
@@ -737,10 +738,13 @@ void ActivateSelection()
       QueueAction({ActionType::ToggleFPS});
       break;
     case 10:
+      QueueAction({ActionType::ToggleVBISkip});
+      break;
+    case 11:
       QueueAction({ActionType::Reset});
       CloseMenu();
       break;
-    case 11:
+    case 12:
       QueueAction({ActionType::StopToLauncher});
       CloseMenu();
       break;
@@ -894,8 +898,11 @@ void RenderMainPage()
   SelectableRow(std::string("Show FPS                         <  ") +
                     (s_show_fps ? "Enabled" : "Disabled") + "  >",
                 9);
-  SelectableRow("Reset console", 10);
-  SelectableRow("Return to Dolphin launcher", 11);
+  SelectableRow(std::string("VBI Skip                         <  ") +
+                    (s_vbi_skip ? "Enabled" : "Disabled") + "  >",
+                10);
+  SelectableRow("Reset console", 11);
+  SelectableRow("Return to Dolphin launcher", 12);
 }
 
 void RenderControllersPage()
@@ -1103,6 +1110,7 @@ void BeginSession(std::string game_path, std::string game_id, unsigned revision,
   s_actions.clear();
   s_user_paused = false;
   s_show_fps = Config::Get(Config::GFX_SHOW_FPS);
+  s_vbi_skip = Config::Get(Config::GFX_HACK_VI_SKIP);
   s_is_wii = is_wii;
   s_controller_modes = controller_modes;
   s_controller_player = 0;
@@ -1328,6 +1336,18 @@ void ToggleFPSForSession()
   Config::SetCurrent(Config::GFX_SHOW_FPS, s_show_fps);
   s_status = s_show_fps ? "FPS overlay enabled" : "FPS overlay disabled";
   s_status_until = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+}
+
+void ToggleVBISkipForSession()
+{
+  std::lock_guard lock{s_mutex};
+  if (!s_initialized)
+    return;
+  s_vbi_skip = !s_vbi_skip;
+  Config::SetCurrent(Config::GFX_HACK_VI_SKIP, s_vbi_skip);
+  s_status = s_vbi_skip ? "VBI Skip enabled for this session - may cause freezes" :
+                          "VBI Skip disabled for this session";
+  s_status_until = std::chrono::steady_clock::now() + std::chrono::seconds(4);
 }
 
 void ToggleFrameGenerationForSession()

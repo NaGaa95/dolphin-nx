@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <limits>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -29,6 +30,8 @@ namespace {
 
 std::string s_self_path;
 constexpr const char *kLauncherNro = "sdmc:/switch/dolphin/dolphin.nro";
+constexpr std::string_view kForwarderArgument = "--dolphin-home-forwarder";
+constexpr std::string_view kLegacyForwarderArgument = "--dolphin-forwarder-bootstrap";
 
 #define FWD_TRY(x) do { const Result _rc_ = (x); if (R_FAILED(_rc_)) return _rc_; } while (0)
 
@@ -1150,14 +1153,16 @@ Result install_forwarder(const std::string &launch_arguments, const std::string 
     if (nroPath.empty())
         return kForwarderIoError;
     const bool quotePath = nroPath.find_first_of(" \t") != std::string::npos;
-    const std::string args = (quotePath ? "\"" + nroPath + "\"" : nroPath) + " " +
+    const std::string launcherArgument = quotePath ? "\"" + nroPath + "\"" : nroPath;
+    const std::string args = launcherArgument + " " + std::string(kForwarderArgument) + " " +
                              launch_arguments;
     if (nroPath.empty() || nroPath.size() >= FS_MAX_PATH ||
         nroPath.size() + args.size() + 2 > 2046)
         return kForwarderIoError;
 
     u64 hashData[SHA256_HASH_SIZE / sizeof(u64)];
-    const std::string hashSource = nroPath + args;
+    // Keep shortcut IDs stable when the internal launch protocol changes.
+    const std::string hashSource = nroPath + launcherArgument + " " + launch_arguments;
     sha256CalculateHash(hashData, hashSource.data(), hashSource.length());
     const u64 tid = 0x0500000000000000 | (hashData[0] & 0x00FFFFFFFFFFF000);
 
@@ -1332,6 +1337,20 @@ static bool CreateImpl(const std::string &launchArguments, const std::string &na
         return false;
     }
     return true;
+}
+
+bool IsForwarderLaunch(int argc, char** argv)
+{
+    for (int index = 1; index < argc; ++index)
+    {
+        if (argv[index])
+        {
+            const std::string_view argument(argv[index]);
+            if (argument == kForwarderArgument || argument == kLegacyForwarderArgument)
+                return true;
+        }
+    }
+    return false;
 }
 
 bool Create(const std::string &gamePath, const std::string &name, const std::string &author,
