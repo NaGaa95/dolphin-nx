@@ -1,7 +1,7 @@
 # Builds the small HOME Menu forwarder payload embedded in dolphin.nro.
 
 DEVKITPRO ?= /opt/devkitpro
-RELEASE_VERSION ?= 1.0.1
+RELEASE_VERSION ?= 1.0.2
 
 CC := $(DEVKITPRO)/devkitA64/bin/aarch64-none-elf-gcc
 TOOLS := $(DEVKITPRO)/tools/bin

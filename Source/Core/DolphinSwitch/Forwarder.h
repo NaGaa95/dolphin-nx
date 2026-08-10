@@ -9,11 +9,11 @@
 
 namespace DolphinSwitch::Forwarder
 {
-bool IsForwarderLaunch(int argc, char** argv);
 void SetSelfPath(std::string path);
 
 bool Create(const std::string& game_path, const std::string& name, const std::string& author,
-            const std::string& icon_image_path, char* error, std::size_t error_size);
+            const std::string& icon_image_path, const std::string& game_config_path, char* error,
+            std::size_t error_size);
 bool CreateNANDTitle(std::uint64_t title_id, const std::string& name, const std::string& author,
                      const std::string& icon_image_path, char* error, std::size_t error_size);
 }  // namespace DolphinSwitch::Forwarder

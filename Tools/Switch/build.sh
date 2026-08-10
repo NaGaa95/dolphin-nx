@@ -7,7 +7,7 @@ NVK_ZIP="${1:-${DOLPHIN_SWITCH_NVK_ZIP:-}}"
 DEVKITPRO="${DEVKITPRO:-/opt/devkitpro}"
 DEVKITA64="${DEVKITA64:-${DEVKITPRO}/devkitA64}"
 JOBS="${DOLPHIN_SWITCH_JOBS:-18}"
-RELEASE_VERSION="${DOLPHIN_SWITCH_RELEASE_VERSION:-1.0.1}"
+RELEASE_VERSION="${DOLPHIN_SWITCH_RELEASE_VERSION:-1.0.2}"
 
 if [[ -z "${NVK_ZIP}" ]]; then
   echo "Usage: $0 <mesa-switch-vulkan-sdk.zip|builddir-switch.zip>" >&2

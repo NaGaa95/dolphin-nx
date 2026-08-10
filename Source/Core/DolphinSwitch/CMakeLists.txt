@@ -1,4 +1,4 @@
-set(DOLPHIN_SWITCH_RELEASE_VERSION "1.0.1" CACHE STRING
+set(DOLPHIN_SWITCH_RELEASE_VERSION "1.0.2" CACHE STRING
     "Semantic release version for the standalone Nintendo Switch frontend")
 
 add_executable(dolphin-switch
@@ -45,6 +45,7 @@ target_link_libraries(dolphin-switch PRIVATE
   Switch::SDL2Image
   Switch::Curl
   Switch::NVK
+  Switch::ELF
   Switch::DRMNouveau
   smb2
   libusbhsfs

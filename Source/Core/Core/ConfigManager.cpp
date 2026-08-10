@@ -576,6 +576,9 @@ Common::IniFile SConfig::LoadLocalGameIni(std::string_view id, std::optional<u16
   Common::IniFile game_ini;
   for (const std::string& filename : ConfigLoaders::GetGameIniFilenames(id, revision))
     game_ini.Load(File::GetUserPath(D_GAMESETTINGS_IDX) + filename, true);
+  const std::string override_path = ConfigLoaders::GetLocalGameConfigOverridePath();
+  if (!override_path.empty())
+    game_ini.Load(override_path, true);
   return game_ini;
 }
 
@@ -586,6 +589,9 @@ Common::IniFile SConfig::LoadGameIni(std::string_view id, std::optional<u16> rev
     game_ini.Load(File::GetSysDirectory() + GAMESETTINGS_DIR DIR_SEP + filename, true);
   for (const std::string& filename : ConfigLoaders::GetGameIniFilenames(id, revision))
     game_ini.Load(File::GetUserPath(D_GAMESETTINGS_IDX) + filename, true);
+  const std::string override_path = ConfigLoaders::GetLocalGameConfigOverridePath();
+  if (!override_path.empty())
+    game_ini.Load(override_path, true);
   return game_ini;
 }
 

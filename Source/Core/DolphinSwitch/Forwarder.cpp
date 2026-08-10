@@ -11,7 +11,6 @@
 #include <algorithm>
 #include <limits>
 #include <string>
-#include <string_view>
 #include <vector>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -30,8 +29,6 @@ namespace {
 
 std::string s_self_path;
 constexpr const char *kLauncherNro = "sdmc:/switch/dolphin/dolphin.nro";
-constexpr std::string_view kForwarderArgument = "--dolphin-home-forwarder";
-constexpr std::string_view kLegacyForwarderArgument = "--dolphin-forwarder-bootstrap";
 
 #define FWD_TRY(x) do { const Result _rc_ = (x); if (R_FAILED(_rc_)) return _rc_; } while (0)
 
@@ -1154,14 +1151,12 @@ Result install_forwarder(const std::string &launch_arguments, const std::string 
         return kForwarderIoError;
     const bool quotePath = nroPath.find_first_of(" \t") != std::string::npos;
     const std::string launcherArgument = quotePath ? "\"" + nroPath + "\"" : nroPath;
-    const std::string args = launcherArgument + " " + std::string(kForwarderArgument) + " " +
-                             launch_arguments;
+    const std::string args = launcherArgument + " " + launch_arguments;
     if (nroPath.empty() || nroPath.size() >= FS_MAX_PATH ||
         nroPath.size() + args.size() + 2 > 2046)
         return kForwarderIoError;
 
     u64 hashData[SHA256_HASH_SIZE / sizeof(u64)];
-    // Keep shortcut IDs stable when the internal launch protocol changes.
     const std::string hashSource = nroPath + launcherArgument + " " + launch_arguments;
     sha256CalculateHash(hashData, hashSource.data(), hashSource.length());
     const u64 tid = 0x0500000000000000 | (hashData[0] & 0x00FFFFFFFFFFF000);
@@ -1339,34 +1334,29 @@ static bool CreateImpl(const std::string &launchArguments, const std::string &na
     return true;
 }
 
-bool IsForwarderLaunch(int argc, char** argv)
-{
-    for (int index = 1; index < argc; ++index)
-    {
-        if (argv[index])
-        {
-            const std::string_view argument(argv[index]);
-            if (argument == kForwarderArgument || argument == kLegacyForwarderArgument)
-                return true;
-        }
-    }
-    return false;
-}
-
 bool Create(const std::string &gamePath, const std::string &name, const std::string &author,
-            const std::string &iconImgPath, char *err, std::size_t errSize)
+            const std::string &iconImgPath, const std::string &gameConfigPath, char *err,
+            std::size_t errSize)
 {
     const bool validPath = !gamePath.empty() && gamePath.size() < FS_MAX_PATH &&
         std::all_of(gamePath.begin(), gamePath.end(), [](unsigned char c) {
             return c >= 0x20 && c != 0x7f && c != '"' && c != '\\';
         });
+    const bool validConfigPath = gameConfigPath.empty() ||
+        (gameConfigPath.size() < FS_MAX_PATH &&
+         std::all_of(gameConfigPath.begin(), gameConfigPath.end(), [](unsigned char c) {
+             return c >= 0x20 && c != 0x7f && c != '"' && c != '\\';
+         }));
     bool gameExists = false;
-    if (!validPath || !queryRegularFile(gamePath, gameExists) || !gameExists) {
+    if (!validPath || !validConfigPath || !queryRegularFile(gamePath, gameExists) || !gameExists) {
         if (err && errSize)
             snprintf(err, errSize, "The game path is missing or unsafe for a shortcut.");
         return false;
     }
-    return CreateImpl("--game \"" + gamePath + "\"", name, author, iconImgPath, err, errSize);
+    std::string launchArguments = "--game \"" + gamePath + "\"";
+    if (!gameConfigPath.empty())
+        launchArguments += " --game-config \"" + gameConfigPath + "\"";
+    return CreateImpl(launchArguments, name, author, iconImgPath, err, errSize);
 }
 
 bool CreateNANDTitle(std::uint64_t titleId, const std::string &name, const std::string &author,

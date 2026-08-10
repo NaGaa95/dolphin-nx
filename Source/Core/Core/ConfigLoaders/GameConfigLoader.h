@@ -24,4 +24,9 @@ std::unique_ptr<Config::ConfigLayerLoader> GenerateGlobalGameConfigLoader(const 
                                                                           u16 revision);
 std::unique_ptr<Config::ConfigLayerLoader> GenerateLocalGameConfigLoader(const std::string& id,
                                                                          u16 revision);
+
+// Adds a launcher-selected, file-specific INI after the usual Game ID INIs. This lets modified
+// images which retain the original disc ID have independent settings for the current session.
+void SetLocalGameConfigOverridePath(std::string path);
+std::string GetLocalGameConfigOverridePath();
 }  // namespace ConfigLoaders

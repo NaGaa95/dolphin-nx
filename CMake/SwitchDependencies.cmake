@@ -69,6 +69,13 @@ set_target_properties(SwitchNVK PROPERTIES
 )
 add_library(Switch::NVK ALIAS SwitchNVK)
 
+add_library(SwitchELF STATIC IMPORTED GLOBAL)
+set_target_properties(SwitchELF PROPERTIES
+  IMPORTED_LOCATION "${_switch_portlibs}/lib/libelf.a"
+  INTERFACE_INCLUDE_DIRECTORIES "${_switch_portlibs}/include"
+)
+add_library(Switch::ELF ALIAS SwitchELF)
+
 add_library(SwitchDRMNouveau STATIC IMPORTED GLOBAL)
 set_target_properties(SwitchDRMNouveau PROPERTIES
   IMPORTED_LOCATION "${_switch_portlibs}/lib/libdrm_nouveau.a"

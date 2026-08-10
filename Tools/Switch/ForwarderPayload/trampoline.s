@@ -21,3 +21,22 @@ nroEntrypointTrampoline:
     b    loadNro
 
 .cfi_endproc
+
+// User exceptions initially return to the forwarder's NSO entrypoint. Forward them to the
+// currently loaded NRO so its libnx exception handler can recover fastmem faults and resume.
+.section .text.__libnx_exception_entry, "ax", %progbits
+.align 2
+.global __libnx_exception_entry
+.type   __libnx_exception_entry, %function
+.cfi_startproc
+__libnx_exception_entry:
+    adrp x7, g_nroAddr
+    ldr  x7, [x7, #:lo12:g_nroAddr]
+    cbz  x7, .Lexception_unhandled
+    br   x7
+
+.Lexception_unhandled:
+    mov  w0, #0xf801
+    svc  0x28
+
+.cfi_endproc

@@ -33,6 +33,7 @@
 #include "Core/Config/GraphicsSettings.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/Config/WiimoteSettings.h"
+#include "Core/ConfigLoaders/GameConfigLoader.h"
 #include "Core/Core.h"
 #include "Core/HW/DVD/DVDInterface.h"
 #include "Core/HW/ProcessorInterface.h"
@@ -85,6 +86,8 @@ std::vector<PendingAlert> s_pending_alerts;
 
 std::optional<DolphinSwitch::LaunchRequest> GetDirectLaunchRequest(int argc, char** argv)
 {
+  DolphinSwitch::LaunchRequest request;
+  bool found_launch_target = false;
   for (int index = 1; index < argc; ++index)
   {
     if (!argv[index] || argv[index][0] == '\0')
@@ -92,22 +95,38 @@ std::optional<DolphinSwitch::LaunchRequest> GetDirectLaunchRequest(int argc, cha
     const std::string_view argument(argv[index]);
     if ((argument == "--game" || argument == "--exec" || argument == "-g") && index + 1 < argc &&
         argv[index + 1])
-      return DolphinSwitch::LaunchRequest{argv[index + 1], {}, 0};
+    {
+      request.path = argv[++index];
+      request.nand_title.reset();
+      found_launch_target = true;
+      continue;
+    }
     if (argument == "--nand-title" && index + 1 < argc && argv[index + 1])
     {
-      const std::string_view value(argv[index + 1]);
+      const std::string_view value(argv[++index]);
       std::uint64_t title_id = 0;
       const auto [end, error] =
           std::from_chars(value.data(), value.data() + value.size(), title_id, 16);
       if (error == std::errc{} && end == value.data() + value.size() && title_id != 0)
-        return DolphinSwitch::LaunchRequest{{}, {}, 0, title_id};
-      ++index;
+      {
+        request.path.clear();
+        request.nand_title = title_id;
+        found_launch_target = true;
+      }
       continue;
     }
-    if (!argument.starts_with('-'))
-      return DolphinSwitch::LaunchRequest{std::string(argument), {}, 0};
+    if (argument == "--game-config" && index + 1 < argc && argv[index + 1])
+    {
+      request.game_config_path = argv[++index];
+      continue;
+    }
+    if (!found_launch_target && !argument.starts_with('-'))
+    {
+      request.path = argument;
+      found_launch_target = true;
+    }
   }
-  return std::nullopt;
+  return found_launch_target ? std::optional{std::move(request)} : std::nullopt;
 }
 
 bool SwitchMsgAlertHandler(const char* caption, const char* text, bool yes_no,
@@ -436,6 +455,17 @@ void RemoveWiiTouchPointerOverride()
   wiimote->ClearInputOverrideFunction();
 }
 
+std::optional<std::string> GetLocalWiimoteSetting(int player, std::string_view key)
+{
+  const std::shared_ptr<Config::Layer> local_game_layer =
+      Config::GetLayer(Config::LayerType::LocalGame);
+  if (!local_game_layer)
+    return std::nullopt;
+  return local_game_layer->Get<std::string>(
+      Config::Location{Config::System::WiiPad, "Wiimote" + std::to_string(player + 1),
+                       std::string(key)});
+}
+
 RuntimeControllerMode DetectRuntimeControllerMode(int player)
 {
   if (Config::Get(Config::GetInfoForWiimoteSource(player)) != WiimoteSource::Emulated)
@@ -448,17 +478,49 @@ RuntimeControllerMode DetectRuntimeControllerMode(int player)
 
   const auto state_lock = ControllerEmu::EmulatedController::GetStateLock();
 
-  const auto extension =
+  WiimoteEmu::ExtensionNumber extension =
       static_cast<WiimoteEmu::ExtensionNumber>(attachments->GetSelectedAttachment());
+  if (const std::optional<std::string> configured = GetLocalWiimoteSetting(player, "Extension"))
+  {
+    if (*configured == "Nunchuk")
+      extension = WiimoteEmu::ExtensionNumber::NUNCHUK;
+    else if (*configured == "Classic")
+      extension = WiimoteEmu::ExtensionNumber::CLASSIC;
+    else
+      extension = WiimoteEmu::ExtensionNumber::NONE;
+  }
   if (extension == WiimoteEmu::ExtensionNumber::NUNCHUK)
     return RuntimeControllerMode::WiiRemoteNunchuk;
   if (extension == WiimoteEmu::ExtensionNumber::CLASSIC)
     return RuntimeControllerMode::ClassicController;
 
   const auto* const options = wiimote->GetWiimoteGroup(WiimoteEmu::WiimoteGroup::Options);
-  return GetBoolSetting(options, WiimoteEmu::Wiimote::SIDEWAYS_OPTION, false) ?
+  bool sideways = GetBoolSetting(options, WiimoteEmu::Wiimote::SIDEWAYS_OPTION, false);
+  if (const std::optional<std::string> configured =
+          GetLocalWiimoteSetting(player, "Options/Sideways Wiimote"))
+  {
+    sideways = *configured == "True" || *configured == "true" || *configured == "1";
+  }
+  return sideways ?
              RuntimeControllerMode::WiiRemoteSideways :
              RuntimeControllerMode::WiiRemote;
+}
+
+bool CanSynchronizeRuntimeControllerMode(int player)
+{
+  if (const std::optional<std::string> configured = GetLocalWiimoteSetting(player, "Extension"))
+    return *configured == "None" || *configured == "Nunchuk" || *configured == "Classic";
+
+  WiimoteEmu::Wiimote* const wiimote = GetEmulatedWiimote(player);
+  ControllerEmu::Attachments* const attachments = GetWiimoteAttachments(wiimote);
+  if (!attachments)
+    return false;
+  const auto state_lock = ControllerEmu::EmulatedController::GetStateLock();
+  const auto extension =
+      static_cast<WiimoteEmu::ExtensionNumber>(attachments->GetSelectedAttachment());
+  return extension == WiimoteEmu::ExtensionNumber::NONE ||
+         extension == WiimoteEmu::ExtensionNumber::NUNCHUK ||
+         extension == WiimoteEmu::ExtensionNumber::CLASSIC;
 }
 
 RuntimeControllerSession CreateRuntimeControllerSession(Core::System& system)
@@ -558,8 +620,7 @@ void UpdateSessionPauseState(Core::System& system, bool focused, bool user_pause
   }
 }
 
-SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
-                             bool disable_fastmem_arena)
+SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request)
 {
   Core::System& system = Core::System::GetInstance();
   DolphinSwitch::LaunchRequest resolved_request = request;
@@ -569,6 +630,10 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
     if (!DolphinSwitch::PrepareLaunchStorage(request.path, &resolved_request.path))
       return {false, CollectAlertText("The selected game's storage device is unavailable.")};
   }
+
+  ConfigLoaders::SetLocalGameConfigOverridePath(resolved_request.game_config_path);
+  Common::ScopeGuard game_config_guard(
+      [] { ConfigLoaders::SetLocalGameConfigOverridePath({}); });
 
   NWindow* const window = nwindowGetDefault();
   const bool docked = appletGetOperationMode() == AppletOperationMode_Console;
@@ -597,13 +662,6 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
       s_session_running.store(false, std::memory_order_release);
   });
 
-  // HOME Menu forwarders grant the process-mapping SVCs needed by the Switch fastmem arena.
-  // Faults from the JIT's fixed quantized load/store helpers cannot be backpatched, so an MMIO
-  // access through that arena terminates the process. The hbmenu path already uses this checked
-  // page-table fallback because those SVCs are unavailable there.
-  if (disable_fastmem_arena)
-    Config::SetCurrent(Config::MAIN_FASTMEM_ARENA, false);
-
   // The launcher uses the same SDL device for UI sounds, but handing that long-lived device to
   // Dolphin can leave Horizon's audio output stopped even though SDL still reports a valid handle.
   // Give every game a fresh device, matching direct launches and avoiding a full application
@@ -617,6 +675,21 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
   }
 
   RuntimeControllerSession runtime_controllers = CreateRuntimeControllerSession(system);
+  if (runtime_controllers.is_wii)
+  {
+    // Loading a controller profile changes the selected attachment, but an already initialized
+    // emulated Wii Remote can retain its previous live extension until it is explicitly applied.
+    // Synchronize supported extensions at session startup, matching what the runtime menu does
+    // when the user re-selects the already highlighted controller mode.
+    for (int player = 0; player < 4; ++player)
+    {
+      if (runtime_controllers.modes[player] != RuntimeControllerMode::GameCube &&
+          CanSynchronizeRuntimeControllerMode(player))
+      {
+        ApplyRuntimeControllerMode(&runtime_controllers, player, runtime_controllers.modes[player]);
+      }
+    }
+  }
   DolphinSwitch::RuntimeOverlay::BeginSession(resolved_request.path, resolved_request.game_id,
                                               resolved_request.revision, runtime_controllers.is_wii,
                                               runtime_controllers.modes);
@@ -841,8 +914,6 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
 
 int main(int argc, char** argv)
 {
-  const bool forwarder_launch = DolphinSwitch::Forwarder::IsForwarderLaunch(argc, argv);
-
   Common::ScopeGuard audio_guard([] { DolphinSwitch::Audio::ShutdownSharedAudio(); });
 
   u64 allowed_core_mask = 0;
@@ -955,7 +1026,7 @@ int main(int argc, char** argv)
       break;
     }
 
-    const SessionResult result = RunGameSession(*request, forwarder_launch);
+    const SessionResult result = RunGameSession(*request);
     if (result.exit_application)
       break;
     launcher_message = result.launcher_message;

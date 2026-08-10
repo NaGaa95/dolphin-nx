@@ -720,12 +720,14 @@ struct Game
   std::string game_id;
   std::string game_tdb_id;
   std::string platform;
+  std::string config_override_path;
   std::uint64_t title_id = 0;
   std::uint16_t revision = 0;
   std::int64_t modified = 0;
   std::int64_t played = 0;
   DiscIO::Region region = DiscIO::Region::Unknown;
   bool has_game_config = false;
+  bool has_custom_title = false;
   bool installed_nand = false;
   SDL_Texture* cover = nullptr;
   std::uint64_t cover_use = 0;
@@ -1554,6 +1556,8 @@ private:
   void EnsureSourceMountedAtStartup(const std::string& path);
   std::string GameLocationLabel(const Game& game) const;
 
+  std::string SharedGameIniPath(const Game& game) const;
+  std::string EntryGameIniPath(const Game& game) const;
   std::string GameIniPath(const Game& game) const;
   std::optional<std::string> GetGameSetting(const Game& game, std::string_view section,
                                             std::string_view key) const;
@@ -3597,12 +3601,14 @@ void Launcher::ScanGames()
     game.key = (game.game_id.empty() ? "game" : game.game_id) + suffix;
     const std::string alias = m_store.Get("Alias/" + game.key);
     if (!alias.empty())
+    {
       game.title = alias;
+      game.has_custom_title = true;
+    }
     game.played = m_store.GetInt("Recent/" + game.key, 0);
     struct stat info{};
     if (::stat(game.path.c_str(), &info) == 0)
       game.modified = info.st_mtime;
-    game.has_game_config = RegularFileExists(GameIniPath(game));
     m_games.emplace_back(std::move(game));
   });
 
@@ -3627,10 +3633,30 @@ void Launcher::ScanGames()
     game.key = key;
     const std::string alias = m_store.Get("Alias/" + game.key);
     if (!alias.empty())
+    {
       game.title = alias;
+      game.has_custom_title = true;
+    }
     game.played = m_store.GetInt("Recent/" + game.key, 0);
-    game.has_game_config = RegularFileExists(GameIniPath(game));
     m_games.emplace_back(std::move(game));
+  }
+
+  std::unordered_map<std::string, std::size_t> game_id_counts;
+  for (const Game& game : m_games)
+  {
+    if (!game.installed_nand && !game.game_id.empty())
+      ++game_id_counts[game.game_id];
+  }
+  for (Game& game : m_games)
+  {
+    // Renamed mods and multiple images with the same internal disc ID need a path-specific layer.
+    // Images without an ID also need this path because the regular Game ID INI has no filename.
+    if (!game.installed_nand &&
+        (game.has_custom_title || game.game_id.empty() || game_id_counts[game.game_id] > 1))
+    {
+      game.config_override_path = EntryGameIniPath(game);
+    }
+    game.has_game_config = RegularFileExists(GameIniPath(game));
   }
   SortGames();
   m_library_refresh_requested = false;
@@ -4452,31 +4478,53 @@ void Launcher::RenderGrid(int selection)
   SDL_RenderPresent(m_renderer);
 }
 
-std::string Launcher::GameIniPath(const Game& game) const
+std::string Launcher::SharedGameIniPath(const Game& game) const
 {
   if (game.game_id.empty())
     return {};
   return File::GetUserPath(D_GAMESETTINGS_IDX) + game.game_id + ".ini";
 }
 
+std::string Launcher::EntryGameIniPath(const Game& game) const
+{
+  if (game.installed_nand || game.path.empty())
+    return {};
+  char filename[32];
+  std::snprintf(filename, sizeof(filename), "%016llx.ini",
+                static_cast<unsigned long long>(HashPath(Lower(NormalizePath(game.path)))));
+  return File::GetUserPath(D_GAMESETTINGS_IDX) + "Entries/" + filename;
+}
+
+std::string Launcher::GameIniPath(const Game& game) const
+{
+  return game.config_override_path.empty() ? SharedGameIniPath(game) : game.config_override_path;
+}
+
 std::optional<std::string> Launcher::GetGameSetting(const Game& game, std::string_view section,
                                                     std::string_view key) const
 {
-  const std::string path = GameIniPath(game);
-  if (path.empty())
-    return std::nullopt;
-  auto iterator = m_game_ini_cache.find(path);
-  if (iterator == m_game_ini_cache.end())
-  {
-    auto ini = std::make_unique<Common::IniFile>();
-    ini->Load(path);
-    iterator = m_game_ini_cache.emplace(path, std::move(ini)).first;
-  }
-  const Common::IniFile::Section* ini_section = iterator->second->GetSection(section);
-  if (!ini_section)
-    return std::nullopt;
-  std::string value;
-  return ini_section->Get(key, &value) ? std::optional<std::string>{value} : std::nullopt;
+  const auto read = [&](const std::string& path) -> std::optional<std::string> {
+    if (path.empty())
+      return std::nullopt;
+    auto iterator = m_game_ini_cache.find(path);
+    if (iterator == m_game_ini_cache.end())
+    {
+      auto ini = std::make_unique<Common::IniFile>();
+      ini->Load(path);
+      iterator = m_game_ini_cache.emplace(path, std::move(ini)).first;
+    }
+    const Common::IniFile::Section* ini_section = iterator->second->GetSection(section);
+    if (!ini_section)
+      return std::nullopt;
+    std::string value;
+    return ini_section->Get(key, &value) ? std::optional<std::string>{value} : std::nullopt;
+  };
+
+  if (const std::optional<std::string> value = read(GameIniPath(game)))
+    return value;
+  if (!game.config_override_path.empty())
+    return read(SharedGameIniPath(game));
+  return std::nullopt;
 }
 
 bool Launcher::SetGameSetting(const Game& game, std::string_view section, std::string_view key,
@@ -4492,6 +4540,8 @@ bool Launcher::SetGameSettings(const Game& game,
 {
   const std::string path = GameIniPath(game);
   if (path.empty())
+    return false;
+  if (!File::CreateFullPath(path))
     return false;
   Common::IniFile ini;
   ini.Load(path);
@@ -4513,6 +4563,9 @@ void Launcher::InvalidateGameSettingCache(const Game& game) const
   const std::string path = GameIniPath(game);
   if (!path.empty())
     m_game_ini_cache.erase(path);
+  const std::string shared_path = SharedGameIniPath(game);
+  if (!shared_path.empty() && shared_path != path)
+    m_game_ini_cache.erase(shared_path);
 }
 
 std::string Launcher::PerGameBoolLabel(const Game& game, std::string_view section,
@@ -8212,6 +8265,7 @@ void Launcher::GameModsSettings(Game* game)
           if (result == Tools::Result::Success)
           {
             m_pending_launch = LaunchRequest{descriptor, game->game_id, game->revision};
+            m_pending_launch->game_config_path = game->config_override_path;
             return true;
           }
           RenderMessage(
@@ -9286,7 +9340,8 @@ void Launcher::CreateHomeShortcut(Game* game)
           game->installed_nand ?
               Forwarder::CreateNANDTitle(game->title_id, name, author, icon_path, error.data(),
                                          error.size()) :
-              Forwarder::Create(game->path, name, author, icon_path, error.data(), error.size());
+              Forwarder::Create(game->path, name, author, icon_path, game->config_override_path,
+                                error.data(), error.size());
     });
     if (created)
     {
@@ -12441,8 +12496,12 @@ void Launcher::PerGameMenu(Game* game, bool* launch, bool* rescan)
         if (PromptText("Rename game", game->title, &title, false, false))
         {
           game->title = title;
+          game->has_custom_title = true;
+          if (!game->installed_nand)
+            game->config_override_path = EntryGameIniPath(*game);
           m_store.Set("Alias/" + game->key, title);
           MarkStoreDirty();
+          game->has_game_config = RegularFileExists(GameIniPath(*game));
         }
       }
       else if (selection == 3)
@@ -12796,7 +12855,9 @@ std::optional<LaunchRequest> Launcher::Run()
   FlushPendingSaves();
   if (game.installed_nand)
     return LaunchRequest{{}, game.game_id, game.revision, game.title_id};
-  return LaunchRequest{game.path, game.game_id, game.revision};
+  LaunchRequest request{game.path, game.game_id, game.revision};
+  request.game_config_path = game.config_override_path;
+  return request;
 }
 
 }  // namespace

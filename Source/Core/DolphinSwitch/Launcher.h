@@ -16,6 +16,7 @@ struct LaunchRequest
   std::string game_id;
   unsigned revision = 0;
   std::optional<std::uint64_t> nand_title;
+  std::string game_config_path;
 };
 
 std::optional<LaunchRequest> RunLauncher(std::string startup_message = {},

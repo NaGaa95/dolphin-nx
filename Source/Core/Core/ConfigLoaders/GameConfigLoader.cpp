@@ -5,6 +5,7 @@
 
 #include <array>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -29,6 +30,18 @@
 
 namespace ConfigLoaders
 {
+namespace
+{
+std::mutex s_local_game_config_override_mutex;
+std::string s_local_game_config_override_path;
+
+std::string ReadLocalGameConfigOverridePath()
+{
+  std::lock_guard lock{s_local_game_config_override_mutex};
+  return s_local_game_config_override_path;
+}
+}  // namespace
+
 // Returns all possible filenames in ascending order of priority
 std::vector<std::string> GetGameIniFilenames(std::string_view id, std::optional<u16> revision)
 {
@@ -176,9 +189,11 @@ static SectionKey GetINILocationFromConfig(const Location& location)
 class INIGameConfigLayerLoader final : public Config::ConfigLayerLoader
 {
 public:
-  INIGameConfigLayerLoader(std::string id, u16 revision, bool global)
+  INIGameConfigLayerLoader(std::string id, u16 revision, bool global,
+                           std::string local_override_path = {})
       : ConfigLayerLoader(global ? Config::LayerType::GlobalGame : Config::LayerType::LocalGame),
-        m_id(std::move(id)), m_revision(revision)
+        m_id(std::move(id)), m_revision(revision),
+        m_local_override_path(std::move(local_override_path))
   {
   }
 
@@ -194,6 +209,8 @@ public:
     {
       for (const std::string& filename : GetGameIniFilenames(m_id, m_revision))
         ini.Load(File::GetUserPath(D_GAMESETTINGS_IDX) + filename, true);
+      if (!m_local_override_path.empty())
+        ini.Load(m_local_override_path, true);
     }
 
     const auto& system_sections = ini.GetSections();
@@ -278,6 +295,7 @@ private:
 
   const std::string m_id;
   const u16 m_revision;
+  const std::string m_local_override_path;
 };
 
 void INIGameConfigLayerLoader::Save(Config::Layer* layer)
@@ -288,6 +306,8 @@ void INIGameConfigLayerLoader::Save(Config::Layer* layer)
   Common::IniFile ini;
   for (const std::string& file_name : GetGameIniFilenames(m_id, m_revision))
     ini.Load(File::GetUserPath(D_GAMESETTINGS_IDX) + file_name, true);
+  if (!m_local_override_path.empty())
+    ini.Load(m_local_override_path, true);
 
   for (const auto& [location, value] : layer->GetLayerMap())
   {
@@ -307,6 +327,13 @@ void INIGameConfigLayerLoader::Save(Config::Layer* layer)
     {
       ini.DeleteKey(ini_location.section, ini_location.key);
     }
+  }
+
+  if (!m_local_override_path.empty())
+  {
+    File::CreateFullPath(m_local_override_path);
+    ini.Save(m_local_override_path);
+    return;
   }
 
   // Try to save to the revision specific INI first, if it exists.
@@ -334,6 +361,18 @@ std::unique_ptr<Config::ConfigLayerLoader> GenerateGlobalGameConfigLoader(const 
 std::unique_ptr<Config::ConfigLayerLoader> GenerateLocalGameConfigLoader(const std::string& id,
                                                                          u16 revision)
 {
-  return std::make_unique<INIGameConfigLayerLoader>(id, revision, false);
+  return std::make_unique<INIGameConfigLayerLoader>(id, revision, false,
+                                                     ReadLocalGameConfigOverridePath());
+}
+
+void SetLocalGameConfigOverridePath(std::string path)
+{
+  std::lock_guard lock{s_local_game_config_override_mutex};
+  s_local_game_config_override_path = std::move(path);
+}
+
+std::string GetLocalGameConfigOverridePath()
+{
+  return ReadLocalGameConfigOverridePath();
 }
 }  // namespace ConfigLoaders

@@ -26,7 +26,7 @@
 #include <unistd.h>
 
 #ifndef DOLPHIN_SWITCH_RELEASE_VERSION
-#define DOLPHIN_SWITCH_RELEASE_VERSION "1.0.1"
+#define DOLPHIN_SWITCH_RELEASE_VERSION "1.0.2"
 #endif
 
 namespace DolphinSwitch::Updater
