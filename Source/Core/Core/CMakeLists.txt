@@ -720,7 +720,10 @@ if(NOT DOLPHIN_SWITCH)
     videosoftware
   )
 else()
-  target_link_libraries(core PUBLIC sfml-network)
+  target_link_libraries(core PUBLIC
+    sfml-network
+    videoogl
+  )
 endif()
 
 if(LIBUDEV_FOUND)

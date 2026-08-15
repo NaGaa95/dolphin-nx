@@ -11,6 +11,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <sys/stat.h>
 #include <utility>
 #include <vector>
 
@@ -49,6 +50,35 @@ namespace UICommon
 namespace
 {
 const std::string EMPTY_STRING;
+
+struct SourceFileStat
+{
+  bool valid{};
+  u64 size{};
+  s64 mtime{};
+  s64 mtime_nsec{};
+  s64 ctime{};
+  s64 ctime_nsec{};
+};
+
+SourceFileStat GetSourceFileStat(const std::string& path)
+{
+  struct stat file_stat = {};
+  if (stat(path.c_str(), &file_stat) != 0)
+    return {};
+
+  s64 mtime_nsec = 0;
+  s64 ctime_nsec = 0;
+#if defined(__APPLE__)
+  mtime_nsec = static_cast<s64>(file_stat.st_mtimespec.tv_nsec);
+  ctime_nsec = static_cast<s64>(file_stat.st_ctimespec.tv_nsec);
+#elif !defined(_WIN32)
+  mtime_nsec = static_cast<s64>(file_stat.st_mtim.tv_nsec);
+  ctime_nsec = static_cast<s64>(file_stat.st_ctim.tv_nsec);
+#endif
+  return {true, static_cast<u64>(file_stat.st_size), static_cast<s64>(file_stat.st_mtime),
+          mtime_nsec, static_cast<s64>(file_stat.st_ctime), ctime_nsec};
+}
 
 bool UseGameCovers()
 {
@@ -158,6 +188,21 @@ GameFile::GameFile(std::string path) : m_file_path(std::move(path))
     auto descriptor = DiscIO::ParseGameModDescriptorFile(m_file_path);
     if (descriptor)
     {
+      const auto add_dependency = [&](const std::string& dependency) {
+        if (!dependency.empty() && dependency != m_file_path &&
+            !std::ranges::contains(m_source_dependency_paths, dependency))
+        {
+          m_source_dependency_paths.push_back(dependency);
+        }
+      };
+      add_dependency(descriptor->base_file);
+      add_dependency(descriptor->banner);
+      if (descriptor->riivolution)
+      {
+        for (const auto& patch : descriptor->riivolution->patches)
+          add_dependency(patch.xml);
+      }
+
       GameFile proxy(descriptor->base_file);
       if (proxy.IsValid())
       {
@@ -180,6 +225,30 @@ GameFile::GameFile(std::string path) : m_file_path(std::move(path))
       }
     }
   }
+
+  const SourceFileStat source_stat = GetSourceFileStat(m_file_path);
+  m_source_stat_valid = source_stat.valid;
+  m_source_file_size = source_stat.size;
+  m_source_file_mtime = source_stat.mtime;
+  m_source_file_mtime_nsec = source_stat.mtime_nsec;
+  m_source_file_ctime = source_stat.ctime;
+  m_source_file_ctime_nsec = source_stat.ctime_nsec;
+  m_source_dependency_stat_valid.reserve(m_source_dependency_paths.size());
+  m_source_dependency_sizes.reserve(m_source_dependency_paths.size());
+  m_source_dependency_mtimes.reserve(m_source_dependency_paths.size());
+  m_source_dependency_mtime_nsecs.reserve(m_source_dependency_paths.size());
+  m_source_dependency_ctimes.reserve(m_source_dependency_paths.size());
+  m_source_dependency_ctime_nsecs.reserve(m_source_dependency_paths.size());
+  for (const std::string& dependency : m_source_dependency_paths)
+  {
+    const SourceFileStat dependency_stat = GetSourceFileStat(dependency);
+    m_source_dependency_stat_valid.push_back(dependency_stat.valid);
+    m_source_dependency_sizes.push_back(dependency_stat.size);
+    m_source_dependency_mtimes.push_back(dependency_stat.mtime);
+    m_source_dependency_mtime_nsecs.push_back(dependency_stat.mtime_nsec);
+    m_source_dependency_ctimes.push_back(dependency_stat.ctime);
+    m_source_dependency_ctime_nsecs.push_back(dependency_stat.ctime_nsec);
+  }
 }
 
 GameFile::~GameFile() = default;
@@ -193,6 +262,50 @@ bool GameFile::IsValid() const
     return false;
 
   return true;
+}
+
+bool GameFile::SourceFileChanged() const
+{
+  const SourceFileStat current = GetSourceFileStat(m_file_path);
+
+  // A transiently unavailable source that was accessible when metadata was read must be treated as
+  // changed. If neither stat succeeded, there is no useful fingerprint to compare (for example for
+  // a platform-specific virtual path), so retain the cached metadata instead of reparsing forever.
+  if (!current.valid)
+    return m_source_stat_valid;
+  if (!m_source_stat_valid)
+    return true;
+
+  if (current.size != m_source_file_size || current.mtime != m_source_file_mtime ||
+      current.mtime_nsec != m_source_file_mtime_nsec || current.ctime != m_source_file_ctime ||
+      current.ctime_nsec != m_source_file_ctime_nsec)
+  {
+    return true;
+  }
+
+  if (m_source_dependency_paths.size() != m_source_dependency_stat_valid.size() ||
+      m_source_dependency_paths.size() != m_source_dependency_sizes.size() ||
+      m_source_dependency_paths.size() != m_source_dependency_mtimes.size() ||
+      m_source_dependency_paths.size() != m_source_dependency_mtime_nsecs.size() ||
+      m_source_dependency_paths.size() != m_source_dependency_ctimes.size() ||
+      m_source_dependency_paths.size() != m_source_dependency_ctime_nsecs.size())
+  {
+    return true;
+  }
+  for (std::size_t i = 0; i < m_source_dependency_paths.size(); ++i)
+  {
+    const SourceFileStat dependency = GetSourceFileStat(m_source_dependency_paths[i]);
+    if (dependency.valid != (m_source_dependency_stat_valid[i] != 0) ||
+        dependency.size != m_source_dependency_sizes[i] ||
+        dependency.mtime != m_source_dependency_mtimes[i] ||
+        dependency.mtime_nsec != m_source_dependency_mtime_nsecs[i] ||
+        dependency.ctime != m_source_dependency_ctimes[i] ||
+        dependency.ctime_nsec != m_source_dependency_ctime_nsecs[i])
+    {
+      return true;
+    }
+  }
+  return false;
 }
 
 bool GameFile::CustomCoverChanged()
@@ -293,6 +406,20 @@ void GameFile::DoState(PointerWrap& p)
   p.Do(m_valid);
   p.Do(m_file_path);
   p.Do(m_file_name);
+
+  p.Do(m_source_stat_valid);
+  p.Do(m_source_file_size);
+  p.Do(m_source_file_mtime);
+  p.Do(m_source_file_mtime_nsec);
+  p.Do(m_source_file_ctime);
+  p.Do(m_source_file_ctime_nsec);
+  p.Do(m_source_dependency_paths);
+  p.Do(m_source_dependency_stat_valid);
+  p.Do(m_source_dependency_sizes);
+  p.Do(m_source_dependency_mtimes);
+  p.Do(m_source_dependency_mtime_nsecs);
+  p.Do(m_source_dependency_ctimes);
+  p.Do(m_source_dependency_ctime_nsecs);
 
   p.Do(m_file_size);
   p.Do(m_volume_size);

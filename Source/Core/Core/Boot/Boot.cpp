@@ -288,7 +288,9 @@ std::unique_ptr<BootParameters> BootParameters::GenerateFromFile(std::vector<std
       auto boot_params = GenerateFromFile(descriptor->base_file, std::move(boot_session_data_));
       if (!boot_params)
       {
-        PanicAlertFmtT("Could not recognize file {0}", descriptor->base_file);
+        // The recursive call reports the precise error (missing file, invalid image, and so on).
+        // Do not add a second generic alert; frontends which collect alerts would otherwise show
+        // both messages concatenated.
         return nullptr;
       }
 

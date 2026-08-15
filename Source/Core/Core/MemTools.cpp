@@ -15,6 +15,8 @@
 
 #ifdef __SWITCH__
 #include <atomic>
+#include <cinttypes>
+#include <cstdio>
 
 #include <switch.h>
 
@@ -376,6 +378,52 @@ bool IsExceptionHandlerSupported()
 
 extern "C" void __libnx_exception_handler(ThreadExceptionDump* ctx);
 
+static void LogUnhandledSwitchException(const ThreadExceptionDump* ctx)
+{
+  std::FILE* const file =
+      std::fopen("sdmc:/switch/dolphin/Logs/dolphin-exception.log", "w");
+  if (!file || !ctx)
+  {
+    if (file)
+      std::fclose(file);
+    return;
+  }
+
+  MemoryInfo memory_info{};
+  u32 page_info = 0;
+  const Result query_result = svcQueryMemory(
+      &memory_info, &page_info, reinterpret_cast<u64>(&__libnx_exception_handler));
+
+  std::fprintf(file, "Dolphin Switch unhandled CPU exception\n");
+  std::fprintf(file, "error_desc=0x%08" PRIx32 " esr=0x%08" PRIx32
+                     " far=0x%016" PRIx64 "\n",
+               ctx->error_desc, ctx->esr, ctx->far.x);
+  std::fprintf(file,
+               "pc=0x%016" PRIx64 " lr=0x%016" PRIx64 " fp=0x%016" PRIx64
+               " sp=0x%016" PRIx64 "\n",
+               ctx->pc.x, ctx->lr.x, ctx->fp.x, ctx->sp.x);
+  std::fprintf(file,
+               "handler=0x%016" PRIx64 " query=0x%08" PRIx32
+               " text_region=0x%016" PRIx64 "+0x%016" PRIx64 " page=0x%08" PRIx32 "\n",
+               reinterpret_cast<u64>(&__libnx_exception_handler), query_result, memory_info.addr,
+               memory_info.size, page_info);
+  for (unsigned int index = 0; index < 29; ++index)
+    std::fprintf(file, "x%u=0x%016" PRIx64 "%c", index, ctx->cpu_gprs[index].x,
+                 index % 3 == 2 ? '\n' : ' ');
+  if (29 % 3 != 0)
+    std::fputc('\n', file);
+
+  std::fflush(file);
+  fsync(fileno(file));
+  std::fclose(file);
+
+  std::fprintf(stderr,
+               "[Dolphin Exception] desc=0x%08" PRIx32 " pc=0x%016" PRIx64
+               " lr=0x%016" PRIx64 " far=0x%016" PRIx64 "\n",
+               ctx->error_desc, ctx->pc.x, ctx->lr.x, ctx->far.x);
+  std::fflush(stderr);
+}
+
 [[noreturn]] static void RestoreContextAndJump(ThreadExceptionDump* ctx)
 {
   __asm__ volatile(
@@ -481,6 +529,7 @@ extern "C" void __libnx_exception_handler(ThreadExceptionDump* ctx)
     RestoreContextAndJump(ctx);
   }
 
+  LogUnhandledSwitchException(ctx);
   svcExitProcess();
   __builtin_unreachable();
 }

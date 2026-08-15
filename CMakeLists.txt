@@ -152,12 +152,25 @@ endif()
 if(DOLPHIN_SWITCH)
   message(STATUS "Building the standalone Nintendo Switch libnx frontend")
 
+  set(DOLPHIN_SWITCH_MESA_SDK_ROOT "" CACHE PATH
+      "Extracted unified Mesa Switch SDK prefix")
+  if(NOT IS_DIRECTORY "${DOLPHIN_SWITCH_MESA_SDK_ROOT}/lib/cmake/OpenGL")
+    message(FATAL_ERROR
+      "DOLPHIN_SWITCH_MESA_SDK_ROOT must point to the unified Mesa Switch SDK prefix")
+  endif()
+  set(DOLPHIN_SWITCH_NVK_OBJECT
+      "${DOLPHIN_SWITCH_MESA_SDK_ROOT}/libvulkan_local.o" CACHE FILEPATH
+      "Localized NVK driver object produced by Tools/Switch/prepare_mesa_sdk.sh")
+  set(OPENGL_SWITCH_VULKAN_LIBRARY
+      "${DOLPHIN_SWITCH_MESA_SDK_ROOT}/libvulkan_local.a")
+  list(PREPEND CMAKE_PREFIX_PATH "${DOLPHIN_SWITCH_MESA_SDK_ROOT}")
+
   set(ENABLE_ALSA OFF CACHE BOOL "" FORCE)
   set(ENABLE_ANALYTICS OFF CACHE BOOL "" FORCE)
   set(ENABLE_AUTOUPDATE OFF CACHE BOOL "" FORCE)
   set(ENABLE_CLI_TOOL OFF CACHE BOOL "" FORCE)
   set(ENABLE_CUBEB OFF CACHE BOOL "" FORCE)
-  set(ENABLE_EGL OFF CACHE BOOL "" FORCE)
+  set(ENABLE_EGL ON CACHE BOOL "" FORCE)
   set(ENABLE_LLVM OFF CACHE BOOL "" FORCE)
   set(ENABLE_NOGUI OFF CACHE BOOL "" FORCE)
   set(ENABLE_PULSEAUDIO OFF CACHE BOOL "" FORCE)
@@ -546,7 +559,16 @@ if(ENABLE_X11)
 endif()
 
 if(ENABLE_EGL)
-  find_package(EGL)
+  if(DOLPHIN_SWITCH)
+    find_package(OpenGL CONFIG REQUIRED
+      PATHS "${DOLPHIN_SWITCH_MESA_SDK_ROOT}/lib/cmake/OpenGL"
+      NO_DEFAULT_PATH)
+    set(EGL_FOUND ${OpenGL_FOUND})
+    set(EGL_INCLUDE_DIRS "${DOLPHIN_SWITCH_MESA_SDK_ROOT}/include")
+    set(EGL_LIBRARIES OpenGL::EGL)
+  else()
+    find_package(EGL)
+  endif()
   if(EGL_FOUND)
     add_definitions(-DHAVE_EGL=1)
     message(STATUS "EGL OpenGL interface enabled")
@@ -682,7 +704,7 @@ if(ENABLE_VULKAN)
   endif()
 endif()
 
-if(NOT DOLPHIN_SWITCH AND NOT (WIN32 AND _M_ARM_64))
+if(DOLPHIN_SWITCH OR NOT (WIN32 AND _M_ARM_64))
   # OpenGL is available on all platforms except windows-arm64
   add_definitions(-DHAS_OPENGL)
 endif()

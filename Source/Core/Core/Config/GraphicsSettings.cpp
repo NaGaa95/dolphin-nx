@@ -101,6 +101,8 @@ const Info<bool> GFX_ENABLE_VALIDATION_LAYER{{System::GFX, "Settings", "EnableVa
 
 const Info<bool> GFX_BACKEND_MULTITHREADING{{System::GFX, "Settings", "BackendMultithreading"},
                                             true};
+const Info<bool> GFX_SWITCH_GLTHREAD{{System::GFX, "Settings", "SwitchGLThread"}, false};
+const Info<bool> GFX_SWITCH_USE_ZINK{{System::GFX, "Settings", "SwitchUseZink"}, false};
 const Info<int> GFX_COMMAND_BUFFER_EXECUTE_INTERVAL{
     {System::GFX, "Settings", "CommandBufferExecuteInterval"}, 100};
 
@@ -200,14 +202,8 @@ const Info<float> GFX_STEREO_DEPTH_PERCENTAGE{{System::GFX, "Stereoscopy", "Ster
 // Graphics.Hacks
 
 const Info<bool> GFX_HACK_EFB_ACCESS_ENABLE{{System::GFX, "Hacks", "EFBAccessEnable"}, false};
-#if defined(__SWITCH__)
-constexpr bool DEFAULT_EFB_ACCESS_DEFER_INVALIDATION = true;
-#else
-constexpr bool DEFAULT_EFB_ACCESS_DEFER_INVALIDATION = false;
-#endif
 const Info<bool> GFX_HACK_EFB_DEFER_INVALIDATION{
-    {System::GFX, "Hacks", "EFBAccessDeferInvalidation"},
-    DEFAULT_EFB_ACCESS_DEFER_INVALIDATION};
+    {System::GFX, "Hacks", "EFBAccessDeferInvalidation"}, false};
 const Info<int> GFX_HACK_EFB_ACCESS_TILE_SIZE{{System::GFX, "Hacks", "EFBAccessTileSize"}, 64};
 const Info<bool> GFX_HACK_BBOX_ENABLE{{System::GFX, "Hacks", "BBoxEnable"}, false};
 const Info<bool> GFX_HACK_FORCE_PROGRESSIVE{{System::GFX, "Hacks", "ForceProgressive"}, true};

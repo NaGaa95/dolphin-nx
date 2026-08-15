@@ -75,8 +75,22 @@ std::string VideoBackend::GetDisplayName() const
 
 void VideoBackend::InitBackendInfo(const WindowSystemInfo& wsi)
 {
+#ifdef __SWITCH__
+  // The capability probe must not take ownership of the process-wide default NWindow. Destroying
+  // that temporary window surface calls nwindowReleaseBuffers(), which clears the dimensions that
+  // the Switch frontend selected for the upcoming game. The real context would then inherit the
+  // compositor's docked 1920x1080 default even when the session was configured for 1280x720.
+  WindowSystemInfo probe_wsi = wsi;
+  probe_wsi.type = WindowSystemType::Headless;
+  probe_wsi.display_connection = nullptr;
+  probe_wsi.render_window = nullptr;
+  probe_wsi.render_surface = nullptr;
+  const WindowSystemInfo& context_wsi = probe_wsi;
+#else
+  const WindowSystemInfo& context_wsi = wsi;
+#endif
   std::unique_ptr<GLContext> temp_gl_context =
-      GLContext::Create(wsi, g_Config.stereo_mode == StereoMode::QuadBuffer, true,
+      GLContext::Create(context_wsi, g_Config.stereo_mode == StereoMode::QuadBuffer, true,
                         Config::Get(Config::GFX_PREFER_GLES));
 
   if (!temp_gl_context)
@@ -222,4 +236,5 @@ void VideoBackend::Shutdown()
   ProgramShaderCache::Shutdown();
   g_sampler_cache.reset();
 }
+
 }  // namespace OGL

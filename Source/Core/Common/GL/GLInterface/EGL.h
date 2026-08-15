@@ -22,6 +22,7 @@ public:
   bool MakeCurrent() override;
   bool ClearCurrent() override;
 
+  void Update() override;
   void UpdateSurface(void* window_handle) override;
 
   void Swap() override;

@@ -57,6 +57,10 @@ public:
   ~GameFile();
 
   bool IsValid() const;
+  // Returns true when the file on disk no longer matches the source file that this metadata was
+  // read from. A source stamp is deliberately separate from m_file_size: for compressed images,
+  // m_file_size describes the image while this stamp describes the physical file itself.
+  bool SourceFileChanged() const;
   const std::string& GetFilePath() const { return m_file_path; }
   const std::string& GetFileName() const { return m_file_name; }
   const std::string& GetName(const Core::TitleDatabase& title_database) const;
@@ -144,6 +148,23 @@ private:
   bool m_valid{};
   std::string m_file_path;
   std::string m_file_name;
+
+  bool m_source_stat_valid{};
+  u64 m_source_file_size{};
+  s64 m_source_file_mtime{};
+  s64 m_source_file_mtime_nsec{};
+  s64 m_source_file_ctime{};
+  s64 m_source_file_ctime_nsec{};
+  // A game-mod descriptor's metadata and sync identity also depend on files referenced by the
+  // JSON.  Persist inexpensive stat stamps for those files so changing the base image, banner, or
+  // Riivolution XML refreshes the cache even when the descriptor itself is untouched.
+  std::vector<std::string> m_source_dependency_paths;
+  std::vector<u8> m_source_dependency_stat_valid;
+  std::vector<u64> m_source_dependency_sizes;
+  std::vector<s64> m_source_dependency_mtimes;
+  std::vector<s64> m_source_dependency_mtime_nsecs;
+  std::vector<s64> m_source_dependency_ctimes;
+  std::vector<s64> m_source_dependency_ctime_nsecs;
 
   u64 m_file_size{};
   u64 m_volume_size{};

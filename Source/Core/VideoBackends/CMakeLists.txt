@@ -1,5 +1,6 @@
+add_subdirectory(OGL)
+
 if(NOT DOLPHIN_SWITCH)
-  add_subdirectory(OGL)
   add_subdirectory(Null)
   add_subdirectory(Software)
 endif()

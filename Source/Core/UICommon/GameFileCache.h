@@ -9,6 +9,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "Common/CommonTypes.h"
@@ -44,13 +45,15 @@ public:
   void Clear(DeleteOnDisk delete_on_disk);
 
   // Returns nullptr if the file is invalid.
-  std::shared_ptr<const GameFile> AddOrGet(const std::string& path, bool* cache_changed);
+  std::shared_ptr<const GameFile> AddOrGet(const std::string& path, bool* cache_changed,
+                                           bool update_additional_metadata = true);
 
   // These functions return true if the call modified the cache.
   bool Update(std::span<const std::string> all_game_paths,
               const GameAddedToCacheFn& game_added_to_cache = {},
               const GameRemovedFromCacheFn& game_removed_from_cache = {},
-              const std::atomic_bool& processing_halted = false);
+              const std::atomic_bool& processing_halted = false,
+              bool revalidate_existing = true);
   bool UpdateAdditionalMetadata(const GameUpdatedFn& game_updated = {},
                                 const std::atomic_bool& processing_halted = false);
 
@@ -59,12 +62,14 @@ public:
 
 private:
   bool UpdateAdditionalMetadata(std::shared_ptr<GameFile>* game_file);
+  void RebuildPathIndex();
 
   bool SyncCacheFile(bool save);
   void DoState(PointerWrap* p, u64 size = 0);
 
   std::string m_path;
   std::vector<std::shared_ptr<GameFile>> m_cached_files;
+  std::unordered_map<std::string, std::size_t> m_path_index;
 };
 
 }  // namespace UICommon

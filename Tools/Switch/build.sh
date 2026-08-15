@@ -3,15 +3,15 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BUILD_DIR="${DOLPHIN_SWITCH_BUILD_DIR:-${ROOT}/build-switch}"
-NVK_ZIP="${1:-${DOLPHIN_SWITCH_NVK_ZIP:-}}"
+MESA_SDK_ZIP="${1:-${DOLPHIN_SWITCH_MESA_SDK_ZIP:-}}"
 DEVKITPRO="${DEVKITPRO:-/opt/devkitpro}"
 DEVKITA64="${DEVKITA64:-${DEVKITPRO}/devkitA64}"
 JOBS="${DOLPHIN_SWITCH_JOBS:-18}"
-RELEASE_VERSION="${DOLPHIN_SWITCH_RELEASE_VERSION:-1.0.2}"
+RELEASE_VERSION="${DOLPHIN_SWITCH_RELEASE_VERSION:-1.0.3}"
 
-if [[ -z "${NVK_ZIP}" ]]; then
-  echo "Usage: $0 <mesa-switch-vulkan-sdk.zip|builddir-switch.zip>" >&2
-  echo "Alternatively set DOLPHIN_SWITCH_NVK_ZIP." >&2
+if [[ -z "${MESA_SDK_ZIP}" ]]; then
+  echo "Usage: $0 <mesa-switch-unified-sdk.zip>" >&2
+  echo "Alternatively set DOLPHIN_SWITCH_MESA_SDK_ZIP." >&2
   exit 1
 fi
 
@@ -37,11 +37,14 @@ else
   export TMP="${TMPDIR}"
 fi
 
-"${ROOT}/Tools/Switch/prepare_nvk.sh" "${NVK_ZIP}" "${BUILD_DIR}/nvk"
+bash "${ROOT}/Tools/Switch/prepare_mesa_sdk.sh" "${MESA_SDK_ZIP}" \
+  "${BUILD_DIR}/mesa-sdk"
 
 cmake -S "${ROOT}" -B "${BUILD_DIR}" -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="${ROOT}/CMake/Toolchain-Switch.cmake" \
   -DCMAKE_BUILD_TYPE=Release \
+  -DDOLPHIN_SWITCH_MESA_SDK_ROOT="${BUILD_DIR}/mesa-sdk" \
+  -DDOLPHIN_SWITCH_NVK_OBJECT="${BUILD_DIR}/mesa-sdk/libvulkan_local.o" \
   -DDOLPHIN_SWITCH_RELEASE_VERSION="${RELEASE_VERSION}" \
   -DENABLE_LTO=ON
 

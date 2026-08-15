@@ -100,6 +100,10 @@ std::unique_ptr<GLContext> GLContext::Create(const WindowSystemInfo& wsi, bool s
   if (wsi.type == WindowSystemType::X11)
     context = std::make_unique<GLContextEGLX11>();
 #endif
+#if defined(__SWITCH__)
+  if (wsi.type == WindowSystemType::Switch)
+    context = std::make_unique<GLContextEGL>();
+#endif
   if (wsi.type == WindowSystemType::Headless || wsi.type == WindowSystemType::FBDev)
     context = std::make_unique<GLContextEGL>();
 #endif

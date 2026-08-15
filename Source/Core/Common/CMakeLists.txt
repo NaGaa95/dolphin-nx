@@ -308,16 +308,14 @@ else()
 endif()
 
 # OpenGL Interface
-if(NOT DOLPHIN_SWITCH)
-  target_sources(common PRIVATE
-    GL/GLContext.cpp
-    GL/GLContext.h
-    GL/GLUtil.cpp
-    GL/GLUtil.h
-    GL/GLExtensions/GLExtensions.cpp
-    GL/GLExtensions/GLExtensions.h
-  )
-endif()
+target_sources(common PRIVATE
+  GL/GLContext.cpp
+  GL/GLContext.h
+  GL/GLUtil.cpp
+  GL/GLUtil.h
+  GL/GLExtensions/GLExtensions.cpp
+  GL/GLExtensions/GLExtensions.h
+)
 
 if(ENABLE_EGL AND EGL_FOUND)
   target_sources(common PRIVATE

@@ -9,8 +9,11 @@
 #include <cctype>
 #include <cerrno>
 #include <algorithm>
+#include <dirent.h>
 #include <limits>
 #include <string>
+#include <string_view>
+#include <unordered_set>
 #include <vector>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -19,8 +22,6 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
 #include <turbojpeg.h>
-
-#include "Common/Version.h"
 
 namespace DolphinSwitch::Forwarder
 {
@@ -49,9 +50,14 @@ Result derive_header_key(u8 header_key[0x20])
 
 Service g_nsAppSrv;
 bool g_nsAppInitialized{};
+bool g_nsAppServiceOwned{};
 
 Result ns_app_init()
 {
+    if (g_nsAppInitialized)
+        return 0;
+    g_nsAppSrv = {};
+    g_nsAppServiceOwned = false;
     Result rc = nsInitialize();
     if (R_FAILED(rc))
         return rc;
@@ -61,7 +67,10 @@ Result ns_app_init()
             nsExit();
             return rc;
         }
+        g_nsAppServiceOwned = true;
     } else {
+        // This is a borrowed copy of the session owned by nsInitialize().  Closing it explicitly
+        // would close the same handle again when nsExit() tears down the global service.
         g_nsAppSrv = *nsGetServiceSession_ApplicationManagerInterface();
     }
     g_nsAppInitialized = true;
@@ -72,10 +81,12 @@ void ns_app_exit()
 {
     if (!g_nsAppInitialized)
         return;
-    serviceClose(&g_nsAppSrv);
+    if (g_nsAppServiceOwned)
+        serviceClose(&g_nsAppSrv);
     nsExit();
     g_nsAppSrv = {};
     g_nsAppInitialized = false;
+    g_nsAppServiceOwned = false;
 }
 
 Result ns_push_application_record(u64 tid, const FwdContentStorageRecord *records, u32 count)
@@ -102,6 +113,22 @@ constexpr u32 PFS0_META_HASH_BLOCK_SIZE = 0x1000;
 constexpr u32 PFS0_PADDING_SIZE = 0x200;
 constexpr u32 ROMFS_ENTRY_EMPTY = 0xFFFFFFFF;
 constexpr u32 ROMFS_FILEPARTITION_OFS = 0x200;
+
+bool checked_size_add(size_t lhs, size_t rhs, size_t *out)
+{
+    if (!out || lhs > std::numeric_limits<size_t>::max() - rhs)
+        return false;
+    *out = lhs + rhs;
+    return true;
+}
+
+bool checked_size_multiply(size_t lhs, size_t rhs, size_t *out)
+{
+    if (!out || (lhs != 0 && rhs > std::numeric_limits<size_t>::max() / lhs))
+        return false;
+    *out = lhs * rhs;
+    return true;
+}
 
 struct BufHelper {
     BufHelper() = default;
@@ -527,31 +554,47 @@ NcaEntry create_control_nca(u64 tid, const u8 *key, const FileEntries &romfs)
 
 struct MetaResult {
     std::vector<u8> nca;
-    u8 hash[SHA256_HASH_SIZE];
+    u8 hash[SHA256_HASH_SIZE]{};
     NcmContentMetaKey key{};
     FwdContentStorageRecord record{};
-    NcmContentMetaData data{};
+    std::vector<u8> data;
+    std::vector<NcmContentId> content_ids;
     bool valid{};
 };
 
 MetaResult create_meta_nca(u64 tid, const u8 *key, NcmStorageId storage_id, const std::vector<NcaEntry> &ncas)
 {
+    constexpr u64 max_content_size = (UINT64_C(1) << 40) - 1;
+    if (ncas.size() > static_cast<size_t>(std::numeric_limits<u16>::max()) - 1)
+        return {};
+
+    size_t packaged_info_size = 0;
+    size_t cnmt_size = 0;
+    if (!checked_size_multiply(ncas.size(), sizeof(NcmPackagedContentInfo), &packaged_info_size) ||
+        !checked_size_add(sizeof(CnmtHeader), sizeof(NcmApplicationMetaExtendedHeader),
+                          &cnmt_size) ||
+        !checked_size_add(cnmt_size, packaged_info_size, &cnmt_size) ||
+        !checked_size_add(cnmt_size, SHA256_HASH_SIZE, &cnmt_size))
+        return {};
+
     CnmtHeader cnmt_header{};
     NcmApplicationMetaExtendedHeader cnmt_extended{};
-    NcmPackagedContentInfo packaged_content_info[2]{};
+    std::vector<NcmPackagedContentInfo> packaged_content_info(ncas.size());
     u8 digest[0x20]{};
 
     cnmt_header.title_id = tid;
     cnmt_header.title_version = 0;
     cnmt_header.meta_type = NcmContentMetaType_Application;
     cnmt_header.meta_header.extended_header_size = sizeof(cnmt_extended);
-    cnmt_header.meta_header.content_count = 0x2; // program + control
+    cnmt_header.meta_header.content_count = static_cast<u16>(ncas.size());
     cnmt_header.meta_header.content_meta_count = 0x1;
     cnmt_header.meta_header.attributes = 0x0;
     cnmt_header.meta_header.storage_id = storage_id;
     cnmt_extended.patch_id = cnmt_header.title_id | 0x800;
 
-    for (u32 i = 0; i < ncas.size(); i++) {
+    for (size_t i = 0; i < ncas.size(); i++) {
+        if (!ncas[i].valid || ncas[i].data.size() > max_content_size)
+            return {};
         std::memcpy(packaged_content_info[i].hash, ncas[i].hash, sizeof(packaged_content_info[i].hash));
         std::memcpy(&packaged_content_info[i].info.content_id, ncas[i].hash, sizeof(packaged_content_info[i].info.content_id));
         packaged_content_info[i].info.content_type = ncas[i].type;
@@ -561,13 +604,13 @@ MetaResult create_meta_nca(u64 tid, const u8 *key, NcmStorageId storage_id, cons
     BufHelper cnmt_buf;
     cnmt_buf.write(&cnmt_header, sizeof(cnmt_header));
     cnmt_buf.write(&cnmt_extended, sizeof(cnmt_extended));
-    cnmt_buf.write(&packaged_content_info, sizeof(packaged_content_info));
+    cnmt_buf.write(packaged_content_info.data(), packaged_info_size);
     cnmt_buf.write(digest, sizeof(digest));
 
     FileEntries cnmt;
     char cnmt_name[34];
     std::snprintf(cnmt_name, sizeof(cnmt_name), "Application_%016lX.cnmt", tid);
-    if (!cnmt_buf.is_valid() ||
+    if (!cnmt_buf.is_valid() || cnmt_buf.buf.size() != cnmt_size ||
         !add_file_entry(cnmt, cnmt_name, cnmt_buf.buf.data(), cnmt_buf.buf.size()))
         return {};
 
@@ -578,7 +621,7 @@ MetaResult create_meta_nca(u64 tid, const u8 *key, NcmStorageId storage_id, cons
     write_nca_header_encrypted(h, tid, key, nca::ContentType_Meta, buf);
 
     NcaEntry nca_entry{buf, NcmContentType_Meta};
-    if (!nca_entry.valid)
+    if (!nca_entry.valid || nca_entry.data.size() > max_content_size)
         return {};
 
     MetaResult r;
@@ -597,15 +640,34 @@ MetaResult create_meta_nca(u64 tid, const u8 *key, NcmStorageId storage_id, cons
     r.record.key = r.key;
     r.record.storage_id = storage_id;
 
-    r.data.header = out_header;
-    r.data.extended = cnmt_extended;
-    std::memcpy(&r.data.infos[0].content_id, nca_entry.hash, sizeof(r.data.infos[0].content_id));
-    r.data.infos[0].content_type = nca_entry.type;
-    r.data.infos[0].attr = 0;
-    ncmU64ToContentInfoSize(cnmt_buf.buf.size(), &r.data.infos[0]);
-    r.data.infos[0].id_offset = 0;
-    r.data.infos[1] = packaged_content_info[0].info;
-    r.data.infos[2] = packaged_content_info[1].info;
+    const size_t content_info_count = ncas.size() + 1;
+    size_t content_info_size = 0;
+    size_t meta_data_size = 0;
+    if (!checked_size_multiply(content_info_count, sizeof(NcmContentInfo), &content_info_size) ||
+        !checked_size_add(sizeof(out_header), sizeof(cnmt_extended), &meta_data_size) ||
+        !checked_size_add(meta_data_size, content_info_size, &meta_data_size))
+        return {};
+
+    std::vector<NcmContentInfo> content_infos(content_info_count);
+    std::memcpy(&content_infos[0].content_id, nca_entry.hash,
+                sizeof(content_infos[0].content_id));
+    content_infos[0].content_type = nca_entry.type;
+    content_infos[0].attr = 0;
+    ncmU64ToContentInfoSize(nca_entry.data.size(), &content_infos[0]);
+    content_infos[0].id_offset = 0;
+    for (size_t i = 0; i < packaged_content_info.size(); ++i)
+        content_infos[i + 1] = packaged_content_info[i].info;
+
+    BufHelper meta_data;
+    meta_data.write(&out_header, sizeof(out_header));
+    meta_data.write(&cnmt_extended, sizeof(cnmt_extended));
+    meta_data.write(content_infos.data(), content_info_size);
+    if (!meta_data.is_valid() || meta_data.buf.size() != meta_data_size)
+        return {};
+    r.data = std::move(meta_data.buf);
+    r.content_ids.reserve(content_infos.size());
+    for (const auto &info : content_infos)
+        r.content_ids.push_back(info.content_id);
     r.valid = true;
     return r;
 }
@@ -694,15 +756,14 @@ void copy_nacp_text(char *destination, size_t destination_size, const std::strin
         std::memcpy(destination, clean.data(), length);
 }
 
-void patch_nacp(NacpStruct &nacp, const std::string &name, const std::string &author, u64 tid)
+void patch_nacp(NacpStruct &nacp, const std::string &name, u64 tid)
 {
+    // Keep the template author and display version. default.nacp is generated from the same
+    // release metadata as dolphin.nro, so launcher and per-game forwarders stay consistent.
     for (auto &lang : nacp.lang) {
         if (!name.empty())
             copy_nacp_text(lang.name, sizeof(lang.name), name);
-        if (!author.empty())
-            copy_nacp_text(lang.author, sizeof(lang.author), author);
     }
-    copy_nacp_text(nacp.display_version, sizeof(nacp.display_version), Common::GetScmDescStr());
     nacp.startup_user_account = 0x00;
     nacp.user_account_switch_lock = 0x00;
     nacp.add_on_content_registration_type = 0x01;
@@ -822,6 +883,54 @@ bool validateForwarderConfig(const std::string &path)
     return second != data.end() && second == data.end() - 1 && second != first + 1;
 }
 
+std::string forwarderConfigPath(u64 tid)
+{
+    char path[128];
+    const int length = snprintf(path, sizeof(path),
+        "sdmc:/switch/dolphin/forwarders/%016llx.cfg", static_cast<unsigned long long>(tid));
+    return length > 0 && static_cast<size_t>(length) < sizeof(path) ? std::string(path) :
+                                                                      std::string{};
+}
+
+bool readForwarderConfigFile(const std::string &path, std::string &nroPath,
+                             std::string &arguments)
+{
+    struct stat st{};
+    if (path.empty() || stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 3 ||
+        st.st_size > 2046)
+        return false;
+    std::vector<char> data(static_cast<size_t>(st.st_size));
+    FILE *file = fopen(path.c_str(), "rb");
+    if (!file)
+        return false;
+    bool ok = fread(data.data(), 1, data.size(), file) == data.size() && !ferror(file);
+    if (fclose(file) != 0)
+        ok = false;
+    if (!ok)
+        return false;
+    const auto first = std::find(data.begin(), data.end(), '\0');
+    const auto second = first == data.end() ? data.end() : std::find(first + 1, data.end(), '\0');
+    if (first == data.end() || first == data.begin() || second == data.end() ||
+        second != data.end() - 1 || second == first + 1)
+        return false;
+    nroPath.assign(data.begin(), first);
+    arguments.assign(first + 1, second);
+    return nroPath.size() < FS_MAX_PATH;
+}
+
+bool readForwarderConfig(u64 tid, std::string &nroPath, std::string &arguments)
+{
+    const std::string path = forwarderConfigPath(tid);
+    return !path.empty() && readForwarderConfigFile(path, nroPath, arguments);
+}
+
+u64 makeForwarderTitleId(const std::string &hashSource)
+{
+    u64 hashData[SHA256_HASH_SIZE / sizeof(u64)]{};
+    sha256CalculateHash(hashData, hashSource.data(), hashSource.size());
+    return 0x0500000000000000 | (hashData[0] & 0x00FFFFFFFFFFF000);
+}
+
 std::string resolveLauncherPath()
 {
     std::vector<std::string> candidates;
@@ -869,12 +978,9 @@ struct ForwarderConfigTransaction
              !S_ISDIR(directoryStat.st_mode)))
             return kForwarderIoError;
 
-        char pathBuffer[128];
-        const int length = snprintf(pathBuffer, sizeof(pathBuffer),
-            "sdmc:/switch/dolphin/forwarders/%016llx.cfg", static_cast<unsigned long long>(tid));
-        if (length < 0 || static_cast<size_t>(length) >= sizeof(pathBuffer))
+        path = forwarderConfigPath(tid);
+        if (path.empty())
             return kForwarderIoError;
-        path = pathBuffer;
         temp = path + ".tmp";
         backup = path + ".old";
 
@@ -1071,7 +1177,86 @@ struct ContentMetaBackup
 {
     bool existed{};
     std::vector<u8> data;
+    std::vector<NcmContentId> contentIds;
 };
+
+Result snapshotContentMeta(NcmContentMetaDatabase &database, const NcmContentMetaKey &key,
+                           ContentMetaBackup &backup);
+
+bool contentIdsEqual(const NcmContentId &lhs, const NcmContentId &rhs)
+{
+    return std::memcmp(&lhs, &rhs, sizeof(lhs)) == 0;
+}
+
+bool containsContentId(const std::vector<NcmContentId> &contentIds,
+                       const NcmContentId &contentId)
+{
+    return std::any_of(contentIds.begin(), contentIds.end(), [&](const NcmContentId &candidate) {
+        return contentIdsEqual(candidate, contentId);
+    });
+}
+
+Result snapshotContentIds(NcmContentMetaDatabase &database, const NcmContentMetaKey &key,
+                          const std::vector<u8> &metaData,
+                          std::vector<NcmContentId> &contentIds)
+{
+    if (metaData.size() < sizeof(NcmContentMetaHeader))
+        return kForwarderIoError;
+
+    NcmContentMetaHeader header{};
+    std::memcpy(&header, metaData.data(), sizeof(header));
+    size_t contentInfoSize = 0;
+    size_t requiredSize = 0;
+    if (!checked_size_multiply(header.content_count, sizeof(NcmContentInfo), &contentInfoSize) ||
+        !checked_size_add(sizeof(header), header.extended_header_size, &requiredSize) ||
+        !checked_size_add(requiredSize, contentInfoSize, &requiredSize) ||
+        requiredSize > metaData.size())
+        return kForwarderIoError;
+
+    contentIds.clear();
+    if (header.content_count == 0)
+        return 0;
+
+    std::vector<NcmContentInfo> infos(header.content_count);
+    s32 entriesWritten = 0;
+    Result rc = ncmContentMetaDatabaseListContentInfo(
+        &database, &entriesWritten, infos.data(), static_cast<s32>(infos.size()), &key, 0);
+    if (R_FAILED(rc))
+        return rc;
+    if (entriesWritten != static_cast<s32>(infos.size()))
+        return kForwarderIoError;
+
+    contentIds.reserve(infos.size());
+    for (const auto &info : infos)
+        contentIds.push_back(info.content_id);
+    return 0;
+}
+
+Result snapshotContentMeta(NcmContentMetaDatabase &database, const NcmContentMetaKey &key,
+                           ContentMetaBackup &backup)
+{
+    backup = {};
+    Result rc = ncmContentMetaDatabaseHas(&database, &backup.existed, &key);
+    if (R_FAILED(rc) || !backup.existed)
+        return rc;
+
+    u64 size = 0;
+    rc = ncmContentMetaDatabaseGetSize(&database, &size, &key);
+    if (R_SUCCEEDED(rc) && (size == 0 || size > 1024 * 1024))
+        rc = kForwarderIoError;
+    if (R_FAILED(rc))
+        return rc;
+
+    backup.data.resize(static_cast<size_t>(size));
+    u64 received = 0;
+    rc = ncmContentMetaDatabaseGet(&database, &key, &received, backup.data.data(),
+                                   backup.data.size());
+    if (R_SUCCEEDED(rc) && received != backup.data.size())
+        rc = kForwarderIoError;
+    if (R_SUCCEEDED(rc))
+        rc = snapshotContentIds(database, key, backup.data, backup.contentIds);
+    return rc;
+}
 
 Result restoreContentMeta(NcmContentMetaDatabase &database, const NcmContentMetaKey &key,
                           const ContentMetaBackup &backup)
@@ -1087,7 +1272,11 @@ Result restoreContentMeta(NcmContentMetaDatabase &database, const NcmContentMeta
 Result installContentMeta(NcmStorageId storageId, const MetaResult &meta,
                           ContentMetaBackup &backup, bool &safeToRemoveContent)
 {
+    if (meta.data.empty())
+        return kForwarderIoError;
+
     safeToRemoveContent = true;
+    backup = {};
     NcmContentMetaDatabase database{};
     Result rc = ncmOpenContentMetaDatabase(&database, storageId);
     if (R_FAILED(rc))
@@ -1095,25 +1284,11 @@ Result installContentMeta(NcmStorageId storageId, const MetaResult &meta,
 
     bool snapshotReady = false;
     bool writeAttempted = false;
-    rc = ncmContentMetaDatabaseHas(&database, &backup.existed, &meta.key);
-    if (R_SUCCEEDED(rc) && backup.existed) {
-        u64 size = 0;
-        rc = ncmContentMetaDatabaseGetSize(&database, &size, &meta.key);
-        if (R_SUCCEEDED(rc) && (size == 0 || size > 1024 * 1024))
-            rc = kForwarderIoError;
-        if (R_SUCCEEDED(rc)) {
-            backup.data.resize(static_cast<size_t>(size));
-            u64 received = 0;
-            rc = ncmContentMetaDatabaseGet(&database, &meta.key, &received,
-                                           backup.data.data(), backup.data.size());
-            if (R_SUCCEEDED(rc) && received != backup.data.size())
-                rc = kForwarderIoError;
-        }
-    }
+    rc = snapshotContentMeta(database, meta.key, backup);
     if (R_SUCCEEDED(rc)) {
         snapshotReady = true;
         writeAttempted = true;
-        rc = ncmContentMetaDatabaseSet(&database, &meta.key, &meta.data, sizeof(meta.data));
+        rc = ncmContentMetaDatabaseSet(&database, &meta.key, meta.data.data(), meta.data.size());
     }
     if (R_SUCCEEDED(rc))
         rc = ncmContentMetaDatabaseCommit(&database);
@@ -1135,8 +1310,296 @@ bool rollbackContentMeta(NcmStorageId storageId, const NcmContentMetaKey &key,
     return R_SUCCEEDED(rc);
 }
 
-Result install_forwarder(const std::string &launch_arguments, const std::string &name,
-                         const std::string &author,
+std::vector<NcmContentId> findReplacedContent(const std::vector<NcmContentId> &previousContent,
+                                              const std::vector<NcmContentId> &currentContent)
+{
+    std::vector<NcmContentId> replaced;
+    for (const auto &contentId : previousContent) {
+        if (!containsContentId(currentContent, contentId) &&
+            !containsContentId(replaced, contentId))
+            replaced.push_back(contentId);
+    }
+    return replaced;
+}
+
+void removeOrphanedContent(NcmStorageId storageId,
+                           const std::vector<NcmContentId> &contentIds)
+{
+    if (contentIds.empty())
+        return;
+
+    NcmContentMetaDatabase database{};
+    if (R_FAILED(ncmOpenContentMetaDatabase(&database, storageId)))
+        return;
+    NcmContentStorage storage{};
+    if (R_FAILED(ncmOpenContentStorage(&storage, storageId))) {
+        ncmContentMetaDatabaseClose(&database);
+        return;
+    }
+
+    // Check each candidate immediately before deletion. The new metadata is already committed,
+    // and NCM also protects content shared with any other metadata record from being removed.
+    for (const auto &contentId : contentIds) {
+        bool orphaned = false;
+        if (R_FAILED(ncmContentMetaDatabaseLookupOrphanContent(
+                &database, &orphaned, &contentId, 1)))
+            break;
+        if (!orphaned)
+            continue;
+
+        bool present = false;
+        if (R_FAILED(ncmContentStorageHas(&storage, &present, &contentId)))
+            break;
+        if (present && R_FAILED(ncmContentStorageDelete(&storage, &contentId)))
+            break;
+    }
+
+    ncmContentStorageClose(&storage);
+    ncmContentMetaDatabaseClose(&database);
+}
+
+struct LegacyForwarderConfig
+{
+    u64 tid{};
+    std::string nroPath;
+    std::string arguments;
+};
+
+bool parseForwarderConfigName(std::string_view name, u64 *tid)
+{
+    if (!tid || name.size() != 20 || name.substr(16) != ".cfg")
+        return false;
+    u64 value = 0;
+    for (size_t index = 0; index < 16; ++index) {
+        const unsigned char character = name[index];
+        unsigned digit = 0;
+        if (character >= '0' && character <= '9')
+            digit = character - '0';
+        else if (character >= 'a' && character <= 'f')
+            digit = character - 'a' + 10;
+        else if (character >= 'A' && character <= 'F')
+            digit = character - 'A' + 10;
+        else
+            return false;
+        value = (value << 4) | digit;
+    }
+    // IDs generated by Dolphin's forwarder have this namespace and 0x1000 alignment.
+    if ((value & UINT64_C(0xFF00000000000FFF)) != UINT64_C(0x0500000000000000))
+        return false;
+    *tid = value;
+    return true;
+}
+
+bool isSafeQuotedArgument(std::string_view value)
+{
+    return !value.empty() && value.size() < FS_MAX_PATH &&
+           std::all_of(value.begin(), value.end(), [](unsigned char character) {
+               return character >= 0x20 && character != 0x7f && character != '"' &&
+                      character != '\\';
+           });
+}
+
+bool legacyGameConfigMatches(const std::string &nroPath, const std::string &arguments,
+                             const std::unordered_set<std::string> &gamePaths,
+                             std::string_view stableId, std::string_view stableGameConfigPath)
+{
+    const std::string_view argumentView(arguments);
+    const bool quoteNro = nroPath.find_first_of(" \t") != std::string::npos;
+    const std::string launcherArgument = quoteNro ? "\"" + nroPath + "\"" : nroPath;
+    const std::string prefix = launcherArgument + " --game \"";
+    if (!arguments.starts_with(prefix))
+        return false;
+
+    const size_t pathStart = prefix.size();
+    const size_t pathEnd = arguments.find('"', pathStart);
+    if (pathEnd == std::string::npos)
+        return false;
+    const std::string gamePath = arguments.substr(pathStart, pathEnd - pathStart);
+    if (!isSafeQuotedArgument(gamePath))
+        return false;
+
+    size_t position = pathEnd + 1;
+    std::string_view configuredStableId;
+    std::string_view configuredGameConfig;
+    const auto consumeQuotedOption = [&](std::string_view option,
+                                         std::string_view *value) -> bool {
+        if (!argumentView.substr(position).starts_with(option))
+            return false;
+        const size_t valueStart = position + option.size();
+        const size_t valueEnd = arguments.find('"', valueStart);
+        if (valueEnd == std::string::npos)
+            return false;
+        *value = argumentView.substr(valueStart, valueEnd - valueStart);
+        position = valueEnd + 1;
+        return isSafeQuotedArgument(*value);
+    };
+
+    constexpr std::string_view libraryPrefix = " --library-id \"";
+    if (argumentView.substr(position).starts_with(libraryPrefix) &&
+        !consumeQuotedOption(libraryPrefix, &configuredStableId))
+        return false;
+    constexpr std::string_view configPrefix = " --game-config \"";
+    if (argumentView.substr(position).starts_with(configPrefix) &&
+        !consumeQuotedOption(configPrefix, &configuredGameConfig))
+        return false;
+    if (position != arguments.size())
+        return false;
+
+    // A matching explicit stable identity is definitive. A stable Entries/ config path is also
+    // unique to the library record. Older releases had neither, so use only the bounded path
+    // history persisted for this identity in that case.
+    return (!stableId.empty() && configuredStableId == stableId) ||
+           (!stableGameConfigPath.empty() && configuredGameConfig == stableGameConfigPath) ||
+           gamePaths.contains(gamePath);
+}
+
+std::vector<LegacyForwarderConfig> findLegacyForwarders(
+    u64 currentTid, const std::string &nroPath,
+    const std::vector<std::string> &exactLegacyLaunchArguments,
+    const std::vector<std::string> &legacyGamePaths, std::string_view stableId,
+    std::string_view stableGameConfigPath)
+{
+    std::vector<LegacyForwarderConfig> matches;
+    std::unordered_set<u64> matchedIds;
+    const auto addExact = [&](const std::string &configurationArguments) {
+        const u64 tid = makeForwarderTitleId(nroPath + configurationArguments);
+        if (tid == currentTid || matchedIds.contains(tid))
+            return;
+        std::string configuredNro;
+        std::string configuredArguments;
+        if (readForwarderConfig(tid, configuredNro, configuredArguments) &&
+            configuredNro == nroPath && configuredArguments == configurationArguments) {
+            matchedIds.insert(tid);
+            matches.push_back({tid, std::move(configuredNro), std::move(configuredArguments)});
+        }
+    };
+    for (const std::string &arguments : exactLegacyLaunchArguments)
+        addExact(arguments);
+
+    std::unordered_set<std::string> pathSet;
+    constexpr size_t maxLegacyPaths = 32;
+    for (const std::string &path : legacyGamePaths) {
+        if (pathSet.size() >= maxLegacyPaths)
+            break;
+        if (isSafeQuotedArgument(path))
+            pathSet.insert(path);
+    }
+    if (pathSet.empty() && stableId.empty() && stableGameConfigPath.empty())
+        return matches;
+
+    DIR *directory = opendir("sdmc:/switch/dolphin/forwarders");
+    if (!directory)
+        return matches;
+    constexpr size_t maxDirectoryEntries = 4096;
+    size_t inspected = 0;
+    while (inspected++ < maxDirectoryEntries) {
+        errno = 0;
+        dirent *entry = readdir(directory);
+        if (!entry)
+            break;
+        u64 tid = 0;
+        if (!parseForwarderConfigName(entry->d_name, &tid) || tid == currentTid ||
+            matchedIds.contains(tid))
+            continue;
+        const std::string path = std::string("sdmc:/switch/dolphin/forwarders/") + entry->d_name;
+        std::string configuredNro;
+        std::string configuredArguments;
+        if (!readForwarderConfigFile(path, configuredNro, configuredArguments) ||
+            configuredNro != nroPath ||
+            makeForwarderTitleId(configuredNro + configuredArguments) != tid ||
+            !legacyGameConfigMatches(configuredNro, configuredArguments, pathSet, stableId,
+                                     stableGameConfigPath))
+            continue;
+        matchedIds.insert(tid);
+        matches.push_back({tid, std::move(configuredNro), std::move(configuredArguments)});
+    }
+    closedir(directory);
+    return matches;
+}
+
+// Stable library IDs intentionally change the generated title ID used by older Dolphin-NX
+// releases. Remove an old shortcut only when its private configuration still exactly matches the
+// filename hash and arguments selected by findLegacyForwarders(). This collision/TOCTOU check keeps
+// cleanup scoped to Dolphin-owned shortcuts for the same persistent library identity.
+void removeLegacyForwarder(NcmStorageId storageId, u64 currentTid,
+                           const LegacyForwarderConfig &legacy)
+{
+    if (legacy.tid == currentTid ||
+        makeForwarderTitleId(legacy.nroPath + legacy.arguments) != legacy.tid)
+        return;
+
+    std::string configuredNro;
+    std::string configuredArguments;
+    if (!readForwarderConfig(legacy.tid, configuredNro, configuredArguments) ||
+        configuredNro != legacy.nroPath || configuredArguments != legacy.arguments)
+        return;
+
+    NcmContentMetaKey key{};
+    key.id = legacy.tid;
+    key.version = 0;
+    key.type = NcmContentMetaType_Application;
+    key.install_type = NcmContentInstallType_Full;
+
+    ContentMetaBackup backup;
+    NcmContentMetaDatabase database{};
+    if (R_FAILED(ncmOpenContentMetaDatabase(&database, storageId)))
+        return;
+    Result rc = snapshotContentMeta(database, key, backup);
+    ncmContentMetaDatabaseClose(&database);
+    // Do not mutate an incomplete/stale installation: without the old CNMT snapshot there is no
+    // safe way to reconstruct its HOME record if a later step fails.
+    if (R_FAILED(rc) || !backup.existed)
+        return;
+
+    // Remove HOME's record first, while all metadata/content it references is still valid. A crash
+    // here merely leaves an unlisted but intact old install; removing CNMT first would leave HOME
+    // pointing at missing metadata.
+    const Result deleteResult = nsDeleteApplicationEntity(legacy.tid);
+    if (R_FAILED(deleteResult))
+        return;
+
+    if (R_FAILED(ncmOpenContentMetaDatabase(&database, storageId)))
+    {
+        FwdContentStorageRecord oldRecord{key, static_cast<u8>(storageId), {0}};
+        ns_push_application_record(legacy.tid, &oldRecord, 1);
+        ns_invalidate_control_cache(legacy.tid);
+        return;
+    }
+    const Result removeResult = ncmContentMetaDatabaseRemove(&database, &key);
+    const Result commitResult = R_SUCCEEDED(removeResult) ?
+        ncmContentMetaDatabaseCommit(&database) : removeResult;
+    const bool metadataRemoved = R_SUCCEEDED(commitResult);
+    const Result restoreResult = metadataRemoved ? 0 : restoreContentMeta(database, key, backup);
+    ncmContentMetaDatabaseClose(&database);
+    if (!metadataRemoved)
+    {
+        if (R_SUCCEEDED(restoreResult))
+        {
+            FwdContentStorageRecord oldRecord{key, static_cast<u8>(storageId), {0}};
+            ns_push_application_record(legacy.tid, &oldRecord, 1);
+            ns_invalidate_control_cache(legacy.tid);
+        }
+        return;
+    }
+
+    const std::string configPath = forwarderConfigPath(legacy.tid);
+    if (!configPath.empty())
+    {
+        remove(configPath.c_str());
+        remove((configPath + ".tmp").c_str());
+        remove((configPath + ".old").c_str());
+        fsdevCommitDevice("sdmc");
+    }
+    ns_invalidate_control_cache(legacy.tid);
+    removeOrphanedContent(storageId, backup.contentIds);
+}
+
+Result install_forwarder(const std::string &launch_arguments,
+                         const std::string &legacy_launch_arguments,
+                         const std::vector<std::string> &legacy_game_paths,
+                         const std::string &stable_game_config_path,
+                         const std::string &stable_id,
+                         const std::string &name,
                          const std::vector<u8> &nsoData, std::vector<u8> npdmData, NacpStruct nacp,
                          const std::vector<u8> &iconJpeg, ForwarderStage &stage)
 {
@@ -1156,10 +1619,12 @@ Result install_forwarder(const std::string &launch_arguments, const std::string 
         nroPath.size() + args.size() + 2 > 2046)
         return kForwarderIoError;
 
-    u64 hashData[SHA256_HASH_SIZE / sizeof(u64)];
-    const std::string hashSource = nroPath + launcherArgument + " " + launch_arguments;
-    sha256CalculateHash(hashData, hashSource.data(), hashSource.length());
-    const u64 tid = 0x0500000000000000 | (hashData[0] & 0x00FFFFFFFFFFF000);
+    // The launch arguments contain mutable filesystem paths. Hashing a persistent library ID
+    // lets recreation replace the same title after an ISO rename or umsN: renumbering.
+    const std::string hashSource = stable_id.empty()
+        ? nroPath + launcherArgument + " " + launch_arguments
+        : "dolphin-forwarder:" + stable_id;
+    const u64 tid = makeForwarderTitleId(hashSource);
 
     ForwarderConfigTransaction config;
     FWD_TRY(config.stage(tid, nroPath, args));
@@ -1182,7 +1647,7 @@ Result install_forwarder(const std::string &launch_arguments, const std::string 
         ncaEntries.emplace_back(std::move(program));
     }
     {
-        patch_nacp(nacp, name, author, tid);
+        patch_nacp(nacp, name, tid);
         FileEntries romfs;
         if (!add_file_entry(romfs, "/control.nacp", &nacp, sizeof(nacp)) ||
             !add_file_entry(romfs, "/icon_AmericanEnglish.dat", iconJpeg.data(), iconJpeg.size()))
@@ -1250,6 +1715,18 @@ Result install_forwarder(const std::string &launch_arguments, const std::string 
 
     ns_invalidate_control_cache(tid);
     config.finish();
+    removeOrphanedContent(storageId,
+                          findReplacedContent(metaBackup.contentIds, meta.content_ids));
+    if (!stable_id.empty())
+    {
+        const std::vector<std::string> exactLegacyArguments{
+            launcherArgument + " " + legacy_launch_arguments};
+        const std::vector<LegacyForwarderConfig> legacyForwarders = findLegacyForwarders(
+            tid, nroPath, exactLegacyArguments, legacy_game_paths, stable_id,
+            stable_game_config_path);
+        for (const LegacyForwarderConfig &legacy : legacyForwarders)
+            removeLegacyForwarder(storageId, tid, legacy);
+    }
     return 0;
 }
 
@@ -1278,8 +1755,12 @@ void SetSelfPath(std::string path)
     s_self_path = std::move(path);
 }
 
-static bool CreateImpl(const std::string &launchArguments, const std::string &name,
-                       const std::string &author, const std::string &iconImgPath, char *err,
+static bool CreateImpl(const std::string &launchArguments, const std::string &stableId,
+                       const std::string &legacyLaunchArguments,
+                       const std::vector<std::string> &legacyGamePaths,
+                       const std::string &stableGameConfigPath,
+                       const std::string &name,
+                       const std::string &iconImgPath, char *err,
                        std::size_t errSize)
 {
     if (err && errSize) err[0] = '\0';
@@ -1300,6 +1781,7 @@ static bool CreateImpl(const std::string &launchArguments, const std::string &na
 
     bool cryptoInitialized = false;
     bool ncmInitialized = false;
+    bool nsInitialized = false;
     ForwarderStage stage = ForwarderStage::CryptoService;
     Result rc = splCryptoInitialize();
     if (R_SUCCEEDED(rc)) {
@@ -1312,12 +1794,15 @@ static bool CreateImpl(const std::string &launchArguments, const std::string &na
         stage = ForwarderStage::ApplicationService;
         rc = ns_app_init();
     }
-    if (R_SUCCEEDED(rc))
-        rc = install_forwarder(launchArguments, name.empty() ? "Dolphin" : name,
-                               author.empty() ? "Dolphin Emulator Project" : author,
+    if (R_SUCCEEDED(rc)) {
+        nsInitialized = true;
+        rc = install_forwarder(launchArguments, legacyLaunchArguments, legacyGamePaths,
+                               stableGameConfigPath, stableId, name.empty() ? "Dolphin" : name,
                                nso, npdm, nacp, iconJpeg, stage);
+    }
 
-    ns_app_exit();
+    if (nsInitialized)
+        ns_app_exit();
     if (ncmInitialized)
         ncmExit();
     if (cryptoInitialized)
@@ -1334,9 +1819,16 @@ static bool CreateImpl(const std::string &launchArguments, const std::string &na
     return true;
 }
 
-bool Create(const std::string &gamePath, const std::string &name, const std::string &author,
-            const std::string &iconImgPath, const std::string &gameConfigPath, char *err,
-            std::size_t errSize)
+bool CreateLauncher(char *err, std::size_t errSize)
+{
+    return CreateImpl({}, "launcher", {}, {}, {}, "Dolphin", "romfs:/fwd/dolphin_icon.png",
+                      err, errSize);
+}
+
+bool Create(const std::string &gamePath, const std::string &name,
+            const std::string &iconImgPath, const std::string &gameConfigPath,
+            const std::string &stableId, const std::vector<std::string> &legacyGamePaths,
+            char *err, std::size_t errSize)
 {
     const bool validPath = !gamePath.empty() && gamePath.size() < FS_MAX_PATH &&
         std::all_of(gamePath.begin(), gamePath.end(), [](unsigned char c) {
@@ -1347,20 +1839,33 @@ bool Create(const std::string &gamePath, const std::string &name, const std::str
          std::all_of(gameConfigPath.begin(), gameConfigPath.end(), [](unsigned char c) {
              return c >= 0x20 && c != 0x7f && c != '"' && c != '\\';
          }));
+    const bool validStableId = stableId.empty() ||
+        (stableId.size() <= 96 &&
+         std::all_of(stableId.begin(), stableId.end(), [](unsigned char c) {
+             return std::isalnum(c) || c == '-' || c == '_';
+         }));
     bool gameExists = false;
-    if (!validPath || !validConfigPath || !queryRegularFile(gamePath, gameExists) || !gameExists) {
+    if (!validPath || !validConfigPath || !validStableId ||
+        !queryRegularFile(gamePath, gameExists) || !gameExists) {
         if (err && errSize)
             snprintf(err, errSize, "The game path is missing or unsafe for a shortcut.");
         return false;
     }
+    const std::string legacyLaunchArguments = "--game \"" + gamePath + "\"" +
+        (gameConfigPath.empty() ? std::string{} :
+                                  " --game-config \"" + gameConfigPath + "\"");
     std::string launchArguments = "--game \"" + gamePath + "\"";
+    if (!stableId.empty())
+        launchArguments += " --library-id \"" + stableId + "\"";
     if (!gameConfigPath.empty())
         launchArguments += " --game-config \"" + gameConfigPath + "\"";
-    return CreateImpl(launchArguments, name, author, iconImgPath, err, errSize);
+    return CreateImpl(launchArguments, stableId, legacyLaunchArguments, legacyGamePaths,
+                      gameConfigPath, name, iconImgPath, err, errSize);
 }
 
-bool CreateNANDTitle(std::uint64_t titleId, const std::string &name, const std::string &author,
-                     const std::string &iconImgPath, char *err, std::size_t errSize)
+bool CreateNANDTitle(std::uint64_t titleId, const std::string &name,
+                     const std::string &iconImgPath, const std::string &stableId, char *err,
+                     std::size_t errSize)
 {
     if (titleId == 0) {
         if (err && errSize)
@@ -1370,6 +1875,9 @@ bool CreateNANDTitle(std::uint64_t titleId, const std::string &name, const std::
     char launchArguments[40];
     snprintf(launchArguments, sizeof(launchArguments), "--nand-title %016llx",
              static_cast<unsigned long long>(titleId));
-    return CreateImpl(launchArguments, name, author, iconImgPath, err, errSize);
+    const std::string identity = stableId.empty() ?
+        "nand-" + std::to_string(static_cast<unsigned long long>(titleId)) : stableId;
+    return CreateImpl(launchArguments, identity, launchArguments, {}, {}, name, iconImgPath, err,
+                      errSize);
 }
 }  // namespace DolphinSwitch::Forwarder

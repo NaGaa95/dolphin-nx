@@ -7,6 +7,11 @@
 #include <sstream>
 #include <vector>
 
+#ifdef __SWITCH__
+#include <EGL/eglmesaext.h>
+#include <switch.h>
+#endif
+
 #include "Common/Logging/Log.h"
 
 #ifndef EGL_KHR_create_context
@@ -56,7 +61,7 @@ void GLContextEGL::DetectMode()
 {
   EGLint num_configs;
   bool supportsGL = false, supportsGLES3 = false;
-  std::array<int, 3> renderable_types{{EGL_OPENGL_BIT, EGL_OPENGL_ES3_BIT_KHR}};
+  std::array<int, 2> renderable_types{{EGL_OPENGL_BIT, EGL_OPENGL_ES3_BIT_KHR}};
 
   for (auto renderable_type : renderable_types)
   {
@@ -129,12 +134,21 @@ void GLContextEGL::DetectMode()
 
 EGLDisplay GLContextEGL::OpenEGLDisplay()
 {
+#ifdef __SWITCH__
+  return eglGetDisplay(EGL_DEFAULT_DISPLAY);
+#else
   return eglGetDisplay(static_cast<EGLNativeDisplayType>(m_wsi.render_surface));
+#endif
 }
 
 EGLNativeWindowType GLContextEGL::GetEGLNativeWindow(EGLConfig config)
 {
+#ifdef __SWITCH__
+  void* const window = m_wsi.render_surface ? m_wsi.render_surface : m_wsi.render_window;
+  return reinterpret_cast<EGLNativeWindowType>(window);
+#else
   return reinterpret_cast<EGLNativeWindowType>(m_wsi.display_connection);
+#endif
 }
 
 // Create rendering window.
@@ -159,7 +173,7 @@ bool GLContextEGL::Initialize(const WindowSystemInfo& wsi, bool stereo, bool cor
   }
 
   /* Detection code */
-  EGLint num_configs;
+  EGLint num_configs = 0;
 
   if (m_opengl_mode == Mode::Detect)
     DetectMode();
@@ -194,19 +208,21 @@ bool GLContextEGL::Initialize(const WindowSystemInfo& wsi, bool stereo, bool cor
     return false;
   }
 
-  if (!eglChooseConfig(m_egl_display, attribs, &m_config, 1, &num_configs))
+  if (!eglChooseConfig(m_egl_display, attribs, &m_config, 1, &num_configs) || num_configs < 1)
   {
     INFO_LOG_FMT(VIDEO, "Error: couldn't get an EGL visual config");
     return false;
   }
 
-  if (m_opengl_mode == Mode::OpenGL)
-    eglBindAPI(EGL_OPENGL_API);
-  else
-    eglBindAPI(EGL_OPENGL_ES_API);
+  const EGLenum api = m_opengl_mode == Mode::OpenGL ? EGL_OPENGL_API : EGL_OPENGL_ES_API;
+  if (!eglBindAPI(api))
+  {
+    return false;
+  }
 
   std::string tmp;
-  std::istringstream buffer(eglQueryString(m_egl_display, EGL_EXTENSIONS));
+  const char* const extensions = eglQueryString(m_egl_display, EGL_EXTENSIONS);
+  std::istringstream buffer(extensions ? extensions : "");
   while (buffer >> tmp)
   {
     if (tmp == "EGL_KHR_surfaceless_context")
@@ -252,11 +268,13 @@ bool GLContextEGL::Initialize(const WindowSystemInfo& wsi, bool stereo, bool cor
 
   if (!CreateWindowSurface())
   {
-    ERROR_LOG_FMT(VIDEO, "Error: CreateWindowSurface failed {:#06x}", eglGetError());
+    const EGLint error = eglGetError();
+    ERROR_LOG_FMT(VIDEO, "Error: CreateWindowSurface failed {:#06x}", error);
     return false;
   }
 
-  return MakeCurrent();
+  const bool current = MakeCurrent();
+  return current;
 }
 
 std::unique_ptr<GLContext> GLContextEGL::CreateSharedContext()
@@ -273,9 +291,19 @@ std::unique_ptr<GLContext> GLContextEGL::CreateSharedContext()
   std::unique_ptr<GLContextEGL> new_context = std::make_unique<GLContextEGL>();
   new_context->m_opengl_mode = m_opengl_mode;
   new_context->m_egl_context = new_egl_context;
+#ifdef __SWITCH__
+  // A second EGL window surface cannot own the same NWindow buffer set. Shared
+  // shader-compilation contexts are surfaceless (or pbuffer-backed) instead.
+  new_context->m_wsi = m_wsi;
+  new_context->m_wsi.type = WindowSystemType::Headless;
+  new_context->m_wsi.render_window = nullptr;
+  new_context->m_wsi.render_surface = nullptr;
+#else
   new_context->m_wsi.display_connection = m_wsi.display_connection;
+#endif
   new_context->m_egl_display = m_egl_display;
   new_context->m_config = m_config;
+  new_context->m_attribs = m_attribs;
   new_context->m_supports_surfaceless = m_supports_surfaceless;
   new_context->m_is_shared = true;
   if (!new_context->CreateWindowSurface())
@@ -312,9 +340,7 @@ bool GLContextEGL::CreateWindowSurface()
   }
   else if (!m_supports_surfaceless)
   {
-    EGLint attrib_list[] = {
-        EGL_NONE,
-    };
+    EGLint attrib_list[] = {EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE};
     m_egl_surface = eglCreatePbufferSurface(m_egl_display, m_config, attrib_list);
     if (!m_egl_surface)
     {
@@ -344,6 +370,42 @@ void GLContextEGL::DestroyWindowSurface()
 bool GLContextEGL::MakeCurrent()
 {
   return eglMakeCurrent(m_egl_display, m_egl_surface, m_egl_surface, m_egl_context);
+}
+
+void GLContextEGL::Update()
+{
+  if (m_egl_surface == EGL_NO_SURFACE)
+    return;
+
+#ifdef __SWITCH__
+  const bool docked = appletGetOperationMode() == AppletOperationMode_Console;
+  const EGLint target_width = docked ? 1920 : 1280;
+  const EGLint target_height = docked ? 1080 : 720;
+  EGLint current_width = 0;
+  EGLint current_height = 0;
+  if (eglQuerySurface(m_egl_display, m_egl_surface, EGL_WIDTH, &current_width) &&
+      eglQuerySurface(m_egl_display, m_egl_surface, EGL_HEIGHT, &current_height) &&
+      (current_width != target_width || current_height != target_height))
+  {
+    const auto resize_surface =
+        reinterpret_cast<PFNEGLRESIZESURFACEMESAPROC>(eglGetProcAddress("eglResizeSurfaceMESA"));
+    if (!resize_surface ||
+        resize_surface(m_egl_display, m_egl_surface, target_width, target_height) != EGL_TRUE)
+    {
+      ERROR_LOG_FMT(VIDEO, "Failed to resize the Horizon EGL surface to {}x{}: {:#06x}",
+                    target_width, target_height, eglGetError());
+    }
+  }
+#endif
+
+  EGLint surface_width = 0;
+  EGLint surface_height = 0;
+  if (eglQuerySurface(m_egl_display, m_egl_surface, EGL_WIDTH, &surface_width) &&
+      eglQuerySurface(m_egl_display, m_egl_surface, EGL_HEIGHT, &surface_height))
+  {
+    m_backbuffer_width = static_cast<u32>(surface_width);
+    m_backbuffer_height = static_cast<u32>(surface_height);
+  }
 }
 
 void GLContextEGL::UpdateSurface(void* window_handle)

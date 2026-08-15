@@ -50,3 +50,5 @@ CMakeLists.txt.user
 .cache/clangd
 # Ignore CMake user presets
 CMakeUserPresets.json
+# Compiled Nintendo Switch launcher translations
+/Data/Sys/i18n/*.mo

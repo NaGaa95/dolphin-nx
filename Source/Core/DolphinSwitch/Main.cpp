@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <mutex>
@@ -47,6 +48,7 @@
 #include "Core/System.h"
 #include "DolphinSwitch/Audio.h"
 #include "DolphinSwitch/Forwarder.h"
+#include "DolphinSwitch/GciSync.h"
 #include "DolphinSwitch/Launcher.h"
 #include "DolphinSwitch/RuntimeOverlay.h"
 #include "DolphinSwitch/SystemLanguage.h"
@@ -84,6 +86,71 @@ struct PendingAlert
 
 std::vector<PendingAlert> s_pending_alerts;
 
+constexpr std::string_view VULKAN_RETURN_ARGUMENT = "--dolphin-vulkan-return";
+
+bool ScheduleLauncherRestart(const std::string& launcher_path)
+{
+  if (launcher_path.empty() || !envHasNextLoad())
+  {
+    std::fprintf(stderr,
+                 "[Dolphin Switch] Vulkan return: hbloader relaunch is unavailable; exiting "
+                 "instead of reusing the released display layer\n");
+    return false;
+  }
+
+  const std::string arguments = launcher_path + " " + std::string(VULKAN_RETURN_ARGUMENT);
+  const Result result = envSetNextLoad(launcher_path.c_str(), arguments.c_str());
+  if (R_FAILED(result))
+    std::fprintf(stderr, "[Dolphin Switch] failed to schedule launcher restart: %08x\n",
+                 static_cast<unsigned int>(result));
+  return R_SUCCEEDED(result);
+}
+
+bool ConfigureDefaultNWindow(NWindow* window, u32 width, u32 height)
+{
+  if (!window || !nwindowIsValid(window))
+    return false;
+
+  const Result dimensions_result = nwindowSetDimensions(window, width, height);
+  const Result crop_result = nwindowSetCrop(window, 0, 0, width, height);
+  const Result interval_result = nwindowSetSwapInterval(window, 1);
+  const bool success =
+      R_SUCCEEDED(dimensions_result) && R_SUCCEEDED(crop_result) && R_SUCCEEDED(interval_result);
+
+  return success;
+}
+
+class ScopedEnvironmentOverrides final
+{
+public:
+  void Set(const char* name, const char* value)
+  {
+    const char* const old_value = std::getenv(name);
+    m_previous.emplace_back(name, old_value ? std::optional<std::string>(old_value) : std::nullopt);
+    setenv(name, value, 1);
+  }
+
+  ~ScopedEnvironmentOverrides()
+  {
+    for (auto iterator = m_previous.rbegin(); iterator != m_previous.rend(); ++iterator)
+    {
+      if (iterator->second)
+        setenv(iterator->first.c_str(), iterator->second->c_str(), 1);
+      else
+        unsetenv(iterator->first.c_str());
+    }
+  }
+
+private:
+  std::vector<std::pair<std::string, std::optional<std::string>>> m_previous;
+};
+
+bool IsAppletMode()
+{
+  const AppletType type = appletGetAppletType();
+  return type != AppletType_Application && type != AppletType_SystemApplication;
+}
+
 std::optional<DolphinSwitch::LaunchRequest> GetDirectLaunchRequest(int argc, char** argv)
 {
   DolphinSwitch::LaunchRequest request;
@@ -118,6 +185,11 @@ std::optional<DolphinSwitch::LaunchRequest> GetDirectLaunchRequest(int argc, cha
     if (argument == "--game-config" && index + 1 < argc && argv[index + 1])
     {
       request.game_config_path = argv[++index];
+      continue;
+    }
+    if (argument == "--library-id" && index + 1 < argc && argv[index + 1])
+    {
+      request.library_id = argv[++index];
       continue;
     }
     if (!found_launch_target && !argument.starts_with('-'))
@@ -291,6 +363,7 @@ struct SessionResult
 {
   bool exit_application = false;
   std::string launcher_message;
+  bool restart_launcher = false;
 };
 
 using RuntimeControllerMode = DolphinSwitch::RuntimeOverlay::ControllerMode;
@@ -461,9 +534,8 @@ std::optional<std::string> GetLocalWiimoteSetting(int player, std::string_view k
       Config::GetLayer(Config::LayerType::LocalGame);
   if (!local_game_layer)
     return std::nullopt;
-  return local_game_layer->Get<std::string>(
-      Config::Location{Config::System::WiiPad, "Wiimote" + std::to_string(player + 1),
-                       std::string(key)});
+  return local_game_layer->Get<std::string>(Config::Location{
+      Config::System::WiiPad, "Wiimote" + std::to_string(player + 1), std::string(key)});
 }
 
 RuntimeControllerMode DetectRuntimeControllerMode(int player)
@@ -501,9 +573,7 @@ RuntimeControllerMode DetectRuntimeControllerMode(int player)
   {
     sideways = *configured == "True" || *configured == "true" || *configured == "1";
   }
-  return sideways ?
-             RuntimeControllerMode::WiiRemoteSideways :
-             RuntimeControllerMode::WiiRemote;
+  return sideways ? RuntimeControllerMode::WiiRemoteSideways : RuntimeControllerMode::WiiRemote;
 }
 
 bool CanSynchronizeRuntimeControllerMode(int player)
@@ -627,21 +697,26 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request)
 
   if (!resolved_request.nand_title)
   {
-    if (!DolphinSwitch::PrepareLaunchStorage(request.path, &resolved_request.path))
+    const bool path_ready =
+        request.library_id.empty() ?
+            DolphinSwitch::PrepareLaunchStorage(request.path, &resolved_request.path) :
+            DolphinSwitch::ResolveLibraryLaunchPath(request.library_id, request.path,
+                                                    &resolved_request.path);
+    if (!path_ready)
       return {false, CollectAlertText("The selected game's storage device is unavailable.")};
   }
 
   ConfigLoaders::SetLocalGameConfigOverridePath(resolved_request.game_config_path);
-  Common::ScopeGuard game_config_guard(
-      [] { ConfigLoaders::SetLocalGameConfigOverridePath({}); });
+  Common::ScopeGuard game_config_guard([] { ConfigLoaders::SetLocalGameConfigOverridePath({}); });
 
   NWindow* const window = nwindowGetDefault();
   const bool docked = appletGetOperationMode() == AppletOperationMode_Console;
   const u32 width = docked ? 1920 : 1280;
   const u32 height = docked ? 1080 : 720;
-  (void)nwindowSetDimensions(window, width, height);
-  (void)nwindowSetCrop(window, 0, 0, width, height);
-  (void)nwindowSetSwapInterval(window, 1);
+  if (!ConfigureDefaultNWindow(window, width, height))
+  {
+    return {false, "The display could not be configured after the launcher."};
+  }
   const WindowSystemInfo wsi{WindowSystemType::Switch, nullptr, window, window};
   UICommon::InitControllers(wsi);
   Common::ScopeGuard controller_guard([] { UICommon::ShutdownControllers(); });
@@ -668,11 +743,32 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request)
   // restart when the launcher device has become stale.
   DolphinSwitch::Audio::ResetSharedAudioDevice();
 
-  if (!BootManager::BootCore(system, std::move(boot), wsi))
+  ScopedEnvironmentOverrides graphics_environment;
+  graphics_environment.Set("MESA_SWITCH_GLTHREAD", "0");
+  graphics_environment.Set("MESA_SWITCH_GL_DRIVER", "nvc0");
+
+  DolphinSwitch::GciSyncSession gci_sync;
+  std::string gci_prepare_error;
+  if (!BootManager::BootCore(system, std::move(boot), wsi,
+                             [&] { return gci_sync.Prepare(system, &gci_prepare_error); }))
   {
+    const bool attempted_vulkan = Config::Get(Config::MAIN_GFX_BACKEND) == "Vulkan";
+    std::fprintf(stderr, "[Dolphin Switch] BootCore failed\n");
     s_session_running.store(false, std::memory_order_release);
-    return {false, CollectAlertText("Dolphin failed to initialize the selected title.")};
+    std::string cleanup_warning;
+    gci_sync.Finish(&cleanup_warning);
+    std::string message = gci_prepare_error.empty() ?
+                              CollectAlertText("Dolphin failed to initialize the selected title.") :
+                              std::move(gci_prepare_error);
+    if (!cleanup_warning.empty())
+    {
+      if (!message.empty())
+        message += "\n\n";
+      message += cleanup_warning;
+    }
+    return {false, std::move(message), attempted_vulkan};
   }
+  const std::string configured_backend = Config::Get(Config::MAIN_GFX_BACKEND);
 
   RuntimeControllerSession runtime_controllers = CreateRuntimeControllerSession(system);
   if (runtime_controllers.is_wii)
@@ -723,7 +819,6 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request)
   std::optional<std::uint64_t> pause_after_render_generation;
   std::uint64_t handled_operation_mode_generation =
       s_operation_mode_generation.load(std::memory_order_acquire);
-
   while (s_session_running.load(std::memory_order_acquire) && (applet_alive = appletMainLoop()))
   {
     Core::HostDispatchJobs(system);
@@ -905,16 +1000,28 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request)
   Core::Shutdown(system);
 
   std::string error_message = CollectAlertText({});
+  std::string gci_sync_warning;
+  gci_sync.Finish(&gci_sync_warning);
+  if (!gci_sync_warning.empty())
+  {
+    if (!error_message.empty())
+      error_message += "\n\n";
+    error_message += gci_sync_warning;
+  }
   if (!ever_running.load(std::memory_order_acquire) && error_message.empty())
     error_message = "The selected title stopped during boot.";
 
-  return {s_applet_exit_requested.load(std::memory_order_acquire), std::move(error_message)};
+  return {s_applet_exit_requested.load(std::memory_order_acquire), std::move(error_message),
+          configured_backend == "Vulkan"};
 }
 }  // namespace
 
 int main(int argc, char** argv)
 {
   Common::ScopeGuard audio_guard([] { DolphinSwitch::Audio::ShutdownSharedAudio(); });
+
+  const std::string_view self_path =
+      argc > 0 && argv[0] ? std::string_view(argv[0]) : std::string_view{};
 
   u64 allowed_core_mask = 0;
   const Result core_mask_result =
@@ -927,16 +1034,14 @@ int main(int argc, char** argv)
     Common::SetCurrentThreadAffinity(2);
   }
 
-  const std::string launcher_path = DolphinSwitch::Updater::ResolveLauncherPath(
-      argc > 0 && argv[0] ? std::string_view(argv[0]) : std::string_view{});
+  const std::string launcher_path = DolphinSwitch::Updater::ResolveLauncherPath(self_path);
   std::string update_recovery_error;
   const bool update_recovery_ok =
       DolphinSwitch::Updater::RecoverInstallation(launcher_path, update_recovery_error);
 
   const Result romfs_result = romfsInit();
-  const Result sockets_result = socketInitializeDefault();
   bool romfs_mounted = R_SUCCEEDED(romfs_result);
-  const bool sockets_initialized = R_SUCCEEDED(sockets_result);
+  bool sockets_initialized = false;
   Common::ScopeGuard platform_guard([&] {
     DolphinSwitch::ShutdownLauncherStorage();
     if (sockets_initialized)
@@ -950,6 +1055,17 @@ int main(int argc, char** argv)
   File::SetSysDirectory("romfs:");
   UICommon::SetUserDirectory("sdmc:/switch/dolphin");
   (void)File::CreateDirs(File::GetUserPath(D_CONFIG_IDX));
+  // The SDL launcher must remain single-threaded. A game can temporarily
+  // override these defaults through its graphics settings.
+  setenv("MESA_SWITCH_GLTHREAD", "0", 1);
+  setenv("MESA_SWITCH_GL_DRIVER", "nvc0", 1);
+  if (!self_path.empty())
+    DolphinSwitch::Forwarder::SetSelfPath(std::string(self_path));
+
+  if (IsAppletMode())
+    return DolphinSwitch::RunAppletInstaller() ? EXIT_SUCCESS : EXIT_FAILURE;
+
+  sockets_initialized = R_SUCCEEDED(socketInitializeDefault());
   UICommon::Init();
   Common::ScopeGuard ui_common_guard([] { UICommon::Shutdown(); });
   if (Config::Get(Config::RA_ENABLED))
@@ -959,8 +1075,6 @@ int main(int argc, char** argv)
     Config::Save();
   (void)File::CreateFullPath(File::GetUserPath(D_CACHE_IDX));
   (void)File::CreateFullPath(File::GetUserPath(D_SHADERCACHE_IDX));
-  if (argc > 0 && argv[0])
-    DolphinSwitch::Forwarder::SetSelfPath(argv[0]);
 
   Common::RegisterMsgAlertHandler(SwitchMsgAlertHandler);
   {
@@ -1029,6 +1143,11 @@ int main(int argc, char** argv)
     const SessionResult result = RunGameSession(*request);
     if (result.exit_application)
       break;
+    if (result.restart_launcher)
+    {
+      (void)ScheduleLauncherRestart(launcher_path);
+      break;
+    }
     launcher_message = result.launcher_message;
   }
 

@@ -17,6 +17,8 @@
 
 #include "Core/BootManager.h"
 
+#include <cstdlib>
+
 #include <fmt/format.h>
 
 #include "Common/CommonTypes.h"
@@ -46,7 +48,7 @@ namespace BootManager
 {
 // Boot the ISO or file
 bool BootCore(Core::System& system, std::unique_ptr<BootParameters> boot,
-              const WindowSystemInfo& wsi)
+              const WindowSystemInfo& wsi, ConfigReadyCallback config_ready_callback)
 {
   if (!boot)
     return false;
@@ -55,6 +57,34 @@ bool BootCore(Core::System& system, std::unique_ptr<BootParameters> boot,
 
   if (!StartUp.SetPathsAndGameMetadata(system, *boot))
     return false;
+
+  if (config_ready_callback && !config_ready_callback())
+  {
+    // SetPathsAndGameMetadata installs these layers before Core::Init. A frontend may need to
+    // reject a launch after inspecting the final per-game configuration (for example when an
+    // external save location is unsafe). Do not let that aborted title leak configuration into
+    // the next launch.
+    Config::ClearCurrentRunLayer();
+    Config::RemoveLayer(Config::LayerType::Movie);
+    Config::RemoveLayer(Config::LayerType::Netplay);
+    Config::RemoveLayer(Config::LayerType::GlobalGame);
+    Config::RemoveLayer(Config::LayerType::LocalGame);
+    StartUp.ResetRunningGameMetadata();
+    return false;
+  }
+
+#ifdef __SWITCH__
+  // SetPathsAndGameMetadata installs the title-specific graphics layers. Select the GL driver and
+  // GLThread only now, before Core::Init creates Mesa's context, so global and per-game launcher
+  // choices have identical behavior. Main.cpp restores the launcher's NVC0 defaults afterward.
+  const std::string graphics_backend = Config::Get(Config::MAIN_GFX_BACKEND);
+  const bool use_opengl = graphics_backend == "OGL";
+  const bool use_zink = use_opengl && Config::Get(Config::GFX_SWITCH_USE_ZINK);
+  setenv("MESA_SWITCH_GL_DRIVER", use_zink ? "zink" : "nvc0", 1);
+  const bool use_glthread = use_opengl && Config::Get(Config::GFX_SWITCH_GLTHREAD);
+  setenv("MESA_SWITCH_GLTHREAD", use_glthread ? "1" : "0", 1);
+
+#endif
 
   // Movie settings
   auto& movie = system.GetMovie();

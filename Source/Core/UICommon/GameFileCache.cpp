@@ -23,7 +23,7 @@
 
 namespace UICommon
 {
-static constexpr u32 CACHE_REVISION = 27;  // Last changed in PR 13844
+static constexpr u32 CACHE_REVISION = 30;  // High-resolution source/dependency change stamps
 
 std::vector<std::string> FindAllGamePaths(std::span<const std::string_view> directories_to_scan,
                                           bool recursive_scan)
@@ -57,22 +57,57 @@ void GameFileCache::Clear(DeleteOnDisk delete_on_disk)
     File::Delete(m_path);
 
   m_cached_files.clear();
+  m_path_index.clear();
 }
 
 std::shared_ptr<const GameFile> GameFileCache::AddOrGet(const std::string& path,
-                                                        bool* cache_changed)
+                                                        bool* cache_changed,
+                                                        bool update_additional_metadata)
 {
-  auto it = std::ranges::find(m_cached_files, path, &GameFile::GetFilePath);
-  const bool found = it != m_cached_files.cend();
-  if (!found)
+  auto indexed = m_path_index.find(path);
+  bool found = indexed != m_path_index.end();
+  std::size_t index = found ? indexed->second : 0;
+  if (found && (index >= m_cached_files.size() || m_cached_files[index]->GetFilePath() != path))
+  {
+    // Recover defensively if an older cache mutation left the acceleration table stale.
+    RebuildPathIndex();
+    indexed = m_path_index.find(path);
+    found = indexed != m_path_index.end();
+    index = found ? indexed->second : 0;
+  }
+  if (found && m_cached_files[index]->SourceFileChanged())
+  {
+    std::shared_ptr<GameFile> replacement = std::make_shared<GameFile>(path);
+    if (!replacement->IsValid())
+    {
+      const std::size_t last = m_cached_files.size() - 1;
+      if (index != last)
+      {
+        m_cached_files[index] = std::move(m_cached_files[last]);
+        m_path_index[m_cached_files[index]->GetFilePath()] = index;
+      }
+      m_cached_files.pop_back();
+      m_path_index.erase(path);
+      *cache_changed = true;
+      return nullptr;
+    }
+
+    // Replace the shared pointer rather than mutating the object so readers on other threads keep
+    // a coherent snapshot of the old metadata.
+    m_cached_files[index] = std::move(replacement);
+    *cache_changed = true;
+  }
+  else if (!found)
   {
     std::shared_ptr<UICommon::GameFile> game = std::make_shared<GameFile>(path);
     if (!game->IsValid())
       return nullptr;
     m_cached_files.emplace_back(std::move(game));
+    index = m_cached_files.size() - 1;
+    m_path_index.emplace(path, index);
   }
-  std::shared_ptr<GameFile>& result = found ? *it : m_cached_files.back();
-  if (UpdateAdditionalMetadata(&result) || !found)
+  std::shared_ptr<GameFile>& result = m_cached_files[index];
+  if ((update_additional_metadata && UpdateAdditionalMetadata(&result)) || !found)
     *cache_changed = true;
 
   return result;
@@ -81,7 +116,8 @@ std::shared_ptr<const GameFile> GameFileCache::AddOrGet(const std::string& path,
 bool GameFileCache::Update(std::span<const std::string> all_game_paths,
                            const GameAddedToCacheFn& game_added_to_cache,
                            const GameRemovedFromCacheFn& game_removed_from_cache,
-                           const std::atomic_bool& processing_halted)
+                           const std::atomic_bool& processing_halted,
+                           bool revalidate_existing)
 {
   // Copy game paths into a set, except ones that match DiscIO::ShouldHideFromGameList.
   // TODO: Prevent DoFileSearch from looking inside /files/ directories of DirectoryBlobs at all?
@@ -107,9 +143,33 @@ bool GameFileCache::Update(std::span<const std::string> all_game_paths,
       if (processing_halted)
         break;
 
-      if (game_paths.erase((*it)->GetFilePath()))
+      const std::string path = (*it)->GetFilePath();
+      if (game_paths.erase(path))
       {
-        ++it;
+        if (!revalidate_existing || !(*it)->SourceFileChanged())
+        {
+          ++it;
+          continue;
+        }
+
+        std::shared_ptr<GameFile> replacement = std::make_shared<GameFile>(path);
+        if (game_removed_from_cache)
+          game_removed_from_cache(path);
+
+        cache_changed = true;
+        if (replacement->IsValid())
+        {
+          // Replacing the shared pointer keeps any concurrent holders of the old GameFile safe.
+          *it = std::move(replacement);
+          if (game_added_to_cache)
+            game_added_to_cache(*it);
+          ++it;
+        }
+        else
+        {
+          --end;
+          *it = std::move(*end);
+        }
       }
       else
       {
@@ -121,7 +181,11 @@ bool GameFileCache::Update(std::span<const std::string> all_game_paths,
         *it = std::move(*end);
       }
     }
-    m_cached_files.erase(it, m_cached_files.end());
+    // Swap-removal leaves discarded/moved-from entries in [end, actual_end).  On a normal pass
+    // it == end, so erasing from either iterator is equivalent.  If cancellation interrupted the
+    // pass, however, [it, end) is the untouched cache tail and must survive for the next scan.
+    // Erasing from it in that case silently dropped every entry we had not processed yet.
+    m_cached_files.erase(processing_halted ? end : it, m_cached_files.end());
   }
 
   // Now that the previous loop has run, game_paths only contains paths that
@@ -141,6 +205,8 @@ bool GameFileCache::Update(std::span<const std::string> all_game_paths,
       m_cached_files.push_back(std::move(file));
     }
   }
+
+  RebuildPathIndex();
 
   return cache_changed;
 }
@@ -203,12 +269,22 @@ bool GameFileCache::UpdateAdditionalMetadata(std::shared_ptr<GameFile>* game_fil
 
 bool GameFileCache::Load()
 {
-  return SyncCacheFile(false);
+  const bool loaded = SyncCacheFile(false);
+  RebuildPathIndex();
+  return loaded;
 }
 
 bool GameFileCache::Save()
 {
   return SyncCacheFile(true);
+}
+
+void GameFileCache::RebuildPathIndex()
+{
+  m_path_index.clear();
+  m_path_index.reserve(m_cached_files.size());
+  for (std::size_t index = 0; index < m_cached_files.size(); ++index)
+    m_path_index.insert_or_assign(m_cached_files[index]->GetFilePath(), index);
 }
 
 bool GameFileCache::SyncCacheFile(bool save)

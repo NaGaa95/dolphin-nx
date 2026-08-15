@@ -3,6 +3,8 @@
 
 #include "DiscIO/GameModDescriptor.h"
 
+#include <algorithm>
+#include <cctype>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -16,8 +18,33 @@
 
 namespace DiscIO
 {
+static bool HasExplicitRoot(std::string_view path)
+{
+  if (StringToPath(path).is_absolute())
+    return true;
+
+  // On platforms using devoptab (notably the Switch), paths such as sdmc:/, ums0:/ and
+  // dsmb_<id>:/ are absolute even though std::filesystem applies POSIX path rules and considers
+  // them relative.  A bare device root such as "sdmc:" is also valid and is used as the virtual
+  // SD root by Riivolution.  URI-style paths (for example Android content:// paths) follow the
+  // same rooted syntax and must not be prefixed with the descriptor's directory either.
+  const std::size_t colon = path.find(':');
+  if (colon == std::string_view::npos || colon == 0)
+    return false;
+
+  const bool valid_root_name = std::ranges::all_of(path.substr(0, colon), [](unsigned char c) {
+    return std::isalnum(c) != 0 || c == '_' || c == '-' || c == '.';
+  });
+  if (!valid_root_name)
+    return false;
+
+  return colon + 1 == path.size() || path[colon + 1] == '/' || path[colon + 1] == '\\';
+}
+
 static std::string MakeAbsolute(const std::string& directory, const std::string& path)
 {
+  if (HasExplicitRoot(path))
+    return path;
   return PathToString(StringToPath(directory) / StringToPath(path));
 }
 

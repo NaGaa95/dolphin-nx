@@ -94,6 +94,8 @@ extern const Info<bool> GFX_DISABLE_FOG;
 extern const Info<bool> GFX_BORDERLESS_FULLSCREEN;
 extern const Info<bool> GFX_ENABLE_VALIDATION_LAYER;
 extern const Info<bool> GFX_BACKEND_MULTITHREADING;
+extern const Info<bool> GFX_SWITCH_GLTHREAD;
+extern const Info<bool> GFX_SWITCH_USE_ZINK;
 extern const Info<int> GFX_COMMAND_BUFFER_EXECUTE_INTERVAL;
 extern const Info<bool> GFX_SHADER_CACHE;
 extern const Info<bool> GFX_WAIT_FOR_SHADERS_BEFORE_STARTING;
