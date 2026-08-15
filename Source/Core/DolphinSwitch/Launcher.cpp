@@ -86,7 +86,11 @@ constexpr std::string_view DATA_DIRECTORY = "sdmc:/switch/dolphin";
 constexpr std::string_view CONFIG_PATH = "sdmc:/switch/dolphin/launcher.ini";
 constexpr std::string_view COVER_DIRECTORY = "sdmc:/switch/dolphin/covers";
 constexpr std::string_view LSFG_DIRECTORY = "sdmc:/switch/dolphin/lsfg";
-constexpr int COVER_CACHE_LIMIT = 28;
+constexpr int COVER_CACHE_LIMIT = 64;
+constexpr int COVER_REQUEST_BUDGET = 48;
+constexpr int COVER_UPLOAD_BUDGET = 2;
+constexpr std::size_t COVER_JOB_LIMIT = 96;
+constexpr std::size_t COVER_READY_LIMIT = 4;
 constexpr std::size_t TEXT_CACHE_LIMIT = 512;
 constexpr std::size_t TEXT_CACHE_BYTES = 12 * 1024 * 1024;
 constexpr std::size_t METRIC_CACHE_LIMIT = 2048;
@@ -853,8 +857,10 @@ struct Game
   bool metadata_refreshed = false;
   SDL_Texture* cover = nullptr;
   std::uint64_t cover_use = 0;
+  std::uint64_t cover_request = 0;
   Uint32 cover_loaded_at = 0;
   bool cover_attempted = false;
+  bool cover_queued = false;
 };
 
 struct LibraryIdentityRecord
@@ -936,7 +942,27 @@ struct LibraryScanState
   std::atomic<std::size_t> processed{0};
   bool full = true;
   bool cache_changed = false;
+  std::size_t unsorted_published = 0;
   std::unordered_set<std::string> target_usb_ids;
+};
+
+struct CoverDecodeJob
+{
+  std::string key;
+  std::string custom_path;
+  std::shared_ptr<const UICommon::GameFile> metadata;
+  std::uint64_t request = 0;
+  std::uint64_t epoch = 0;
+};
+
+struct CoverDecodeResult
+{
+  std::string key;
+  std::uint64_t request = 0;
+  std::uint64_t epoch = 0;
+  int width = 0;
+  int height = 0;
+  std::vector<Uint8> pixels;
 };
 
 struct SmbAutoMountState
@@ -1770,9 +1796,16 @@ private:
     MarkConfigDirty();
   }
 
-  SDL_Texture* LoadCoverTexture(const Game& game);
+  CoverDecodeResult DecodeCover(const CoverDecodeJob& job);
+  void CoverDecodeThread();
+  void StartCoverDecodeWorker();
+  void StopCoverDecodeWorker();
+  void CancelQueuedCoverDecodes();
+  void QueueCoverDecode(Game* game, bool priority);
+  void PumpCoverDecodeResults();
+  SDL_Texture* UploadCoverTexture(const CoverDecodeResult& result);
   SDL_Texture* LoadScaledTexture(const std::string& path, int width, int height);
-  void EnsureCover(Game* game);
+  void EnsureCover(Game* game, bool priority = false);
   void ReloadCover(Game* game);
   void EvictCover();
   std::string CoverPath(const Game& game) const;
@@ -1953,6 +1986,15 @@ private:
   int m_grid_rows = 2;
   int m_cover_decode_budget = 0;
   std::uint64_t m_cover_use = 0;
+  std::mutex m_cover_decode_mutex;
+  std::condition_variable m_cover_decode_condition;
+  std::deque<CoverDecodeJob> m_cover_decode_jobs;
+  std::deque<CoverDecodeResult> m_cover_decode_ready;
+  std::thread m_cover_decode_thread;
+  bool m_cover_decode_started = false;
+  bool m_cover_decode_stop = false;
+  std::uint64_t m_cover_decode_epoch = 1;
+  std::uint64_t m_cover_request_serial = 0;
   std::uint64_t m_usb_generation = 0;
   Uint32 m_usb_refresh_at = 0;
   Uint32 m_screen_fx_start = 0;
@@ -2199,6 +2241,7 @@ bool Launcher::Initialize(bool applet_installer)
   ApplyAppearance();
   if (!applet_installer)
   {
+    StartCoverDecodeWorker();
     // Present the launcher as soon as SDL, fonts and the theme are ready. Source restoration,
     // network startup and scanning happen after this frame so the user never waits on black.
     ClearBackground();
@@ -2227,6 +2270,7 @@ void Launcher::Shutdown()
   StopGameScan();
   StopUsbInitialization();
   StopAutoMountShares();
+  StopCoverDecodeWorker();
   Updater::Shutdown();
   FlushPendingSaves();
 
@@ -2350,6 +2394,7 @@ void Launcher::PrepareApplicationExit()
   StopGameScan();
   StopUsbInitialization();
   StopAutoMountShares();
+  StopCoverDecodeWorker();
   Updater::Shutdown();
   if (m_cover_download_ready)
   {
@@ -3675,6 +3720,7 @@ bool Launcher::BeginFrame()
 {
   if (!m_running || !appletMainLoop())
     return false;
+  PumpCoverDecodeResults();
   m_frame_has_scrolling_text = false;
   if (m_controller && !SDL_GameControllerGetAttached(m_controller))
   {
@@ -5008,6 +5054,8 @@ Game* Launcher::VisibleGame(int index)
 void Launcher::StartGameScan(std::vector<std::string> sources, bool replace)
 {
   StopGameScan();
+  if (replace)
+    CancelQueuedCoverDecodes();
   RefreshConfiguredUsbSources();
   sources = replace ? m_sources : std::move(sources);
   m_usb_locations = Storage::ListUsbLocations();
@@ -5235,7 +5283,7 @@ void Launcher::StartGameScan(std::vector<std::string> sources, bool replace)
           // Wake immediately for the first game and first complete page, then coalesce
           // notifications. Sorting/rebuilding the visible list once per file was the dominant cost
           // in large caches.
-          if (processed == 1 || processed == first_page_size || processed % 32 == 0)
+          if (processed <= first_page_size || processed % 32 == 0)
           {
             SDL_Event wake{};
             wake.type = SDL_USEREVENT;
@@ -5345,11 +5393,10 @@ void Launcher::PumpGameScan()
   std::deque<Game> ready;
   {
     std::lock_guard lock(state->mutex);
-    // Publish at most one visible page first, then coalesced background batches. This gets an
-    // interactive first page on screen without repeatedly sorting the whole growing library.
-    const std::size_t page_size = static_cast<std::size_t>(std::max(1, GridPageSize()));
-    const std::size_t batch_limit =
-        m_games.empty() ? page_size : std::max<std::size_t>(32, page_size * 2);
+    // Keep publication bounded so metadata insertion and list maintenance cannot monopolize an
+    // SDL frame. The worker wakes each first-page result, so the launcher becomes interactive
+    // immediately and fills that page progressively.
+    constexpr std::size_t batch_limit = 2;
     const std::size_t count = std::min(state->ready.size(), batch_limit);
     for (std::size_t index = 0; index < count; ++index)
     {
@@ -5357,6 +5404,7 @@ void Launcher::PumpGameScan()
       state->ready.pop_front();
     }
   }
+  std::size_t published = 0;
   for (Game& game : ready)
   {
     if (game.canonical_path.empty())
@@ -5399,6 +5447,7 @@ void Launcher::PumpGameScan()
     if (existing == m_games.end())
     {
       m_games.emplace_back(std::move(game));
+      ++published;
     }
     else
     {
@@ -5414,19 +5463,41 @@ void Launcher::PumpGameScan()
       {
         game.cover = existing->cover;
         game.cover_use = existing->cover_use;
+        game.cover_request = existing->cover_request;
         game.cover_loaded_at = existing->cover_loaded_at;
         game.cover_attempted = existing->cover_attempted;
+        game.cover_queued = existing->cover_queued;
       }
       *existing = std::move(game);
+      ++published;
     }
   }
-  if (!ready.empty())
-    SortGames();
+  if (published != 0)
+  {
+    state->unsorted_published += published;
+    const std::size_t first_page = static_cast<std::size_t>(std::max(1, GridPageSize()));
+    if (m_games.size() <= first_page || state->unsorted_published >= 16)
+    {
+      SortGames();
+      state->unsorted_published = 0;
+    }
+    else
+    {
+      RebuildVisibleGames();
+    }
+  }
 
   bool queue_empty = false;
   {
     std::lock_guard lock(state->mutex);
     queue_empty = state->ready.empty();
+  }
+  if (!queue_empty)
+  {
+    SDL_Event wake{};
+    wake.type = SDL_USEREVENT;
+    wake.user.code = 0x444c5343;
+    SDL_PushEvent(&wake);
   }
   if (!state->complete.load(std::memory_order_acquire) || !queue_empty)
     return;
@@ -6118,23 +6189,26 @@ std::string Launcher::CoverPath(const Game& game) const
   return std::string(COVER_DIRECTORY) + "/" + game.key + ".png";
 }
 
-SDL_Texture* Launcher::LoadCoverTexture(const Game& game)
+CoverDecodeResult Launcher::DecodeCover(const CoverDecodeJob& job)
 {
+  CoverDecodeResult result;
+  result.key = job.key;
+  result.request = job.request;
+  result.epoch = job.epoch;
   SDL_Surface* surface = nullptr;
-  const std::string custom_path = CoverPath(game);
-  bool custom_exists = RegularFileExists(custom_path);
+  bool custom_exists = RegularFileExists(job.custom_path);
   // Finish an interrupted atomic import before loading the cover. The normal path performs only
   // the existing cover stat; the backup check is needed solely when the active file is absent.
-  if (!custom_exists && RegularFileExists(custom_path + ".old"))
+  if (!custom_exists && RegularFileExists(job.custom_path + ".old"))
   {
-    (void)RecoverAtomicFile(custom_path);
-    custom_exists = RegularFileExists(custom_path);
+    (void)RecoverAtomicFile(job.custom_path);
+    custom_exists = RegularFileExists(job.custom_path);
   }
   if (custom_exists)
-    surface = IMG_Load(custom_path.c_str());
-  if (!surface && game.metadata)
+    surface = IMG_Load(job.custom_path.c_str());
+  if (!surface && job.metadata)
   {
-    const UICommon::GameCover& cover = game.metadata->GetCoverImage();
+    const UICommon::GameCover& cover = job.metadata->GetCoverImage();
     if (!cover.empty() && cover.buffer.size() <= static_cast<std::size_t>(INT_MAX))
     {
       if (SDL_RWops* stream =
@@ -6142,8 +6216,14 @@ SDL_Texture* Launcher::LoadCoverTexture(const Game& game)
         surface = IMG_Load_RW(stream, 1);
     }
   }
-  if (!surface)
-    return nullptr;
+  if (!surface || surface->w < 1 || surface->h < 1 || surface->w > 8192 || surface->h > 8192 ||
+      static_cast<std::uint64_t>(surface->w) * static_cast<std::uint64_t>(surface->h) >
+          16ULL * 1024 * 1024)
+  {
+    if (surface)
+      SDL_FreeSurface(surface);
+    return result;
+  }
   constexpr int maximum_width = 360;
   constexpr int maximum_height = 540;
   int width = surface->w;
@@ -6165,7 +6245,7 @@ SDL_Texture* Launcher::LoadCoverTexture(const Game& game)
     if (!scaled)
     {
       SDL_FreeSurface(surface);
-      return nullptr;
+      return result;
     }
     SDL_BlendMode blend = SDL_BLENDMODE_NONE;
     SDL_GetSurfaceBlendMode(surface, &blend);
@@ -6176,15 +6256,241 @@ SDL_Texture* Launcher::LoadCoverTexture(const Game& game)
     if (!copied)
     {
       SDL_FreeSurface(scaled);
-      return nullptr;
+      return result;
     }
     surface = scaled;
   }
-  SDL_Texture* texture = SDL_CreateTextureFromSurface(m_renderer, surface);
+  SDL_Surface* rgba = SDL_ConvertSurfaceFormat(surface, SDL_PIXELFORMAT_RGBA32, 0);
   SDL_FreeSurface(surface);
+  if (!rgba)
+    return result;
+  const bool must_lock = SDL_MUSTLOCK(rgba);
+  if (must_lock && SDL_LockSurface(rgba) != 0)
+  {
+    SDL_FreeSurface(rgba);
+    return result;
+  }
+  result.width = rgba->w;
+  result.height = rgba->h;
+  result.pixels.resize(static_cast<std::size_t>(result.width) * result.height * 4);
+  for (int row = 0; row < result.height; ++row)
+  {
+    std::memcpy(result.pixels.data() + static_cast<std::size_t>(row) * result.width * 4,
+                static_cast<const Uint8*>(rgba->pixels) + static_cast<std::size_t>(row) * rgba->pitch,
+                static_cast<std::size_t>(result.width) * 4);
+  }
+  if (must_lock)
+    SDL_UnlockSurface(rgba);
+  SDL_FreeSurface(rgba);
+  return result;
+}
+
+void Launcher::CoverDecodeThread()
+{
+  for (;;)
+  {
+    CoverDecodeJob job;
+    {
+      std::unique_lock lock(m_cover_decode_mutex);
+      m_cover_decode_condition.wait(lock, [&] {
+        return m_cover_decode_stop ||
+               (!m_cover_decode_jobs.empty() && m_cover_decode_ready.size() < COVER_READY_LIMIT);
+      });
+      if (m_cover_decode_stop)
+        return;
+      job = std::move(m_cover_decode_jobs.front());
+      m_cover_decode_jobs.pop_front();
+    }
+
+    CoverDecodeResult result = DecodeCover(job);
+    bool publish = false;
+    {
+      std::lock_guard lock(m_cover_decode_mutex);
+      if (!m_cover_decode_stop && job.epoch == m_cover_decode_epoch)
+      {
+        m_cover_decode_ready.emplace_back(std::move(result));
+        publish = true;
+      }
+    }
+    if (publish)
+    {
+      SDL_Event wake{};
+      wake.type = SDL_USEREVENT;
+      wake.user.code = 0x434f5652;  // COVR: a decoded cover is ready for SDL upload.
+      SDL_PushEvent(&wake);
+    }
+  }
+}
+
+void Launcher::StartCoverDecodeWorker()
+{
+  std::lock_guard lock(m_cover_decode_mutex);
+  if (m_cover_decode_started)
+    return;
+  m_cover_decode_stop = false;
+  m_cover_decode_started = true;
+  m_cover_decode_thread = std::thread(&Launcher::CoverDecodeThread, this);
+}
+
+void Launcher::StopCoverDecodeWorker()
+{
+  {
+    std::lock_guard lock(m_cover_decode_mutex);
+    if (!m_cover_decode_started)
+      return;
+    m_cover_decode_stop = true;
+    m_cover_decode_jobs.clear();
+    m_cover_decode_ready.clear();
+  }
+  m_cover_decode_condition.notify_all();
+  if (m_cover_decode_thread.joinable())
+    m_cover_decode_thread.join();
+  std::lock_guard lock(m_cover_decode_mutex);
+  m_cover_decode_started = false;
+}
+
+void Launcher::CancelQueuedCoverDecodes()
+{
+  {
+    std::lock_guard lock(m_cover_decode_mutex);
+    ++m_cover_decode_epoch;
+    m_cover_decode_jobs.clear();
+    m_cover_decode_ready.clear();
+  }
+  for (Game& game : m_games)
+  {
+    game.cover_queued = false;
+    game.cover_request = 0;
+  }
+  m_cover_decode_condition.notify_all();
+}
+
+void Launcher::QueueCoverDecode(Game* game, bool priority)
+{
+  if (!game || game->cover || game->cover_attempted)
+    return;
+  if (game->cover_queued)
+  {
+    if (priority)
+    {
+      std::lock_guard lock(m_cover_decode_mutex);
+      const auto found = std::ranges::find(m_cover_decode_jobs, game->cover_request,
+                                           &CoverDecodeJob::request);
+      if (found != m_cover_decode_jobs.end() && found != m_cover_decode_jobs.begin())
+      {
+        CoverDecodeJob job = std::move(*found);
+        m_cover_decode_jobs.erase(found);
+        m_cover_decode_jobs.emplace_front(std::move(job));
+        m_cover_decode_condition.notify_one();
+      }
+    }
+    return;
+  }
+  if (m_cover_decode_budget <= 0)
+    return;
+  --m_cover_decode_budget;
+
+  CoverDecodeJob job;
+  job.key = game->key;
+  job.custom_path = CoverPath(*game);
+  job.metadata = game->metadata;
+  job.request = ++m_cover_request_serial;
+  game->cover_request = job.request;
+  game->cover_queued = true;
+
+  CoverDecodeJob dropped;
+  bool did_drop = false;
+  {
+    std::lock_guard lock(m_cover_decode_mutex);
+    job.epoch = m_cover_decode_epoch;
+    if (m_cover_decode_jobs.size() >= COVER_JOB_LIMIT)
+    {
+      dropped = std::move(m_cover_decode_jobs.back());
+      m_cover_decode_jobs.pop_back();
+      did_drop = true;
+    }
+    if (priority)
+      m_cover_decode_jobs.emplace_front(std::move(job));
+    else
+      m_cover_decode_jobs.emplace_back(std::move(job));
+  }
+  if (did_drop)
+  {
+    const auto old = std::ranges::find(m_games, dropped.key, &Game::key);
+    if (old != m_games.end() && old->cover_request == dropped.request)
+    {
+      old->cover_queued = false;
+      old->cover_request = 0;
+    }
+  }
+  m_cover_decode_condition.notify_one();
+}
+
+SDL_Texture* Launcher::UploadCoverTexture(const CoverDecodeResult& result)
+{
+  if (!m_renderer || result.width < 1 || result.height < 1 || result.pixels.empty())
+    return nullptr;
+  SDL_Texture* texture = SDL_CreateTexture(m_renderer, SDL_PIXELFORMAT_RGBA32,
+                                           SDL_TEXTUREACCESS_STATIC, result.width, result.height);
+  if (texture && SDL_UpdateTexture(texture, nullptr, result.pixels.data(), result.width * 4) != 0)
+  {
+    SDL_DestroyTexture(texture);
+    texture = nullptr;
+  }
+  if (!texture)
+  {
+    SDL_Surface* surface = SDL_CreateRGBSurfaceWithFormatFrom(
+        const_cast<Uint8*>(result.pixels.data()), result.width, result.height, 32,
+        result.width * 4, SDL_PIXELFORMAT_RGBA32);
+    if (surface)
+    {
+      texture = SDL_CreateTextureFromSurface(m_renderer, surface);
+      SDL_FreeSurface(surface);
+    }
+  }
   if (texture)
     SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
   return texture;
+}
+
+void Launcher::PumpCoverDecodeResults()
+{
+  int uploads = 0;
+  int processed = 0;
+  while (processed < 12)
+  {
+    CoverDecodeResult result;
+    {
+      std::lock_guard lock(m_cover_decode_mutex);
+      if (m_cover_decode_ready.empty())
+        break;
+      if (!m_cover_decode_ready.front().pixels.empty() && uploads >= COVER_UPLOAD_BUDGET)
+        break;
+      result = std::move(m_cover_decode_ready.front());
+      m_cover_decode_ready.pop_front();
+    }
+    m_cover_decode_condition.notify_one();
+    ++processed;
+    const auto game = std::ranges::find(m_games, result.key, &Game::key);
+    if (game == m_games.end() || game->cover_request != result.request)
+      continue;
+    game->cover_queued = false;
+    game->cover_attempted = true;
+    if (result.pixels.empty())
+      continue;
+    SDL_Texture* texture = UploadCoverTexture(result);
+    ++uploads;
+    if (!texture)
+      continue;
+    if (std::ranges::count_if(m_games, [](const Game& item) { return item.cover != nullptr; }) >=
+        COVER_CACHE_LIMIT)
+    {
+      EvictCover();
+    }
+    game->cover = texture;
+    game->cover_use = ++m_cover_use;
+    game->cover_loaded_at = SDL_GetTicks();
+  }
 }
 
 SDL_Texture* Launcher::LoadScaledTexture(const std::string& path, int width, int height)
@@ -6233,7 +6539,7 @@ void Launcher::EvictCover()
   victim->cover_attempted = false;
 }
 
-void Launcher::EnsureCover(Game* game)
+void Launcher::EnsureCover(Game* game, bool priority)
 {
   if (!game)
     return;
@@ -6242,19 +6548,7 @@ void Launcher::EnsureCover(Game* game)
     game->cover_use = ++m_cover_use;
     return;
   }
-  if (game->cover_attempted || m_cover_decode_budget <= 0)
-    return;
-  --m_cover_decode_budget;
-  game->cover_attempted = true;
-  SDL_Texture* texture = LoadCoverTexture(*game);
-  if (!texture)
-    return;
-  if (std::ranges::count_if(m_games, [](const Game& item) { return item.cover != nullptr; }) >=
-      COVER_CACHE_LIMIT)
-    EvictCover();
-  game->cover = texture;
-  game->cover_use = ++m_cover_use;
-  game->cover_loaded_at = SDL_GetTicks();
+  QueueCoverDecode(game, priority);
 }
 
 void Launcher::ReloadCover(Game* game)
@@ -6264,9 +6558,12 @@ void Launcher::ReloadCover(Game* game)
   if (game->cover)
     SDL_DestroyTexture(game->cover);
   game->cover = nullptr;
+  game->cover_use = 0;
+  game->cover_request = 0;
   game->cover_attempted = false;
+  game->cover_queued = false;
   m_cover_decode_budget = 1;
-  EnsureCover(game);
+  EnsureCover(game, true);
 }
 
 int Launcher::GridColumns() const
@@ -6376,9 +6673,9 @@ int Launcher::GridHitTest(int x, int y, int page_start) const
 void Launcher::RenderGrid(int selection)
 {
   ClearBackground();
-  m_cover_decode_budget = 3;
+  m_cover_decode_budget = COVER_REQUEST_BUDGET;
   if (Game* selected = VisibleGame(selection))
-    EnsureCover(selected);
+    EnsureCover(selected, true);
   const bool large = m_width >= 1600;
   const int top = large ? 112 : 80;
   const int footer = large ? 54 : 38;
@@ -6521,6 +6818,13 @@ void Launcher::RenderGrid(int selection)
                       current ? m_value : m_dim);
     }
   }
+  // Decode the following page after all visible covers are queued. Page turns therefore avoid
+  // the first-visit stall without allowing a large library to flood memory or the SDL upload path.
+  const int prefetch_start = page_start + per_page;
+  const int prefetch_end =
+      std::min(static_cast<int>(m_visible_games.size()), prefetch_start + per_page);
+  for (int index = prefetch_start; index < prefetch_end; ++index)
+    EnsureCover(VisibleGame(index));
   if (m_visible_games.empty())
   {
     if (m_library_scan)
