@@ -460,6 +460,13 @@ PRIVATE
   implot
 )
 
+if(ENABLE_SDL)
+  target_link_libraries(dolphin-emu
+  PRIVATE
+    SDL3::SDL3
+  )
+endif()
+
 if (NEED_QT_GUI_PRIVATE_COMPONENT)
   target_link_libraries(dolphin-emu
   PRIVATE
@@ -574,6 +581,7 @@ if (WIN32)
                                  --no-translations
                                  --no-compiler-runtime
                                  --no-system-d3d-compiler
+                                 --no-system-dxc-compiler
                                  --no-opengl-sw
                                  "$<TARGET_FILE:dolphin-emu>"
   )
