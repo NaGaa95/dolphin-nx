@@ -19,7 +19,7 @@
 #include <vector>
 
 #ifndef DOLPHIN_SWITCH_RELEASE_VERSION
-#define DOLPHIN_SWITCH_RELEASE_VERSION "1.0.8-v2"
+#define DOLPHIN_SWITCH_RELEASE_VERSION "1.0.3-v2"
 #endif
 
 namespace DolphinSwitch::CoverDownload
