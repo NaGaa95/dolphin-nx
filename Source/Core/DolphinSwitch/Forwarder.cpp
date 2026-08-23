@@ -756,13 +756,15 @@ void copy_nacp_text(char *destination, size_t destination_size, const std::strin
         std::memcpy(destination, clean.data(), length);
 }
 
-void patch_nacp(NacpStruct &nacp, const std::string &name, u64 tid)
+void patch_nacp(NacpStruct &nacp, const std::string &name, const std::string &author, u64 tid)
 {
-    // Keep the template author and display version. default.nacp is generated from the same
-    // release metadata as dolphin.nro, so launcher and per-game forwarders stay consistent.
+    // Keep the template display version. An empty author preserves the template metadata, which
+    // is used by the launcher-only shortcut; per-game shortcuts may override it in the wizard.
     for (auto &lang : nacp.lang) {
         if (!name.empty())
             copy_nacp_text(lang.name, sizeof(lang.name), name);
+        if (!author.empty())
+            copy_nacp_text(lang.author, sizeof(lang.author), author);
     }
     nacp.startup_user_account = 0x00;
     nacp.user_account_switch_lock = 0x00;
@@ -1600,6 +1602,7 @@ Result install_forwarder(const std::string &launch_arguments,
                          const std::string &stable_game_config_path,
                          const std::string &stable_id,
                          const std::string &name,
+                         const std::string &author,
                          const std::vector<u8> &nsoData, std::vector<u8> npdmData, NacpStruct nacp,
                          const std::vector<u8> &iconJpeg, ForwarderStage &stage)
 {
@@ -1647,7 +1650,7 @@ Result install_forwarder(const std::string &launch_arguments,
         ncaEntries.emplace_back(std::move(program));
     }
     {
-        patch_nacp(nacp, name, tid);
+        patch_nacp(nacp, name, author, tid);
         FileEntries romfs;
         if (!add_file_entry(romfs, "/control.nacp", &nacp, sizeof(nacp)) ||
             !add_file_entry(romfs, "/icon_AmericanEnglish.dat", iconJpeg.data(), iconJpeg.size()))
@@ -1760,6 +1763,7 @@ static bool CreateImpl(const std::string &launchArguments, const std::string &st
                        const std::vector<std::string> &legacyGamePaths,
                        const std::string &stableGameConfigPath,
                        const std::string &name,
+                       const std::string &author,
                        const std::string &iconImgPath, char *err,
                        std::size_t errSize)
 {
@@ -1798,7 +1802,7 @@ static bool CreateImpl(const std::string &launchArguments, const std::string &st
         nsInitialized = true;
         rc = install_forwarder(launchArguments, legacyLaunchArguments, legacyGamePaths,
                                stableGameConfigPath, stableId, name.empty() ? "Dolphin" : name,
-                               nso, npdm, nacp, iconJpeg, stage);
+                               author, nso, npdm, nacp, iconJpeg, stage);
     }
 
     if (nsInitialized)
@@ -1821,14 +1825,15 @@ static bool CreateImpl(const std::string &launchArguments, const std::string &st
 
 bool CreateLauncher(char *err, std::size_t errSize)
 {
-    return CreateImpl({}, "launcher", {}, {}, {}, "Dolphin", "romfs:/fwd/dolphin_icon.png",
+    return CreateImpl({}, "launcher", {}, {}, {}, "Dolphin", {},
+                      "romfs:/fwd/dolphin_icon.png",
                       err, errSize);
 }
 
 bool Create(const std::string &gamePath, const std::string &name,
-            const std::string &iconImgPath, const std::string &gameConfigPath,
-            const std::string &stableId, const std::vector<std::string> &legacyGamePaths,
-            char *err, std::size_t errSize)
+            const std::string &author, const std::string &iconImgPath,
+            const std::string &gameConfigPath, const std::string &stableId,
+            const std::vector<std::string> &legacyGamePaths, char *err, std::size_t errSize)
 {
     const bool validPath = !gamePath.empty() && gamePath.size() < FS_MAX_PATH &&
         std::all_of(gamePath.begin(), gamePath.end(), [](unsigned char c) {
@@ -1860,12 +1865,12 @@ bool Create(const std::string &gamePath, const std::string &name,
     if (!gameConfigPath.empty())
         launchArguments += " --game-config \"" + gameConfigPath + "\"";
     return CreateImpl(launchArguments, stableId, legacyLaunchArguments, legacyGamePaths,
-                      gameConfigPath, name, iconImgPath, err, errSize);
+                      gameConfigPath, name, author, iconImgPath, err, errSize);
 }
 
 bool CreateNANDTitle(std::uint64_t titleId, const std::string &name,
-                     const std::string &iconImgPath, const std::string &stableId, char *err,
-                     std::size_t errSize)
+                     const std::string &author, const std::string &iconImgPath,
+                     const std::string &stableId, char *err, std::size_t errSize)
 {
     if (titleId == 0) {
         if (err && errSize)
@@ -1877,7 +1882,7 @@ bool CreateNANDTitle(std::uint64_t titleId, const std::string &name,
              static_cast<unsigned long long>(titleId));
     const std::string identity = stableId.empty() ?
         "nand-" + std::to_string(static_cast<unsigned long long>(titleId)) : stableId;
-    return CreateImpl(launchArguments, identity, launchArguments, {}, {}, name, iconImgPath, err,
-                      errSize);
+    return CreateImpl(launchArguments, identity, launchArguments, {}, {}, name, author,
+                      iconImgPath, err, errSize);
 }
 }  // namespace DolphinSwitch::Forwarder

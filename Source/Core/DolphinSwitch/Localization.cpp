@@ -24,13 +24,15 @@ namespace DolphinSwitch
 {
 namespace
 {
-constexpr std::array<LauncherLanguage, 7> LANGUAGES = {{{"system", "System"},
+constexpr std::array<LauncherLanguage, 9> LANGUAGES = {{{"system", "System"},
                                                         {"en", "English"},
                                                         {"fr", "Français"},
                                                         {"de", "Deutsch"},
                                                         {"es", "Español"},
                                                         {"it", "Italiano"},
-                                                        {"pt", "Português"}}};
+                                                        {"pt", "Português"},
+                                                        {"zh-CN", "Chinese (Simplified)"},
+                                                        {"zh-TW", "Chinese (Traditional)"}}};
 
 struct LauncherTranslation
 {
@@ -758,6 +760,20 @@ std::string ResolveSupportedCode(std::string_view code)
     if (language.code != "system" && normalized == NormalizeCode(language.code))
       return std::string(language.code);
   }
+
+  // Nintendo exposes both region-based and script-based Chinese language codes. Resolve every
+  // form to the canonical locale used by the packaged gettext and launcher catalogs.
+  if (normalized == "zh" || normalized.starts_with("zh-cn") ||
+      normalized.starts_with("zh-sg") || normalized.starts_with("zh-hans"))
+  {
+    return "zh-CN";
+  }
+  if (normalized.starts_with("zh-tw") || normalized.starts_with("zh-hk") ||
+      normalized.starts_with("zh-mo") || normalized.starts_with("zh-hant"))
+  {
+    return "zh-TW";
+  }
+
   for (const LauncherLanguage& language : LANGUAGES)
   {
     if (language.code != "system" && normalized.starts_with(std::string(language.code) + "-"))

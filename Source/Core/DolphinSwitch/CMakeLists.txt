@@ -1,6 +1,6 @@
 set(DOLPHIN_SWITCH_RELEASE_NAME "Dolphin")
 set(DOLPHIN_SWITCH_RELEASE_AUTHOR "Dolphin Emulator Project")
-set(DOLPHIN_SWITCH_RELEASE_VERSION "1.0.3-v2" CACHE STRING
+set(DOLPHIN_SWITCH_RELEASE_VERSION "1.0.4" CACHE STRING
     "Semantic release version for the standalone Nintendo Switch frontend")
 
 add_executable(dolphin-switch
@@ -109,11 +109,18 @@ add_custom_target(dolphin_forwarder_payload DEPENDS ${_forwarder_assets})
 
 find_program(DOLPHIN_SWITCH_MSGFMT_EXECUTABLE NAMES msgfmt REQUIRED)
 set(_switch_translation_output "${CMAKE_SOURCE_DIR}/Data/Sys/i18n")
-set(_switch_translation_languages fr de es it pt)
+set(_switch_translation_languages fr de es it pt zh-CN zh-TW)
 set(_switch_translation_assets)
 set(_switch_launcher_translation_assets)
 foreach(_language IN LISTS _switch_translation_languages)
-  set(_translation_source "${CMAKE_SOURCE_DIR}/Languages/po/${_language}.po")
+  set(_translation_source_language "${_language}")
+  if(_language STREQUAL "zh-CN")
+    set(_translation_source_language zh_CN)
+  elseif(_language STREQUAL "zh-TW")
+    set(_translation_source_language zh_TW)
+  endif()
+  set(_translation_source
+      "${CMAKE_SOURCE_DIR}/Languages/po/${_translation_source_language}.po")
   set(_translation_output "${_switch_translation_output}/${_language}.mo")
   set(_launcher_translation
       "${_switch_translation_output}/launcher/${_language}.json")

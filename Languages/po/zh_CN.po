@@ -2999,7 +2999,7 @@ msgid ""
 "Example: {2}"
 msgstr ""
 "{0} 缺少序列号和/或版本数据\n"
-"下载时请在 dat 文件网址后附加 “{0}”（不带引号）\n"
+"下载时请在 dat 文件网址后附加 “{1}”（不带引号）\n"
 "例如：{2}"
 
 #: Source/Core/DiscIO/VolumeVerifier.cpp:347

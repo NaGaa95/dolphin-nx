@@ -2220,7 +2220,15 @@ bool Launcher::Initialize(bool applet_installer)
     return false;
   m_font_service_ready = true;
   if (!LoadFonts())
-    return false;
+  {
+    // A missing locale-specific shared font must not prevent the launcher from starting. Keep the
+    // translations and font family in sync so falling back never renders Chinese as empty boxes.
+    m_store.Set("Launcher/Language", "en");
+    MarkStoreDirty();
+    m_localization.SetLanguage("en");
+    if (!LoadFonts())
+      return false;
+  }
 
   InitializeUiTextures();
 
@@ -12510,6 +12518,12 @@ void Launcher::CreateHomeShortcut(Game* game)
   const int right_x = icon_x + icon_size + 70;
   const int right_width = m_width - right_x - 90;
   std::string name = game->title;
+  std::string author =
+      game->metadata ?
+          game->metadata->GetMaker(UICommon::GameFile::Variant::LongAndPossiblyCustom) :
+          std::string{};
+  if (author.empty())
+    author = DOLPHIN_SWITCH_RELEASE_AUTHOR;
   std::string icon_path = CoverPath(*game);
   if (!RegularFileExists(icon_path))
     icon_path = "romfs:/fwd/dolphin_icon.png";
@@ -12546,10 +12560,11 @@ void Launcher::CreateHomeShortcut(Game* game)
     }
     RunBusyTask("Creating HOME shortcut", game->title, [&] {
       created = game->installed_nand ?
-                    Forwarder::CreateNANDTitle(game->title_id, name, icon_path, game->key,
+                    Forwarder::CreateNANDTitle(game->title_id, name, author, icon_path, game->key,
                                                error.data(), error.size()) :
-                    Forwarder::Create(game->path, name, icon_path, game->config_override_path,
-                                      game->key, legacy_game_paths, error.data(), error.size());
+                    Forwarder::Create(game->path, name, author, icon_path,
+                                      game->config_override_path, game->key, legacy_game_paths,
+                                      error.data(), error.size());
     });
     if (created)
     {
@@ -12581,6 +12596,11 @@ void Launcher::CreateHomeShortcut(Game* game)
       edit("Shortcut name", &name);
       BeginScreenFx();
     }
+    else if (selection == 2)
+    {
+      edit("Author", &author);
+      BeginScreenFx();
+    }
     else
     {
       build();
@@ -12609,9 +12629,14 @@ void Launcher::CreateHomeShortcut(Game* game)
           selection = 1;
           activate();
         }
-        else if (touch_y >= create_y - 6 && touch_y < create_y + create_height)
+        else if (touch_y >= author_y - 6 && touch_y < author_y + field_height)
         {
           selection = 2;
+          activate();
+        }
+        else if (touch_y >= create_y - 6 && touch_y < create_y + create_height)
+        {
+          selection = 3;
           activate();
         }
         else if (touch_y >= m_height - 40)
@@ -12627,9 +12652,9 @@ void Launcher::CreateHomeShortcut(Game* game)
         else if (event.key.keysym.sym == SDLK_RIGHT && selection == 0)
           selection = 1;
         else if (event.key.keysym.sym == SDLK_UP)
-          selection = selection == 0 ? 2 : (selection == 1 ? 2 : selection - 1);
+          selection = selection == 0 ? 3 : (selection == 1 ? 3 : selection - 1);
         else if (event.key.keysym.sym == SDLK_DOWN)
-          selection = selection == 0 ? 1 : (selection == 2 ? 1 : selection + 1);
+          selection = selection == 0 ? 1 : (selection == 3 ? 1 : selection + 1);
         else if (event.key.keysym.sym == SDLK_RETURN)
           activate();
         else if (event.key.keysym.sym == SDLK_ESCAPE)
@@ -12642,9 +12667,9 @@ void Launcher::CreateHomeShortcut(Game* game)
       else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT && selection == 0)
         selection = 1;
       else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_UP)
-        selection = selection == 0 ? 2 : (selection == 1 ? 2 : selection - 1);
+        selection = selection == 0 ? 3 : (selection == 1 ? 3 : selection - 1);
       else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN)
-        selection = selection == 0 ? 1 : (selection == 2 ? 1 : selection + 1);
+        selection = selection == 0 ? 1 : (selection == 3 ? 1 : selection + 1);
       else if (event.cbutton.button == BUTTON_CONFIRM)
         activate();
       else if (event.cbutton.button == BUTTON_CANCEL)
@@ -12680,11 +12705,10 @@ void Launcher::CreateHomeShortcut(Game* game)
                             current ? m_value : m_text);
     };
     field(1, name_y, m_localization.Translate("Name"), name);
-    DrawText(m_font_small, right_x, author_y, m_localization.Translate("Author / Version"), m_dim);
     const std::string metadata =
-        std::string(DOLPHIN_SWITCH_RELEASE_AUTHOR) + "  |  " + Updater::BuiltReleaseTag();
-    DrawScrollingTextLeft(m_font, right_x, author_y + 26, right_width - 8, metadata, m_text);
-    const bool create_selected = selection == 2;
+        author + "  |  " + Updater::BuiltReleaseTag();
+    field(2, author_y, m_localization.Translate("Author / Version"), metadata);
+    const bool create_selected = selection == 3;
     FillRect(right_x - 10, create_y - 6, right_width + 20, create_height,
              create_selected ? SDL_Color{44, 86, 44, 240} : SDL_Color{30, 46, 32, 200});
     if (create_selected)
