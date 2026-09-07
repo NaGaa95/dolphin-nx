@@ -102,6 +102,36 @@ constexpr SDL_GameControllerButton BUTTON_CONFIRM = SDL_CONTROLLER_BUTTON_B;
 constexpr SDL_GameControllerButton BUTTON_CANCEL = SDL_CONTROLLER_BUTTON_A;
 constexpr SDL_GameControllerButton BUTTON_SETTINGS = SDL_CONTROLLER_BUTTON_Y;
 
+// Button glyphs are rendered at three times their display size and downscaled when blitted.
+constexpr int GLYPH_SUPERSAMPLE = 3;
+
+constexpr std::array<std::pair<std::string_view, std::string_view>, 8> LIBRARY_FOOTER = {{
+    {"A", "Launch"},
+    {"Y", "Sort"},
+    {"X", "Settings"},
+    {"+", "Game Menu"},
+    {"-", "Filter"},
+    {"L", ""},
+    {"R", "Page"},
+    {"B", "Quit"},
+}};
+
+// The per-game menu, split into the everyday actions and the destructive "Manage game" group.
+constexpr int GAME_MENU_COUNT = 10;
+constexpr int GAME_MENU_MANAGE_START = 6;
+constexpr std::array<std::string_view, GAME_MENU_COUNT> GAME_MENU_ITEMS = {
+    "Launch",
+    "Game settings",
+    "Rename game",
+    "Favorite / collections",
+    "Cover settings",
+    "Create HOME shortcut",
+    "Manage installed content",
+    "Clear shader caches",
+    "Clear game settings",
+    "Delete game (remove from storage)",
+};
+
 struct BusyTaskThreadContext
 {
   const std::function<void()>* task = nullptr;
@@ -1588,10 +1618,63 @@ struct TextKeyHash
 struct TextTexture
 {
   SDL_Texture* texture = nullptr;
-  int width = 0;
-  int height = 0;
+  float width = 0.0f;
+  float height = 0.0f;
   std::size_t bytes = 0;
   std::uint64_t use = 0;
+};
+
+// Marquee state, keyed by the logical position the text is drawn at.
+struct TextScroll
+{
+  std::string text;
+  Uint32 since = 0;
+};
+
+struct FooterLayout
+{
+  std::array<int, 10> item_width{};
+  std::array<int, 10> gap_after{};
+  std::array<int, 10> row_start{};
+  std::array<int, 10> row_end{};
+  std::array<int, 10> row_width{};
+  int row_count = 0;
+  int row_spacing = 0;
+  int height = 0;
+};
+
+// The cover-plus-content split shared by the per-game detail screens.
+struct GameDetailLayout
+{
+  SDL_Rect preview{};
+  SDL_Rect content{};
+};
+
+struct GameMenuLayout
+{
+  GameDetailLayout detail{};
+  int start = 0;
+  int row_height = 0;
+  int destructive_start = 0;
+  int RowY(int index) const
+  {
+    return start + index * row_height + (index >= destructive_start ? 56 : 0);
+  }
+};
+
+// Shared by the grid renderer and the touch hit test.
+struct GridLayout
+{
+  int columns = 1;
+  int rows = 1;
+  int cover_width = 0;
+  int cover_height = 0;
+  int gap_x = 0;
+  int gap_y = 0;
+  int x0 = 0;
+  int y0 = 0;
+  int title_height = 0;
+  int RowStride() const { return cover_height + (title_height ? title_height + 8 : 0) + gap_y; }
 };
 
 struct MetricKey
@@ -1715,6 +1798,9 @@ private:
   [[maybe_unused]] void ScanGamesLegacy();
   void SortGames();
 
+  void ConfigureLauncherScale();
+  int FontMetric(int pixels) const;
+  int FontHeight(TTF_Font* font) const;
   void ClearBackground();
   void DrawBubbles(float time);
   void DrawXmb(float time);
@@ -1725,10 +1811,17 @@ private:
   void DrawXmbSparkles(float time);
   void EnsureGlowTexture();
   bool HasAnimatedBackground() const;
+  SDL_FRect PixelAlignedRect(int x, int y, int width, int height) const;
   void FillRect(int x, int y, int width, int height, SDL_Color color);
+  void RoundedRect(int x, int y, int width, int height, int radius, SDL_Color color);
   void Border(int x, int y, int width, int height, int thickness, SDL_Color color);
   void FillCircle(int center_x, int center_y, int radius, SDL_Color color);
+  void RoundedPanel(int x, int y, int width, int height, SDL_Color face, SDL_Color edge,
+                    int radius = 8, int thickness = 1);
   void GlassPanel(int x, int y, int width, int height);
+  void DrawButtonPanel(int x, int y, int width, int height, bool selected);
+  void DrawProgressBar(int x, int y, int width, int height, double fraction);
+  void DrawRowHighlight(int x, int y, int width, int height);
   SDL_Texture* MakeGlyph(std::string_view label, bool pill);
   SDL_Texture* ButtonGlyph(std::string_view button) const;
   SDL_Texture* MakeFlagTexture(DiscIO::Region region, int width, int height);
@@ -1740,6 +1833,7 @@ private:
   void DrawTextRight(TTF_Font* font, int right_x, int y, std::string_view text, SDL_Color color);
   int TextWidth(TTF_Font* font, std::string_view text);
   std::string Ellipsize(TTF_Font* font, std::string_view text, int max_width);
+  int TextScrollOffset(int x, int y, int span, std::string_view text);
   void DrawScrollingTextLeft(TTF_Font* font, int x, int y, int max_width, std::string_view text,
                              SDL_Color color);
   void DrawScrollingTextRight(TTF_Font* font, int right_x, int y, int max_width,
@@ -1752,11 +1846,31 @@ private:
                            int max_lines, std::string_view text, SDL_Color color);
   void DrawTitleCell(int center_x, int width, int y, const Game& game, bool selected,
                      SDL_Color color);
+  int TopBarHeight() const;
+  void DrawPageHeader(std::string_view title, std::string_view eyebrow, std::string_view summary,
+                      std::string_view detail = {});
+  void DrawSectionHeading(std::string_view title, int x, int y, int width);
   void DrawHeader(std::string_view title, std::string_view context = {});
+  int SettingsRowHeight() const;
+  int SettingsListY() const;
+  int SettingsFooterReserve() const;
+  void DrawSettingsRowText(std::string_view label, std::string_view value, int slot_y,
+                           int column_width, int label_x, int value_x, bool current,
+                           SDL_Color label_color, SDL_Color value_color, bool scroll_value = false,
+                           int row_height = 0);
+  GameDetailLayout ComputeGameDetailLayout() const;
+  void DrawArtworkPreview(SDL_Texture* texture, const SDL_Rect& rect, bool selected = false,
+                          std::string_view placeholder = "NO COVER");
+  void DrawGamePreview(Game* game, const SDL_Rect& rect);
+  GameMenuLayout ComputeGameMenuLayout() const;
+  void DrawGameMenu(Game* game, int selection);
+  FooterLayout MeasureFooter(std::span<const std::pair<std::string_view, std::string_view>> hints);
+  void DrawFooterBand(int height);
   void DrawFooter(std::span<const std::pair<std::string_view, std::string_view>> hints,
                   int center_y = -1);
-  int FooterHitTest(int x, int y) const;
-  void DrawButtonHint(int x, int y, std::string_view button, std::string_view label);
+  bool PressFooterButton(int x, int y);
+  void DrawButtonHint(int x, int y, std::string_view button, std::string_view label,
+                      SDL_Color label_color);
   void DrawSettingsFooter(std::string_view text);
   void BeginScreenFx();
   void DrawFadeIn();
@@ -1815,7 +1929,8 @@ private:
   int GridPageSize() const;
   int GridNavigate(int selection, int dx, int dy) const;
   int GridPage(int selection, int direction) const;
-  int GridHitTest(int x, int y, int page_start) const;
+  GridLayout ComputeGridLayout();
+  int GridHitTest(int x, int y, int page_start);
 
   void SettingsRoot();
   void PerGameSettingsRoot(Game* game);
@@ -1958,8 +2073,10 @@ private:
   TTF_Font* m_font_small = nullptr;
   TTF_Font* m_font = nullptr;
   TTF_Font* m_font_large = nullptr;
+  TTF_Font* m_font_caption = nullptr;
   SDL_Texture* m_logo = nullptr;
   SDL_Texture* m_glow = nullptr;
+  SDL_Texture* m_round_texture = nullptr;
   std::array<SDL_Texture*, 10> m_glyphs{};
   std::array<SDL_Texture*, 4> m_flags{};
   bool m_sdl_ready = false;
@@ -1976,6 +2093,11 @@ private:
   bool m_application_exit_prepared = false;
   int m_width = 1280;
   int m_height = 720;
+  int m_output_width = 1280;
+  int m_output_height = 720;
+  float m_ui_scale = 1.0f;
+  float m_font_scale = 1.0f;
+  bool m_present_vsync = false;
   Theme m_theme = Theme::Bubbles;
   SortMode m_sort_mode = SortMode::Alphabetical;
   bool m_animations = true;
@@ -2017,7 +2139,9 @@ private:
   TouchGesture m_touch;
   int m_touch_scroll_steps = 1;
   std::array<SDL_Rect, 10> m_footer_hits{};
+  std::array<int, 10> m_footer_buttons{};
   int m_footer_hit_count = 0;
+  std::map<std::pair<int, int>, TextScroll> m_text_scroll;
   std::string m_clipboard_path;
   bool m_clipboard_move = false;
   std::string m_startup_message;
@@ -2039,9 +2163,9 @@ private:
   SDL_Color m_highlight{118, 222, 255, 255};
   SDL_Color m_value{194, 239, 255, 255};
   SDL_Color m_selection{61, 183, 235, 255};
-  SDL_Color m_panel{4, 31, 50, 190};
+  SDL_Color m_panel{4, 31, 50, 255};
   SDL_Color m_card{5, 35, 56, 218};
-  SDL_Color m_focus{12, 76, 108, 220};
+  SDL_Color m_focus{12, 76, 108, 255};
 };
 
 void Launcher::LoadDefaults()
@@ -2127,16 +2251,21 @@ bool Launcher::LoadFonts()
     return false;
   }
 
-  const bool large = m_height >= 1080;
+  // Fonts are opened at output resolution; layout stays in 1280x720 space.
   const auto open_font = [&](int size) {
     SDL_RWops* stream = SDL_RWFromConstMem(font_data.address, static_cast<int>(font_data.size));
-    return stream ? TTF_OpenFontRW(stream, 1, size) : nullptr;
+    return stream ? TTF_OpenFontRW(stream, 1,
+                                   static_cast<int>(std::lround(size * m_ui_scale))) :
+                    nullptr;
   };
-  TTF_Font* const small = open_font(large ? 26 : 20);
-  TTF_Font* const normal = open_font(large ? 32 : 26);
-  TTF_Font* const large_font = open_font(large ? 52 : 40);
-  if (!small || !normal || !large_font)
+  TTF_Font* const caption = open_font(14);
+  TTF_Font* const small = open_font(20);
+  TTF_Font* const normal = open_font(26);
+  TTF_Font* const large_font = open_font(32);
+  if (!caption || !small || !normal || !large_font)
   {
+    if (caption)
+      TTF_CloseFont(caption);
     if (small)
       TTF_CloseFont(small);
     if (normal)
@@ -2147,16 +2276,47 @@ bool Launcher::LoadFonts()
   }
 
   ClearTextCaches();
+  if (m_font_caption)
+    TTF_CloseFont(m_font_caption);
   if (m_font_small)
     TTF_CloseFont(m_font_small);
   if (m_font)
     TTF_CloseFont(m_font);
   if (m_font_large)
     TTF_CloseFont(m_font_large);
+  m_font_scale = m_ui_scale;
+  m_font_caption = caption;
   m_font_small = small;
   m_font = normal;
   m_font_large = large_font;
   return true;
+}
+
+void Launcher::ConfigureLauncherScale()
+{
+  // Lay everything out in a fixed 1280x720 space and let SDL scale it up to the real output.
+  m_width = 1280;
+  m_height = 720;
+  m_ui_scale = std::min(m_output_width / 1280.0f, m_output_height / 720.0f);
+  if (!(m_ui_scale > 0.0f))
+    m_ui_scale = 1.0f;
+  if (!m_renderer)
+    return;
+  SDL_RenderSetViewport(m_renderer, nullptr);
+  SDL_RenderSetScale(m_renderer, m_ui_scale, m_ui_scale);
+  SDL_RendererInfo renderer_info{};
+  m_present_vsync = SDL_GetRendererInfo(m_renderer, &renderer_info) == 0 &&
+                    (renderer_info.flags & SDL_RENDERER_PRESENTVSYNC) != 0;
+}
+
+int Launcher::FontMetric(int pixels) const
+{
+  return static_cast<int>(std::ceil(pixels / m_font_scale));
+}
+
+int Launcher::FontHeight(TTF_Font* font) const
+{
+  return font ? FontMetric(TTF_FontHeight(font)) : 0;
 }
 
 bool Launcher::Initialize(bool applet_installer)
@@ -2213,7 +2373,9 @@ bool Launcher::Initialize(bool applet_installer)
     return false;
   }
   SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
-  SDL_GetRendererOutputSize(m_renderer, &m_width, &m_height);
+  // Must run before LoadFonts, which sizes fonts against m_ui_scale.
+  SDL_GetRendererOutputSize(m_renderer, &m_output_width, &m_output_height);
+  ConfigureLauncherScale();
 
   const Result pl_result = plInitialize(PlServiceType_User);
   if (R_FAILED(pl_result))
@@ -2254,10 +2416,13 @@ bool Launcher::Initialize(bool applet_installer)
     // network startup and scanning happen after this frame so the user never waits on black.
     ClearBackground();
     DrawHeader("Dolphin");
-    DrawWrappedCentered(m_font_large, m_width / 2, m_height / 2 - 48, m_width - 120, 48, 2,
+    const int panel_width = std::min(940, m_width - 64);
+    constexpr int panel_height = 200;
+    GlassPanel((m_width - panel_width) / 2, m_height / 2 - 88, panel_width, panel_height);
+    DrawWrappedCentered(m_font_large, m_width / 2, m_height / 2 - 48, panel_width - 64, 48, 2,
                         m_localization.Translate("Loading game library..."), m_value);
     DrawWrappedCentered(
-        m_font_small, m_width / 2, m_height / 2 + 26, m_width - 120, 32, 2,
+        m_font_small, m_width / 2, m_height / 2 + 26, panel_width - 64, 32, 2,
         m_localization.Translate("The first page will appear as soon as it is ready."), m_dim);
     SDL_RenderPresent(m_renderer);
     LoadSourcesAndShares();
@@ -2300,18 +2465,22 @@ void Launcher::Shutdown()
     SDL_DestroyTexture(m_logo);
   if (m_glow)
     SDL_DestroyTexture(m_glow);
-  m_logo = m_glow = nullptr;
+  if (m_round_texture)
+    SDL_DestroyTexture(m_round_texture);
+  m_logo = m_glow = m_round_texture = nullptr;
 
   m_games.clear();
   m_game_cache.Clear(UICommon::GameFileCache::DeleteOnDisk::No);
 
+  if (m_font_caption)
+    TTF_CloseFont(m_font_caption);
   if (m_font_small)
     TTF_CloseFont(m_font_small);
   if (m_font)
     TTF_CloseFont(m_font);
   if (m_font_large)
     TTF_CloseFont(m_font_large);
-  m_font_small = m_font = m_font_large = nullptr;
+  m_font_small = m_font = m_font_large = m_font_caption = nullptr;
   if (m_font_service_ready)
     plExit();
   m_font_service_ready = false;
@@ -2368,9 +2537,12 @@ void Launcher::PrepareApplicationExit()
   const auto render_closing = [&] {
     ClearBackground();
     DrawHeader("Dolphin");
-    DrawWrappedCentered(m_font_large, m_width / 2, m_height / 2 - 48, m_width - 120, 48, 2,
+    const int panel_width = std::min(940, m_width - 64);
+    constexpr int panel_height = 200;
+    GlassPanel((m_width - panel_width) / 2, m_height / 2 - 88, panel_width, panel_height);
+    DrawWrappedCentered(m_font_large, m_width / 2, m_height / 2 - 48, panel_width - 64, 48, 2,
                         m_localization.Translate("Closing Dolphin..."), m_value);
-    DrawWrappedCentered(m_font_small, m_width / 2, m_height / 2 + 30, m_width - 120, 32, 2,
+    DrawWrappedCentered(m_font_small, m_width / 2, m_height / 2 + 30, panel_width - 64, 32, 2,
                         m_localization.Translate("Finishing background operations safely."), m_dim);
     SDL_RenderPresent(m_renderer);
   };
@@ -2438,15 +2610,15 @@ void Launcher::ApplyAppearance()
   m_sort_mode = static_cast<SortMode>(std::clamp(m_store.GetInt("Launcher/SortMode", 0), 0, 2));
   if (m_theme == Theme::Xmb)
   {
-    m_background = {2, 35, 92, 255};
-    m_text = {246, 250, 255, 255};
-    m_dim = {176, 207, 233, 255};
-    m_highlight = {151, 229, 255, 255};
-    m_value = {255, 255, 255, 255};
-    m_selection = {116, 218, 255, 255};
-    m_panel = {4, 28, 73, 164};
-    m_card = {5, 36, 86, 196};
-    m_focus = {20, 91, 148, 214};
+    m_background = {8, 51, 104, 255};
+    m_text = {242, 247, 255, 255};
+    m_dim = {180, 204, 227, 255};
+    m_highlight = {137, 225, 255, 255};
+    m_value = {245, 252, 255, 255};
+    m_selection = {118, 213, 255, 255};
+    m_panel = {10, 43, 81, 255};
+    m_card = {12, 48, 85, 196};
+    m_focus = {22, 75, 119, 255};
   }
   else if (m_theme == Theme::Classic)
   {
@@ -2458,7 +2630,7 @@ void Launcher::ApplyAppearance()
     m_selection = {255, 170, 0, 255};
     m_panel = {28, 31, 40, 255};
     m_card = {24, 26, 34, 255};
-    m_focus = {66, 56, 30, 235};
+    m_focus = {66, 56, 30, 255};
   }
   else if (m_theme == Theme::Oled)
   {
@@ -2468,9 +2640,9 @@ void Launcher::ApplyAppearance()
     m_highlight = {105, 220, 255, 255};
     m_value = {255, 255, 255, 255};
     m_selection = {0, 210, 190, 255};
-    m_panel = {4, 4, 5, 248};
+    m_panel = {4, 4, 5, 255};
     m_card = {8, 8, 10, 250};
-    m_focus = {0, 58, 53, 245};
+    m_focus = {0, 58, 53, 255};
   }
   else if (m_theme == Theme::Glow)
   {
@@ -2480,9 +2652,9 @@ void Launcher::ApplyAppearance()
     m_highlight = {100, 211, 255, 255};
     m_value = {255, 215, 120, 255};
     m_selection = {116, 200, 255, 255};
-    m_panel = {16, 23, 39, 184};
+    m_panel = {16, 23, 39, 255};
     m_card = {22, 30, 49, 214};
-    m_focus = {28, 69, 92, 208};
+    m_focus = {28, 69, 92, 255};
   }
   else
   {
@@ -2492,9 +2664,9 @@ void Launcher::ApplyAppearance()
     m_highlight = {220, 248, 255, 255};
     m_value = {255, 255, 255, 255};
     m_selection = {111, 224, 249, 255};
-    m_panel = {0, 67, 101, 180};
+    m_panel = {0, 67, 101, 255};
     m_card = {2, 75, 110, 207};
-    m_focus = {17, 133, 169, 218};
+    m_focus = {17, 133, 169, 255};
   }
   if (previous_theme != m_theme && m_renderer)
   {
@@ -2508,11 +2680,81 @@ void Launcher::ApplyAppearance()
   }
 }
 
+SDL_FRect Launcher::PixelAlignedRect(int x, int y, int width, int height) const
+{
+  // Snap to whole output pixels so hairlines stay one pixel wide.
+  float scale_x = 1.0f;
+  float scale_y = 1.0f;
+  SDL_RenderGetScale(m_renderer, &scale_x, &scale_y);
+  if (!(scale_x > 0.0f))
+    scale_x = 1.0f;
+  if (!(scale_y > 0.0f))
+    scale_y = 1.0f;
+  const float left = std::round(x * scale_x);
+  const float top = std::round(y * scale_y);
+  return SDL_FRect{left / scale_x, top / scale_y,
+                   (std::round((x + width) * scale_x) - left) / scale_x,
+                   (std::round((y + height) * scale_y) - top) / scale_y};
+}
+
 void Launcher::FillRect(int x, int y, int width, int height, SDL_Color color)
 {
+  if (width <= 0 || height <= 0)
+    return;
   SDL_SetRenderDrawColor(m_renderer, color.r, color.g, color.b, color.a);
-  SDL_Rect rectangle{x, y, width, height};
-  SDL_RenderFillRect(m_renderer, &rectangle);
+  const SDL_FRect rectangle = PixelAlignedRect(x, y, width, height);
+  SDL_RenderFillRectF(m_renderer, &rectangle);
+}
+
+void Launcher::RoundedRect(int x, int y, int width, int height, int radius, SDL_Color color)
+{
+  if (width <= 0 || height <= 0)
+    return;
+  const int corner = std::min({radius, width / 2, height / 2});
+  if (!m_round_texture && m_renderer)
+  {
+    // One antialiased 32x32 disc, sliced into four 16x16 quadrants, serves every rounded corner.
+    SDL_Surface* surface =
+        SDL_CreateRGBSurfaceWithFormat(0, 32, 32, 32, SDL_PIXELFORMAT_RGBA32);
+    if (surface)
+    {
+      for (int pixel_y = 0; pixel_y < 32; ++pixel_y)
+      {
+        auto* row = reinterpret_cast<Uint32*>(static_cast<Uint8*>(surface->pixels) +
+                                              pixel_y * surface->pitch);
+        for (int pixel_x = 0; pixel_x < 32; ++pixel_x)
+        {
+          const float dx = pixel_x - 15.5f;
+          const float dy = pixel_y - 15.5f;
+          const Uint8 alpha = static_cast<Uint8>(
+              255.0f * std::clamp(16.0f - std::sqrt(dx * dx + dy * dy), 0.0f, 1.0f));
+          row[pixel_x] = SDL_MapRGBA(surface->format, 255, 255, 255, alpha);
+        }
+      }
+      m_round_texture = SDL_CreateTextureFromSurface(m_renderer, surface);
+      SDL_FreeSurface(surface);
+      if (m_round_texture)
+        SDL_SetTextureBlendMode(m_round_texture, SDL_BLENDMODE_BLEND);
+    }
+  }
+  if (!m_round_texture || corner < 1)
+  {
+    FillRect(x, y, width, height, color);
+    return;
+  }
+  FillRect(x + corner, y, width - corner * 2, height, color);
+  FillRect(x, y + corner, corner, height - corner * 2, color);
+  FillRect(x + width - corner, y + corner, corner, height - corner * 2, color);
+  SDL_SetTextureColorMod(m_round_texture, color.r, color.g, color.b);
+  SDL_SetTextureAlphaMod(m_round_texture, color.a);
+  for (int quadrant = 0; quadrant < 4; ++quadrant)
+  {
+    const SDL_Rect source{(quadrant & 1) * 16, (quadrant >> 1) * 16, 16, 16};
+    const SDL_FRect destination =
+        PixelAlignedRect(x + ((quadrant & 1) ? width - corner : 0),
+                         y + ((quadrant >> 1) ? height - corner : 0), corner, corner);
+    SDL_RenderCopyF(m_renderer, m_round_texture, &source, &destination);
+  }
 }
 
 void Launcher::Border(int x, int y, int width, int height, int thickness, SDL_Color color)
@@ -2541,19 +2783,46 @@ void Launcher::FillCircle(int center_x, int center_y, int radius, SDL_Color colo
   }
 }
 
+void Launcher::RoundedPanel(int x, int y, int width, int height, SDL_Color face, SDL_Color edge,
+                            int radius, int thickness)
+{
+  RoundedRect(x, y, width, height, radius, edge);
+  RoundedRect(x + thickness, y + thickness, width - 2 * thickness, height - 2 * thickness,
+              std::max(0, radius - thickness), face);
+}
+
 void Launcher::GlassPanel(int x, int y, int width, int height)
 {
-  FillRect(x, y, width, height, m_panel);
-  Border(x, y, width, height, 1,
-         SDL_Color{255, 255, 255, static_cast<Uint8>(HasAnimatedBackground() ? 28 : 16)});
+  RoundedPanel(x, y, width, height, m_panel, SDL_Color{255, 255, 255, 24});
+}
+
+void Launcher::DrawButtonPanel(int x, int y, int width, int height, bool selected)
+{
+  RoundedPanel(x, y, width, height, selected ? m_focus : m_card,
+               selected ? m_selection : SDL_Color{255, 255, 255, 28}, 6);
+}
+
+void Launcher::DrawProgressBar(int x, int y, int width, int height, double fraction)
+{
+  // Fully rounded pill; the primitive clamps so callers can hand over a raw ratio.
+  RoundedRect(x, y, width, height, height / 2, m_card);
+  const int filled = static_cast<int>(width * std::clamp(fraction, 0.0, 1.0));
+  if (filled > 0)
+    RoundedRect(x, y, filled, height, height / 2, m_selection);
+}
+
+void Launcher::DrawRowHighlight(int x, int y, int width, int height)
+{
+  RoundedRect(x, y, width, height, 4, m_focus);
+  FillRect(x, y + height / 5, 3, height * 3 / 5, m_selection);
 }
 
 SDL_Texture* Launcher::MakeGlyph(std::string_view label, bool pill)
 {
   if (!m_font_small || !m_font_large)
     return nullptr;
-  constexpr int supersample = 3;
-  const int base = TTF_FontHeight(m_font_small) + 6;
+  constexpr int supersample = GLYPH_SUPERSAMPLE;
+  const int base = FontHeight(m_font_small) + 6;
   const int height = base * supersample;
   const int width = (pill ? base * 8 / 5 : base) * supersample;
   SDL_Texture* texture = SDL_CreateTexture(m_renderer, SDL_PIXELFORMAT_RGBA8888,
@@ -2561,7 +2830,13 @@ SDL_Texture* Launcher::MakeGlyph(std::string_view label, bool pill)
   if (!texture)
     return nullptr;
   SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+  // Draw in the texture's pixel space, then restore the previous target and scale.
+  SDL_Texture* const previous_target = SDL_GetRenderTarget(m_renderer);
+  float previous_scale_x = 1.0f;
+  float previous_scale_y = 1.0f;
+  SDL_RenderGetScale(m_renderer, &previous_scale_x, &previous_scale_y);
   SDL_SetRenderTarget(m_renderer, texture);
+  SDL_RenderSetScale(m_renderer, 1.0f, 1.0f);
   SDL_SetRenderDrawColor(m_renderer, 0, 0, 0, 0);
   SDL_RenderClear(m_renderer);
   const SDL_Color edge{14, 16, 22, 255};
@@ -2611,7 +2886,8 @@ SDL_Texture* Launcher::MakeGlyph(std::string_view label, bool pill)
       SDL_DestroyTexture(text);
     }
   }
-  SDL_SetRenderTarget(m_renderer, nullptr);
+  SDL_SetRenderTarget(m_renderer, previous_target);
+  SDL_RenderSetScale(m_renderer, previous_scale_x, previous_scale_y);
   return texture;
 }
 
@@ -2622,7 +2898,12 @@ SDL_Texture* Launcher::MakeFlagTexture(DiscIO::Region region, int width, int hei
   if (!texture)
     return nullptr;
   SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+  SDL_Texture* const previous_target = SDL_GetRenderTarget(m_renderer);
+  float previous_scale_x = 1.0f;
+  float previous_scale_y = 1.0f;
+  SDL_RenderGetScale(m_renderer, &previous_scale_x, &previous_scale_y);
   SDL_SetRenderTarget(m_renderer, texture);
+  SDL_RenderSetScale(m_renderer, 1.0f, 1.0f);
   SDL_SetRenderDrawColor(m_renderer, 0, 0, 0, 0);
   SDL_RenderClear(m_renderer);
   if (region == DiscIO::Region::NTSC_J)
@@ -2652,7 +2933,8 @@ SDL_Texture* Launcher::MakeFlagTexture(DiscIO::Region region, int width, int hei
       FillRect(x - 1, y - 1, 2, 2, SDL_Color{255, 204, 0, 255});
     }
   }
-  SDL_SetRenderTarget(m_renderer, nullptr);
+  SDL_SetRenderTarget(m_renderer, previous_target);
+  SDL_RenderSetScale(m_renderer, previous_scale_x, previous_scale_y);
   return texture;
 }
 
@@ -2847,6 +3129,7 @@ void Launcher::DrawXmbRibbon(float time, float center, float amplitude, float fr
                              float slope, float phase, int half_width, SDL_Color color)
 {
   constexpr int point_count = 121;
+  std::array<SDL_Point, point_count> base{};
   std::array<SDL_Point, point_count> points{};
   const auto wave_y = [&](float x) {
     const float primary = std::sin(x * 6.2831853f * frequency + phase + time * 0.115f);
@@ -2854,6 +3137,11 @@ void Launcher::DrawXmbRibbon(float time, float center, float amplitude, float fr
         std::sin(x * 6.2831853f * (frequency * 2.07f) + phase * 0.61f - time * 0.072f);
     return center + slope * (x - 0.5f) + amplitude * (primary + detail * 0.24f);
   };
+  for (int point = 0; point < point_count; ++point)
+  {
+    const float x = static_cast<float>(point) / (point_count - 1);
+    base[point] = {static_cast<int>(x * m_width), static_cast<int>(wave_y(x) * m_height)};
+  }
   for (int offset = -half_width; offset <= half_width; ++offset)
   {
     const float distance = half_width ? std::abs(static_cast<float>(offset) / half_width) : 0.0f;
@@ -2862,11 +3150,7 @@ void Launcher::DrawXmbRibbon(float time, float center, float amplitude, float fr
     if (alpha < 2)
       continue;
     for (int point = 0; point < point_count; ++point)
-    {
-      const float x = static_cast<float>(point) / (point_count - 1);
-      points[point] = {static_cast<int>(x * m_width),
-                       static_cast<int>(wave_y(x) * m_height) + offset};
-    }
+      points[point] = {base[point].x, base[point].y + offset};
     SDL_SetRenderDrawColor(m_renderer, color.r, color.g, color.b, alpha);
     SDL_RenderDrawLines(m_renderer, points.data(), points.size());
   }
@@ -2918,9 +3202,9 @@ void Launcher::DrawXmbSparkles(float time)
 
 void Launcher::DrawXmb(float time)
 {
-  const SDL_Color top{3, 37, 102, 255};
-  const SDL_Color middle{8, 93, 184, 255};
-  const SDL_Color bottom{0, 20, 68, 255};
+  const SDL_Color top{8, 51, 104, 255};
+  const SDL_Color middle{12, 82, 139, 255};
+  const SDL_Color bottom{6, 39, 82, 255};
   const auto blend = [](Uint8 first, Uint8 second, float amount) {
     return static_cast<Uint8>(first + (second - first) * std::clamp(amount, 0.0f, 1.0f));
   };
@@ -2958,15 +3242,15 @@ void Launcher::DrawXmb(float time)
       SDL_SetTextureAlphaMod(m_glow, alpha);
       SDL_RenderCopy(m_renderer, m_glow, nullptr, &destination);
     };
-    glow(0.10f, 0.43f, 1.18f, 55, 157, 255, 54);
-    glow(0.84f, 0.38f, 0.92f, 41, 112, 228, 42);
+    glow(0.10f, 0.43f, 1.18f, 55, 157, 255, 32);
+    glow(0.84f, 0.38f, 0.92f, 41, 112, 228, 24);
   }
   DrawXmbRibbon(time, 0.655f, 0.082f, 0.78f, -0.105f, 2.15f, std::max(12, m_height / 18),
                 SDL_Color{63, 166, 255, 31});
   DrawXmbRibbon(time, 0.575f, 0.074f, 0.96f, 0.080f, 0.35f, std::max(10, m_height / 25),
-                SDL_Color{189, 235, 255, 48});
+                SDL_Color{189, 235, 255, 26});
   DrawXmbRibbon(time, 0.605f, 0.049f, 1.28f, -0.025f, 3.82f, std::max(5, m_height / 54),
-                SDL_Color{230, 250, 255, 72});
+                SDL_Color{230, 250, 255, 36});
   for (int trace = 0; trace < 9; ++trace)
   {
     const float offset = (trace - 4) * 0.009f;
@@ -2985,6 +3269,8 @@ void Launcher::DrawXmb(float time)
 
 void Launcher::ClearBackground()
 {
+  // Footer hit rects only describe the frame that drew them.
+  m_footer_hit_count = 0;
   SDL_RenderSetClipRect(m_renderer, nullptr);
   SDL_SetRenderDrawColor(m_renderer, m_background.r, m_background.g, m_background.b, 255);
   SDL_RenderClear(m_renderer);
@@ -3057,6 +3343,8 @@ int Launcher::TextWidth(TTF_Font* font, std::string_view text)
   int height = 0;
   if (TTF_SizeUTF8(font, key.text.c_str(), &width, &height) != 0)
     return 0;
+  // The metric cache stores logical widths so centring and ellipsis maths stay in layout space.
+  width = FontMetric(width);
   if (m_metric_cache.size() >= METRIC_CACHE_LIMIT)
   {
     auto victim = m_metric_cache.begin();
@@ -3083,24 +3371,29 @@ void Launcher::DrawText(TTF_Font* font, int x, int y, std::string_view text, SDL
   if (found != m_text_cache.end())
   {
     found->second.use = ++m_text_use;
-    SDL_Rect destination{x, y, found->second.width, found->second.height};
-    SDL_RenderCopy(m_renderer, found->second.texture, nullptr, &destination);
+    const SDL_FRect destination{static_cast<float>(x), static_cast<float>(y), found->second.width,
+                                found->second.height};
+    SDL_RenderCopyF(m_renderer, found->second.texture, nullptr, &destination);
     return;
   }
   SDL_Surface* surface = TTF_RenderUTF8_Blended(font, key.text.c_str(), color);
   if (!surface)
     return;
   SDL_Texture* texture = SDL_CreateTextureFromSurface(m_renderer, surface);
-  const int width = surface->w;
-  const int height = surface->h;
+  // The texture keeps the output resolution; the destination rectangle is in logical units.
+  const int pixel_width = surface->w;
+  const int pixel_height = surface->h;
+  const float width = pixel_width / m_font_scale;
+  const float height = pixel_height / m_font_scale;
   SDL_FreeSurface(surface);
   if (!texture)
     return;
+  const int logical_width = FontMetric(pixel_width);
   MetricKey metric_key{font, key.text};
   const auto metric = m_metric_cache.find(metric_key);
   if (metric != m_metric_cache.end())
   {
-    metric->second.width = width;
+    metric->second.width = logical_width;
     metric->second.use = ++m_text_use;
   }
   else
@@ -3116,13 +3409,14 @@ void Launcher::DrawText(TTF_Font* font, int x, int y, std::string_view text, SDL
       }
       m_metric_cache.erase(victim);
     }
-    m_metric_cache.emplace(std::move(metric_key), MetricEntry{width, ++m_text_use});
+    m_metric_cache.emplace(std::move(metric_key), MetricEntry{logical_width, ++m_text_use});
   }
-  const std::size_t bytes = static_cast<std::size_t>(width) * height * 4;
+  const std::size_t bytes =
+      static_cast<std::size_t>(pixel_width) * static_cast<std::size_t>(pixel_height) * 4;
   if (bytes > TEXT_CACHE_BYTES)
   {
-    SDL_Rect destination{x, y, width, height};
-    SDL_RenderCopy(m_renderer, texture, nullptr, &destination);
+    const SDL_FRect destination{static_cast<float>(x), static_cast<float>(y), width, height};
+    SDL_RenderCopyF(m_renderer, texture, nullptr, &destination);
     SDL_DestroyTexture(texture);
     return;
   }
@@ -3143,8 +3437,8 @@ void Launcher::DrawText(TTF_Font* font, int x, int y, std::string_view text, SDL
   auto [iterator, inserted] = m_text_cache.emplace(
       std::move(key), TextTexture{texture, width, height, bytes, ++m_text_use});
   m_text_cache_bytes += bytes;
-  SDL_Rect destination{x, y, width, height};
-  SDL_RenderCopy(m_renderer, iterator->second.texture, nullptr, &destination);
+  const SDL_FRect destination{static_cast<float>(x), static_cast<float>(y), width, height};
+  SDL_RenderCopyF(m_renderer, iterator->second.texture, nullptr, &destination);
 }
 
 void Launcher::DrawTextCentered(TTF_Font* font, int center_x, int y, std::string_view text,
@@ -3347,6 +3641,31 @@ std::vector<std::string> Launcher::WrapText(TTF_Font* font, int max_width, int m
   return lines;
 }
 
+int Launcher::TextScrollOffset(int x, int y, int span, std::string_view text)
+{
+  m_frame_has_scrolling_text = true;
+  if (m_text_scroll.size() > 64)
+    m_text_scroll.clear();
+  TextScroll& scroll = m_text_scroll[{x, y}];
+  const Uint32 now = SDL_GetTicks();
+  if (std::string_view(scroll.text) != text)
+  {
+    scroll.text = text;
+    scroll.since = now;
+  }
+  constexpr float speed = 45.0f;
+  constexpr float pause = 0.9f;
+  const float travel = span / speed;
+  const float phase = std::fmod((now - scroll.since) / 1000.0f, 2.0f * (travel + pause));
+  if (phase < pause)
+    return 0;
+  if (phase < pause + travel)
+    return static_cast<int>((phase - pause) * speed);
+  if (phase < 2.0f * pause + travel)
+    return span;
+  return std::max(0, span - static_cast<int>((phase - 2.0f * pause - travel) * speed));
+}
+
 void Launcher::DrawScrollingTextLeft(TTF_Font* font, int x, int y, int max_width,
                                      std::string_view text, SDL_Color color)
 {
@@ -3358,13 +3677,9 @@ void Launcher::DrawScrollingTextLeft(TTF_Font* font, int x, int y, int max_width
     DrawText(font, x, y, text, color);
     return;
   }
-  m_frame_has_scrolling_text = true;
-  SDL_Rect clip{x, y - 2, max_width, TTF_FontHeight(font) + 6};
+  SDL_Rect clip{x, y - 2, max_width, FontHeight(font) + 6};
   SDL_RenderSetClipRect(m_renderer, &clip);
-  const int span = width - max_width;
-  const float time = (SDL_GetTicks() % 6000) / 6000.0f;
-  const float position = time < 0.5f ? time * 2.0f : (1.0f - time) * 2.0f;
-  DrawText(font, x - static_cast<int>(position * span), y, text, color);
+  DrawText(font, x - TextScrollOffset(x, y, width - max_width, text), y, text, color);
   SDL_RenderSetClipRect(m_renderer, nullptr);
 }
 
@@ -3379,14 +3694,10 @@ void Launcher::DrawScrollingTextRight(TTF_Font* font, int right_x, int y, int ma
     DrawTextRight(font, right_x, y, text, color);
     return;
   }
-  m_frame_has_scrolling_text = true;
   const int x = right_x - max_width;
-  SDL_Rect clip{x, y - 2, max_width, TTF_FontHeight(font) + 6};
+  SDL_Rect clip{x, y - 2, max_width, FontHeight(font) + 6};
   SDL_RenderSetClipRect(m_renderer, &clip);
-  const int span = width - max_width;
-  const float time = (SDL_GetTicks() % 6000) / 6000.0f;
-  const float position = time < 0.5f ? time * 2.0f : (1.0f - time) * 2.0f;
-  DrawText(font, x - static_cast<int>(position * span), y, text, color);
+  DrawText(font, x - TextScrollOffset(x, y, width - max_width, text), y, text, color);
   SDL_RenderSetClipRect(m_renderer, nullptr);
 }
 
@@ -3404,15 +3715,55 @@ void Launcher::DrawTitleCell(int center_x, int width, int y, const Game& game, b
     DrawTextCentered(m_font_small, center_x, y, Ellipsize(m_font_small, game.title, width), color);
     return;
   }
-  m_frame_has_scrolling_text = true;
-  const int x = center_x - width / 2;
-  SDL_Rect clip{x, y - 2, width, TTF_FontHeight(m_font_small) + 8};
-  SDL_RenderSetClipRect(m_renderer, &clip);
-  const int span = text_width - width;
-  const float time = (SDL_GetTicks() % 5000) / 5000.0f;
-  const float position = time < 0.5f ? time * 2.0f : (1.0f - time) * 2.0f;
-  DrawText(m_font_small, x - static_cast<int>(position * span), y, game.title, color);
-  SDL_RenderSetClipRect(m_renderer, nullptr);
+  DrawScrollingTextLeft(m_font_small, center_x - width / 2, y, width, game.title, color);
+}
+
+int Launcher::TopBarHeight() const
+{
+  return 80;
+}
+
+void Launcher::DrawPageHeader(std::string_view title, std::string_view eyebrow,
+                              std::string_view summary, std::string_view detail)
+{
+  const int height = TopBarHeight();
+  constexpr int margin = 32;
+  constexpr int logo_size = 48;
+  constexpr int left = margin + logo_size + 20;
+  FillRect(0, 0, m_width, height, m_panel);
+  FillRect(0, height - 1, m_width, 1, SDL_Color{255, 255, 255, 18});
+  if (m_logo)
+  {
+    SDL_Rect destination{margin, 16, logo_size, logo_size};
+    SDL_RenderCopy(m_renderer, m_logo, nullptr, &destination);
+  }
+  const int metadata_width = std::min(
+      m_width / 3, std::max(TextWidth(m_font_small, summary), TextWidth(m_font_small, detail)));
+  const int title_width = m_width - left - margin - (metadata_width ? metadata_width + 32 : 0);
+  DrawText(m_font_caption, left, 9, Ellipsize(m_font_caption, eyebrow, title_width), m_dim);
+  DrawScrollingTextLeft(m_font_large, left, 31, title_width, title, m_text);
+  if (!summary.empty())
+  {
+    DrawTextRight(m_font_small, m_width - margin, 16,
+                  Ellipsize(m_font_small, summary, metadata_width), m_text);
+  }
+  if (!detail.empty())
+  {
+    DrawTextRight(m_font_small, m_width - margin, 44,
+                  Ellipsize(m_font_small, detail, metadata_width), m_dim);
+  }
+}
+
+void Launcher::DrawSectionHeading(std::string_view title, int x, int y, int width)
+{
+  const std::string_view localized = m_localization.Translate(title);
+  const std::string shown = Ellipsize(m_font_small, localized, width - 24);
+  const int height = FontHeight(m_font_small);
+  const int text_width = TextWidth(m_font_small, shown);
+  FillRect(x, y + 4, 3, height - 8, m_selection);
+  DrawText(m_font_small, x + 14, y, shown, m_highlight);
+  FillRect(x + text_width + 30, y + height / 2, width - text_width - 30, 1,
+           SDL_Color{255, 255, 255, 28});
 }
 
 void Launcher::DrawHeader(std::string_view title, std::string_view context)
@@ -3420,31 +3771,103 @@ void Launcher::DrawHeader(std::string_view title, std::string_view context)
   // Header titles are launcher-owned UI.  Context strings are deliberately left raw because
   // they frequently contain game names, paths, profile names, or remote share names.
   title = m_localization.Translate(title);
-  const int top_height = m_width >= 1600 ? 112 : 80;
-  const int band_height = top_height - 4;
-  FillRect(0, 0, m_width, band_height, m_panel);
-  if (!HasAnimatedBackground())
-    FillRect(0, band_height, m_width, 2, m_selection);
-  const int logo_size = band_height - 12;
-  if (m_logo)
+  DrawPageHeader(title, "Dolphin", context);
+}
+
+int Launcher::SettingsRowHeight() const
+{
+  return 44;
+}
+
+int Launcher::SettingsListY() const
+{
+  return TopBarHeight() + 24;
+}
+
+int Launcher::SettingsFooterReserve() const
+{
+  return 80;
+}
+
+void Launcher::DrawSettingsRowText(std::string_view label, std::string_view value, int slot_y,
+                                   int column_width, int label_x, int value_x, bool current,
+                                   SDL_Color label_color, SDL_Color value_color, bool scroll_value,
+                                   int row_height)
+{
+  const int actual_row_height = row_height > 0 ? row_height : SettingsRowHeight();
+  if (!current)
   {
-    SDL_Rect destination{26, (band_height - logo_size) / 2, logo_size, logo_size};
-    SDL_RenderCopy(m_renderer, m_logo, nullptr, &destination);
+    FillRect(label_x, slot_y + actual_row_height - 1, value_x - label_x, 1,
+             SDL_Color{255, 255, 255, 10});
   }
-  DrawTextCentered(m_font_large, m_width / 2, (band_height - TTF_FontHeight(m_font_large)) / 2,
-                   title, m_value);
-  if (!context.empty())
+  const bool submenu = value == ">";
+  const int value_width =
+      submenu ? 16 : std::min(TextWidth(m_font_small, value), column_width / 2 - 32);
+  const int label_width = std::max(40, value_x - label_x - value_width - 24);
+  const int y = slot_y + (actual_row_height - FontHeight(m_font)) / 2;
+  if (current)
+    DrawScrollingTextLeft(m_font, label_x, y, label_width, label, label_color);
+  else
+    DrawText(m_font, label_x, y, Ellipsize(m_font, label, label_width), label_color);
+  if (submenu)
   {
-    const int title_right = m_width / 2 + TextWidth(m_font_large, title) / 2;
-    const int maximum_width = (m_width - 28) - title_right - 30;
-    if (maximum_width > 40)
-      DrawScrollingTextRight(m_font_small, m_width - 28,
-                             (band_height - TTF_FontHeight(m_font_small)) / 2, maximum_width,
-                             context, m_value);
+    const int center_y = slot_y + actual_row_height / 2;
+    SDL_SetRenderDrawColor(m_renderer, value_color.r, value_color.g, value_color.b, value_color.a);
+    SDL_RenderDrawLine(m_renderer, value_x - 10, center_y - 6, value_x - 4, center_y);
+    SDL_RenderDrawLine(m_renderer, value_x - 4, center_y, value_x - 10, center_y + 6);
+    return;
+  }
+  const int value_y = slot_y + (actual_row_height - FontHeight(m_font_small)) / 2;
+  if (scroll_value)
+    DrawScrollingTextRight(m_font_small, value_x, value_y, column_width / 2 - 32, value,
+                           value_color);
+  else
+    DrawTextRight(m_font_small, value_x, value_y,
+                  Ellipsize(m_font_small, value, column_width / 2 - 32), value_color);
+}
+
+GameDetailLayout Launcher::ComputeGameDetailLayout() const
+{
+  const int top = TopBarHeight() + 24;
+  const int bottom = m_height - SettingsFooterReserve() - 12;
+  constexpr int width = 260;
+  constexpr int height = width * 3 / 2;
+  return {SDL_Rect{56, top + (bottom - top - height) / 2, width, height},
+          SDL_Rect{360, top, m_width - 416, bottom - top}};
+}
+
+void Launcher::DrawArtworkPreview(SDL_Texture* texture, const SDL_Rect& rect, bool selected,
+                                  std::string_view placeholder)
+{
+  if (selected)
+    RoundedPanel(rect.x - 10, rect.y - 10, rect.w + 20, rect.h + 20, m_panel, m_selection);
+  else
+    GlassPanel(rect.x - 10, rect.y - 10, rect.w + 20, rect.h + 20);
+  FillRect(rect.x, rect.y, rect.w, rect.h, m_card);
+  if (texture)
+  {
+    SDL_SetTextureAlphaMod(texture, 255);
+    SDL_SetTextureColorMod(texture, 255, 255, 255);
+    SDL_RenderCopy(m_renderer, texture, nullptr, &rect);
+  }
+  else if (!placeholder.empty())
+  {
+    // An empty placeholder means the caller draws its own message.
+    DrawTextCentered(m_font_small, rect.x + rect.w / 2,
+                     rect.y + (rect.h - FontHeight(m_font_small)) / 2,
+                     m_localization.Translate(placeholder), m_dim);
   }
 }
 
-void Launcher::DrawButtonHint(int x, int y, std::string_view button, std::string_view label)
+void Launcher::DrawGamePreview(Game* game, const SDL_Rect& rect)
+{
+  m_cover_decode_budget = 1;
+  EnsureCover(game);
+  DrawArtworkPreview(game ? game->cover : nullptr, rect);
+}
+
+void Launcher::DrawButtonHint(int x, int y, std::string_view button, std::string_view label,
+                              SDL_Color label_color)
 {
   // Footer labels are launcher-owned UI; the button token itself is a controller glyph.
   label = m_localization.Translate(label);
@@ -3454,21 +3877,21 @@ void Launcher::DrawButtonHint(int x, int y, std::string_view button, std::string
   if (glyph)
   {
     SDL_QueryTexture(glyph, nullptr, nullptr, &width, &height);
-    width /= 3;
-    height /= 3;
+    width /= GLYPH_SUPERSAMPLE;
+    height /= GLYPH_SUPERSAMPLE;
     SDL_Rect destination{x, y - height / 2, width, height};
     SDL_RenderCopy(m_renderer, glyph, nullptr, &destination);
   }
   else
   {
     width = TextWidth(m_font_small, button) + 14;
-    height = TTF_FontHeight(m_font_small) + 6;
+    height = FontHeight(m_font_small) + 6;
     Border(x, y - height / 2, width, height, 1, m_dim);
-    DrawTextCentered(m_font_small, x + width / 2, y - TTF_FontHeight(m_font_small) / 2, button,
+    DrawTextCentered(m_font_small, x + width / 2, y - FontHeight(m_font_small) / 2, button,
                      m_text);
   }
   if (!label.empty())
-    DrawText(m_font_small, x + width + 8, y - TTF_FontHeight(m_font_small) / 2, label, m_dim);
+    DrawText(m_font_small, x + width + 8, y - FontHeight(m_font_small) / 2, label, label_color);
 }
 
 SDL_Texture* Launcher::ButtonGlyph(std::string_view button) const
@@ -3496,73 +3919,141 @@ SDL_Texture* Launcher::ButtonGlyph(std::string_view button) const
   return nullptr;
 }
 
-void Launcher::DrawFooter(std::span<const std::pair<std::string_view, std::string_view>> hints,
-                          int center_y)
+FooterLayout
+Launcher::MeasureFooter(std::span<const std::pair<std::string_view, std::string_view>> hints)
 {
   constexpr int glyph_gap = 16;
   constexpr int label_gap = 8;
   constexpr int pair_gap = 26;
-  const int y = center_y >= 0 ? center_y : m_height - 26;
-  int total = 0;
-  for (const auto& [button, label] : hints)
+  constexpr int margin = 40;
+  FooterLayout layout;
+  const int font_height = FontHeight(m_font_small);
+  const int count = std::min(static_cast<int>(hints.size()),
+                             static_cast<int>(layout.item_width.size()));
+  for (int index = 0; index < count; ++index)
   {
-    const std::string_view localized_label = m_localization.Translate(label);
-    SDL_Texture* const glyph = ButtonGlyph(button);
+    const std::string_view localized_label = m_localization.Translate(hints[index].second);
+    SDL_Texture* const glyph = ButtonGlyph(hints[index].first);
     int width = 0;
     if (glyph)
       SDL_QueryTexture(glyph, nullptr, nullptr, &width, nullptr);
-    width = glyph ? width / 3 : TextWidth(m_font_small, button) + 14;
-    total += width;
+    width = glyph ? width / GLYPH_SUPERSAMPLE :
+                    TextWidth(m_font_small, hints[index].first) + 14;
     if (!localized_label.empty())
-      total += label_gap + TextWidth(m_font_small, localized_label);
-    total += localized_label.empty() ? glyph_gap : pair_gap;
+      width += label_gap + TextWidth(m_font_small, localized_label);
+    layout.item_width[index] = width;
+    layout.gap_after[index] = localized_label.empty() ? glyph_gap : pair_gap;
   }
-  if (!hints.empty())
-    total -= hints.back().second.empty() ? glyph_gap : pair_gap;
-  int x = (m_width - total) / 2;
-  m_footer_hit_count = 0;
-  for (const auto& [button, label] : hints)
+
+  // Wrap greedily so a long hint set (the library grid has eight) stays on screen.
+  const int available = std::max(120, m_width - margin * 2);
+  int index = 0;
+  while (index < count && layout.row_count < static_cast<int>(layout.row_start.size()))
   {
-    const std::string_view localized_label = m_localization.Translate(label);
-    SDL_Texture* const glyph = ButtonGlyph(button);
-    int width = 0;
-    int height = 0;
-    if (glyph)
-      SDL_QueryTexture(glyph, nullptr, nullptr, &width, &height);
-    if (glyph)
+    const int row = layout.row_count++;
+    layout.row_start[row] = index;
+    int width = layout.item_width[index];
+    int next = index + 1;
+    while (next < count &&
+           width + layout.gap_after[next - 1] + layout.item_width[next] <= available)
     {
-      width /= 3;
-      height /= 3;
+      width += layout.gap_after[next - 1] + layout.item_width[next];
+      ++next;
     }
-    else
+    layout.row_end[row] = next;
+    layout.row_width[row] = width;
+    index = next;
+  }
+  layout.row_spacing = font_height + 22;
+  layout.height = layout.row_count < 1 ?
+                      0 :
+                      (layout.row_count - 1) * layout.row_spacing + font_height + 32;
+  return layout;
+}
+
+void Launcher::DrawFooterBand(int height)
+{
+  if (height <= 0)
+    return;
+  FillRect(0, m_height - height, m_width, height, m_panel);
+  FillRect(0, m_height - height, m_width, 1, SDL_Color{255, 255, 255, 18});
+}
+
+void Launcher::DrawFooter(std::span<const std::pair<std::string_view, std::string_view>> hints,
+                          int center_y)
+{
+  const FooterLayout layout = MeasureFooter(hints);
+  if (layout.row_count < 1)
+  {
+    m_footer_hit_count = 0;
+    return;
+  }
+  const int font_height = FontHeight(m_font_small);
+  const int y = center_y >= 0 ? center_y : m_height - 26;
+  if (y >= m_height - 40)
+  {
+    // Screen-bottom footers get their own band; footers drawn inside a modal panel do not.
+    DrawFooterBand(layout.height);
+  }
+  const int first_row_y = y - (layout.row_count - 1) * layout.row_spacing;
+  m_footer_hit_count = 0;
+  for (int row = 0; row < layout.row_count; ++row)
+  {
+    int x = (m_width - layout.row_width[row]) / 2;
+    const int row_y = first_row_y + row * layout.row_spacing;
+    for (int index = layout.row_start[row]; index < layout.row_end[row]; ++index)
     {
-      width = TextWidth(m_font_small, button) + 14;
-      height = TTF_FontHeight(m_font_small) + 6;
+      const std::string_view button = hints[index].first;
+      SDL_Texture* const glyph = ButtonGlyph(button);
+      int glyph_height = font_height + 6;
+      if (glyph)
+      {
+        SDL_QueryTexture(glyph, nullptr, nullptr, nullptr, &glyph_height);
+        glyph_height /= GLYPH_SUPERSAMPLE;
+      }
+      // The first hint of a footer is the primary action, so it is not dimmed.
+      DrawButtonHint(x, row_y, button, hints[index].second, index == 0 ? m_text : m_dim);
+      if (m_footer_hit_count < static_cast<int>(m_footer_hits.size()))
+      {
+        const int hit_height = std::max(glyph_height, font_height);
+        m_footer_hits[m_footer_hit_count] = {x - 4, row_y - hit_height / 2 - 8,
+                                             layout.item_width[index] + 8, hit_height + 16};
+        m_footer_buttons[m_footer_hit_count] =
+            button == "A"     ? static_cast<int>(BUTTON_CONFIRM) :
+            button == "B"     ? static_cast<int>(BUTTON_CANCEL) :
+            button == "X"     ? static_cast<int>(BUTTON_SETTINGS) :
+            button == "Y"     ? static_cast<int>(SDL_CONTROLLER_BUTTON_X) :
+            button == "+"     ? static_cast<int>(SDL_CONTROLLER_BUTTON_START) :
+            button == "-"     ? static_cast<int>(SDL_CONTROLLER_BUTTON_BACK) :
+            button == "L"     ? static_cast<int>(SDL_CONTROLLER_BUTTON_LEFTSHOULDER) :
+            button == "R"     ? static_cast<int>(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) :
+            button == "Left"  ? static_cast<int>(SDL_CONTROLLER_BUTTON_DPAD_LEFT) :
+            button == "Right" ? static_cast<int>(SDL_CONTROLLER_BUTTON_DPAD_RIGHT) :
+                                -1;
+        ++m_footer_hit_count;
+      }
+      x += layout.item_width[index] + layout.gap_after[index];
     }
-    const int item_x = x;
-    DrawButtonHint(x, y, button, label);
-    x += width;
-    if (!localized_label.empty())
-      x += label_gap + TextWidth(m_font_small, localized_label);
-    if (m_footer_hit_count < static_cast<int>(m_footer_hits.size()))
-      m_footer_hits[m_footer_hit_count++] = {item_x - 6, y - height / 2 - 8, x - item_x + 12,
-                                             height + 16};
-    if (!localized_label.empty())
-      x += pair_gap;
-    else
-      x += glyph_gap;
   }
 }
 
-int Launcher::FooterHitTest(int x, int y) const
+bool Launcher::PressFooterButton(int x, int y)
 {
+  // A tapped footer hint synthesises the controller press it advertises.
   for (int index = 0; index < m_footer_hit_count; ++index)
   {
     const SDL_Rect& hit = m_footer_hits[index];
-    if (x >= hit.x && x < hit.x + hit.w && y >= hit.y && y < hit.y + hit.h)
-      return index;
+    if (m_footer_buttons[index] < 0 || x < hit.x || x >= hit.x + hit.w || y < hit.y ||
+        y >= hit.y + hit.h)
+    {
+      continue;
+    }
+    SDL_Event press{};
+    press.type = SDL_CONTROLLERBUTTONDOWN;
+    press.cbutton.button = static_cast<Uint8>(m_footer_buttons[index]);
+    return SDL_PushEvent(&press) == 1;
   }
-  return -1;
+  return false;
 }
 
 void Launcher::DrawSettingsFooter(std::string_view text)
@@ -3619,15 +4110,26 @@ void Launcher::DrawSettingsFooter(std::string_view text)
     }
   }
   if (hints.empty())
-    DrawTextCentered(m_font_small, m_width / 2, m_height - 38, text, m_dim);
+  {
+    m_footer_hit_count = 0;
+    if (!text.empty())
+    {
+      DrawFooterBand(FontHeight(m_font_small) + 32);
+      DrawTextCentered(m_font_small, m_width / 2, m_height - 38, text, m_dim);
+    }
+  }
   else
+  {
     DrawFooter(hints);
+  }
 }
 
 void Launcher::BeginScreenFx()
 {
   m_screen_fx_start = SDL_GetTicks();
   m_highlight_y = -1.0f;
+  m_text_scroll.clear();
+  m_footer_hit_count = 0;
 }
 
 void Launcher::DrawFadeIn()
@@ -3686,7 +4188,6 @@ void Launcher::ShowInfoCard(std::string_view section, std::string_view title, st
     const int panel_x = (m_width - panel_width) / 2;
     const int panel_y = (m_height - panel_height) / 2;
     GlassPanel(panel_x, panel_y, panel_width, panel_height);
-    Border(panel_x, panel_y, panel_width, panel_height, 3, m_selection);
     DrawText(m_font_small, panel_x + 40, panel_y + 24, localized_section, m_dim);
     DrawScrollingTextLeft(m_font_large, panel_x + 40, panel_y + 58, panel_width - 80,
                           localized_title, m_value);
@@ -3713,11 +4214,9 @@ void Launcher::ShowInfoCard(std::string_view section, std::string_view title, st
     const int maximum_lines = std::max(1, (panel_y + panel_height - 70 - body_y) / 32);
     DrawWrapped(m_font, panel_x + 40, body_y, panel_width - 80, 32, maximum_lines,
                 localized_description, m_text);
-    const std::string close_hint = "A / B / X  " + std::string(m_localization.Translate("Close")) +
-                                   "       " +
-                                   std::string(m_localization.Translate("Touch anywhere to close"));
-    DrawWrappedCentered(m_font_small, m_width / 2, panel_y + panel_height - 48, panel_width - 80,
-                        26, 2, close_hint, m_dim);
+    static constexpr std::array<std::pair<std::string_view, std::string_view>, 1> close_hint = {
+        std::pair{"A", "Close"}};
+    DrawFooter(close_hint, panel_y + panel_height - 32);
     DrawFadeIn();
     SDL_RenderPresent(m_renderer);
     WaitForNextFrame();
@@ -3760,6 +4259,27 @@ bool Launcher::PollEvent(SDL_Event* event)
     if (event->type == SDL_QUIT)
     {
       m_running = false;
+      continue;
+    }
+    if (event->type == SDL_WINDOWEVENT && (event->window.event == SDL_WINDOWEVENT_SIZE_CHANGED ||
+                                           event->window.event == SDL_WINDOWEVENT_RESIZED))
+    {
+      // Docking changes the output size: rescale, reload fonts and rebuild textures.
+      int output_width = 0;
+      int output_height = 0;
+      SDL_GetRendererOutputSize(m_renderer, &output_width, &output_height);
+      if (output_width > 0 && output_height > 0 &&
+          (output_width != m_output_width || output_height != m_output_height))
+      {
+        m_output_width = output_width;
+        m_output_height = output_height;
+        ConfigureLauncherScale();
+        if (m_font_scale != m_ui_scale && LoadFonts())
+        {
+          DestroyUiTextures();
+          InitializeUiTextures();
+        }
+      }
       continue;
     }
     if (event->type == SDL_CONTROLLERDEVICEADDED)
@@ -3900,6 +4420,13 @@ void Launcher::WaitForNextFrame(bool force_animation)
   constexpr Uint32 animated_interval = 16;
   constexpr Uint32 lifecycle_poll_interval = 250;
   const bool animate = force_animation || FrameNeedsAnimation();
+  if (animate && m_present_vsync)
+  {
+    // The vsynced present already paces the frame.
+    m_frame_interval = 0;
+    m_next_frame_deadline = 0;
+    return;
+  }
   Uint32 now = SDL_GetTicks();
 
   // Static screens do not have a frame rate.  Poll applet lifecycle and worker state without
@@ -4046,7 +4573,11 @@ TouchKind Launcher::FeedTouch(const SDL_Event& event, int* x, int* y)
     if (std::abs(dx) >= swipe_distance && std::abs(dx) > std::abs(dy) * 1.5f)
       return dx < 0 ? TouchKind::SwipeLeft : TouchKind::SwipeRight;
     if (std::abs(dx) <= tap_move && std::abs(dy) <= tap_move && elapsed <= tap_time)
-      return TouchKind::Tap;
+    {
+      return PressFooterButton(static_cast<int>(current_x), static_cast<int>(current_y)) ?
+                 TouchKind::None :
+                 TouchKind::Tap;
+    }
   }
   return TouchKind::None;
 }
@@ -5540,10 +6071,16 @@ void Launcher::ScanGames()
 
   ClearBackground();
   DrawHeader("Dolphin");
-  DrawTextCentered(m_font_large, m_width / 2, m_height / 2 - 60, "Scanning game library...",
+  const int scan_panel_width = std::min(940, m_width - 64);
+  GlassPanel((m_width - scan_panel_width) / 2, m_height / 2 - 100, scan_panel_width, 176);
+  DrawTextCentered(m_font_large, m_width / 2, m_height / 2 - 60,
+                   Ellipsize(m_font_large, "Scanning game library...", scan_panel_width - 64),
                    m_text);
-  DrawTextCentered(m_font_small, m_width / 2, m_height / 2 + 8,
-                   "SD, USB and connected SMB sources are indexed with Dolphin metadata.", m_dim);
+  DrawTextCentered(
+      m_font_small, m_width / 2, m_height / 2 + 8,
+      Ellipsize(m_font_small, "SD, USB and connected SMB sources are indexed with Dolphin metadata.",
+                scan_panel_width - 64),
+      m_dim);
   SDL_RenderPresent(m_renderer);
 
   std::vector<std::string_view> source_views;
@@ -5716,7 +6253,7 @@ void Launcher::RenderMessage(std::string_view title, std::span<const std::string
     const int panel_width = std::min(m_width - 96, 1080);
     const int maximum_panel_height = m_height - 80;
     const int body_width = panel_width - 96;
-    const int line_height = std::max(32, TTF_FontHeight(m_font) + 8);
+    const int line_height = std::max(32, FontHeight(m_font) + 8);
     const int maximum_lines = std::max(1, (maximum_panel_height - 170) / line_height);
     const std::vector<std::string> wrapped = WrapText(m_font, body_width, maximum_lines, message);
     const int body_height = std::max(line_height, static_cast<int>(wrapped.size()) * line_height);
@@ -5724,12 +6261,12 @@ void Launcher::RenderMessage(std::string_view title, std::span<const std::string
     const int panel_x = (m_width - panel_width) / 2;
     const int panel_y = (m_height - panel_height) / 2;
     GlassPanel(panel_x, panel_y, panel_width, panel_height);
-    Border(panel_x, panel_y, panel_width, panel_height, 3, m_selection);
-    DrawTextCentered(m_font_large, m_width / 2, panel_y + 28,
-                     Ellipsize(m_font_large, localized_title, body_width), m_selection);
+    DrawText(m_font_large, panel_x + 28, panel_y + 22,
+             Ellipsize(m_font_large, localized_title, panel_width - 48), m_text);
+    FillRect(panel_x + 28, panel_y + 72, panel_width - 56, 1, SDL_Color{255, 255, 255, 24});
 
-    const int body_y = panel_y + 92;
-    const int footer_y = panel_y + panel_height - 46;
+    const int body_y = panel_y + 88;
+    const int footer_y = panel_y + panel_height - 30;
     const SDL_Rect body_clip{panel_x + 40, body_y - 4, panel_width - 80,
                              std::max(1, footer_y - body_y - 8)};
     SDL_RenderSetClipRect(m_renderer, &body_clip);
@@ -5739,8 +6276,9 @@ void Launcher::RenderMessage(std::string_view title, std::span<const std::string
                        wrapped[index], m_text);
     }
     SDL_RenderSetClipRect(m_renderer, nullptr);
-    DrawTextCentered(m_font_small, m_width / 2, footer_y,
-                     m_localization.Translate("Press A to continue"), m_dim);
+    static constexpr std::array<std::pair<std::string_view, std::string_view>, 1> continue_hint =
+        {std::pair{"A", "Continue"}};
+    DrawFooter(continue_hint, footer_y);
     DrawFadeIn();
     SDL_RenderPresent(m_renderer);
     WaitForNextFrame();
@@ -5761,7 +6299,6 @@ void Launcher::Toast(std::string message, int milliseconds)
     const int x = (m_width - width) / 2;
     const int y = (m_height - height) / 2;
     GlassPanel(x, y, width, height);
-    Border(x, y, width, height, 2, m_highlight);
     DrawTextCentered(m_font, m_width / 2, y + 46, message, m_text);
     SDL_RenderPresent(m_renderer);
     WaitForNextFrame(true);
@@ -5772,11 +6309,11 @@ bool Launcher::Confirm(std::string_view title, std::span<const std::string> line
                        bool localize_lines)
 {
   const std::string_view localized_title = m_localization.Translate(title);
-  const std::string yes_label = std::string(m_localization.Translate("Yes")) + "  (A)";
-  const std::string no_label = std::string(m_localization.Translate("No")) + "  (B)";
+  constexpr std::string_view yes_label = "Yes";
+  constexpr std::string_view no_label = "No";
   const int panel_width = std::min(m_width - 96, 1080);
   const int body_width = panel_width - 96;
-  const int line_height = std::max(30, TTF_FontHeight(m_font) + 5);
+  const int line_height = std::max(30, FontHeight(m_font) + 5);
   std::vector<std::string> wrapped_lines;
   for (const std::string& line : lines)
   {
@@ -5836,11 +6373,11 @@ bool Launcher::Confirm(std::string_view title, std::span<const std::string> line
     }
     ClearBackground();
     GlassPanel(panel_x, panel_y, panel_width, panel_height);
-    Border(panel_x, panel_y, panel_width, panel_height, 3, SDL_Color{210, 70, 70, 255});
-    DrawTextCentered(m_font_large, m_width / 2, panel_y + 34,
-                     Ellipsize(m_font_large, localized_title, body_width),
-                     SDL_Color{235, 120, 120, 255});
-    int y = panel_y + 108;
+    DrawText(m_font_large, panel_x + 28, panel_y + 22,
+             Ellipsize(m_font_large, localized_title, panel_width - 48),
+             SDL_Color{238, 135, 135, 255});
+    FillRect(panel_x + 28, panel_y + 72, panel_width - 56, 1, SDL_Color{255, 255, 255, 24});
+    int y = panel_y + 88;
     const int body_bottom = button_y - 18;
     SDL_Rect body_clip{panel_x + 36, y - 4, panel_width - 72, std::max(1, body_bottom - y)};
     SDL_RenderSetClipRect(m_renderer, &body_clip);
@@ -5850,14 +6387,33 @@ bool Launcher::Confirm(std::string_view title, std::span<const std::string> line
       y += line_height;
     }
     SDL_RenderSetClipRect(m_renderer, nullptr);
-    FillRect(yes_x, button_y, button_width, button_height, SDL_Color{150, 50, 50, 255});
-    Border(yes_x, button_y, button_width, button_height, 2, SDL_Color{215, 95, 95, 255});
-    DrawTextCentered(m_font, yes_x + button_width / 2,
-                     button_y + (button_height - TTF_FontHeight(m_font)) / 2, yes_label, m_text);
-    FillRect(no_x, button_y, button_width, button_height, SDL_Color{48, 54, 64, 255});
-    Border(no_x, button_y, button_width, button_height, 2, m_dim);
-    DrawTextCentered(m_font, no_x + button_width / 2,
-                     button_y + (button_height - TTF_FontHeight(m_font)) / 2, no_label, m_text);
+    const auto draw_choice = [&](int x, std::string_view button, std::string_view label) {
+      const std::string_view shown = m_localization.Translate(label);
+      SDL_Texture* const glyph = ButtonGlyph(button);
+      int glyph_width = 0;
+      int glyph_height = 0;
+      if (glyph)
+      {
+        SDL_QueryTexture(glyph, nullptr, nullptr, &glyph_width, &glyph_height);
+        glyph_width /= GLYPH_SUPERSAMPLE;
+        glyph_height /= GLYPH_SUPERSAMPLE;
+      }
+      const int text_width = TextWidth(m_font, shown);
+      const int left = x + (button_width - glyph_width - 8 - text_width) / 2;
+      if (glyph)
+      {
+        SDL_Rect icon{left, button_y + (button_height - glyph_height) / 2, glyph_width,
+                      glyph_height};
+        SDL_RenderCopy(m_renderer, glyph, nullptr, &icon);
+      }
+      DrawText(m_font, left + glyph_width + 8,
+               button_y + (button_height - FontHeight(m_font)) / 2, shown, m_text);
+    };
+    RoundedPanel(yes_x, button_y, button_width, button_height, SDL_Color{115, 44, 51, 255},
+                 SDL_Color{235, 125, 125, 255}, 6);
+    draw_choice(yes_x, "A", yes_label);
+    RoundedPanel(no_x, button_y, button_width, button_height, m_focus, m_selection, 6);
+    draw_choice(no_x, "B", no_label);
     DrawFadeIn();
     SDL_RenderPresent(m_renderer);
     WaitForNextFrame();
@@ -5873,8 +6429,13 @@ int Launcher::Dropdown(std::string_view title, const std::vector<std::string>& c
   const int count = static_cast<int>(choices.size());
   int selection = std::clamp(current, 0, count - 1);
   int top = 0;
-  constexpr int row_height = 52;
-  int visible = std::clamp((m_height - 200) / row_height, 1, count);
+  const int row_height = SettingsRowHeight() + 8;
+  const int visible = std::min(count, std::max(1, (m_height - 240) / row_height));
+  const int panel_width = std::min(900, m_width - 64);
+  const int panel_height = 140 + visible * row_height;
+  const int panel_x = (m_width - panel_width) / 2;
+  const int panel_y = (m_height - panel_height) / 2;
+  const int list_y = panel_y + 80;
   BeginScreenFx();
   while (BeginFrame())
   {
@@ -5888,15 +6449,14 @@ int Launcher::Dropdown(std::string_view title, const std::vector<std::string>& c
         continue;
       if (touch == TouchKind::Tap)
       {
-        const int panel_width = m_width > 760 ? 760 : m_width - 160;
-        const int panel_x = (m_width - panel_width) / 2;
-        const int list_y = (m_height - (90 + visible * row_height)) / 2 + 70;
-        for (int row = 0; row < visible && top + row < count; ++row)
+        if (touch_x >= panel_x + 8 && touch_x < panel_x + panel_width - 8)
         {
-          const int row_y = list_y + row * row_height;
-          if (touch_x >= panel_x && touch_x < panel_x + panel_width && touch_y >= row_y &&
-              touch_y < row_y + row_height)
-            return top + row;
+          for (int row = 0; row < visible && top + row < count; ++row)
+          {
+            const int row_y = list_y + row * row_height;
+            if (touch_y >= row_y && touch_y < row_y + row_height)
+              return top + row;
+          }
         }
         continue;
       }
@@ -5924,41 +6484,41 @@ int Launcher::Dropdown(std::string_view title, const std::vector<std::string>& c
     }
 
     ClearBackground();
-    const int panel_width = m_width > 760 ? 760 : m_width - 160;
-    const int panel_height = 90 + visible * row_height;
-    const int panel_x = (m_width - panel_width) / 2;
-    const int panel_y = (m_height - panel_height) / 2;
     GlassPanel(panel_x, panel_y, panel_width, panel_height);
-    Border(panel_x, panel_y, panel_width, panel_height, 3, m_selection);
     const std::string_view displayed_title =
         localize_title ? m_localization.Translate(title) : title;
-    DrawTextCentered(m_font_large, m_width / 2, panel_y + 18, displayed_title, m_value);
-    const int list_y = panel_y + 70;
+    DrawScrollingTextLeft(m_font_large, panel_x + 28, panel_y + 22, panel_width - 56,
+                          displayed_title, m_text);
+    FillRect(panel_x + 28, panel_y + 66, panel_width - 56, 1, SDL_Color{255, 255, 255, 24});
     for (int row = 0; row < visible && top + row < count; ++row)
     {
       const int index = top + row;
       const int y = list_y + row * row_height;
       const bool selected = index == selection;
       if (selected)
-      {
-        FillRect(panel_x + 8, y, panel_width - 16, row_height - 4, m_focus);
-        FillRect(panel_x + 8, y, 5, row_height - 4, m_selection);
-      }
+        DrawRowHighlight(panel_x + 8, y, panel_width - 16, row_height - 4);
       const std::string_view displayed_choice =
           localize_choices ? m_localization.Translate(choices[index]) : choices[index];
-      DrawText(m_font, panel_x + 34, y + (row_height - TTF_FontHeight(m_font)) / 2,
-               displayed_choice, selected ? m_value : m_text);
+      const int text_y = y + (row_height - FontHeight(m_font)) / 2;
+      if (selected)
+        DrawScrollingTextLeft(m_font, panel_x + 32, text_y, panel_width - 76, displayed_choice,
+                              m_value);
+      else
+        DrawText(m_font, panel_x + 32, text_y,
+                 Ellipsize(m_font, displayed_choice, panel_width - 76), m_text);
     }
     if (count > visible)
     {
       const int track_height = visible * row_height;
-      const int track_x = panel_x + panel_width - 12;
-      FillRect(track_x, list_y, 4, track_height, SDL_Color{40, 44, 54, 255});
-      const int thumb_height = track_height * visible / count;
-      const int denominator = std::max(1, count - visible);
-      FillRect(track_x, list_y + (track_height - thumb_height) * top / denominator, 4, thumb_height,
-               m_selection);
+      const int thumb_height = std::max(12, track_height * visible / count);
+      FillRect(panel_x + panel_width - 18, list_y, 3, track_height, m_card);
+      FillRect(panel_x + panel_width - 18,
+               list_y + (track_height - thumb_height) * top / std::max(1, count - visible), 3,
+               thumb_height, m_selection);
     }
+    static constexpr std::array<std::pair<std::string_view, std::string_view>, 2> footer = {
+        std::pair{"A", "Select"}, std::pair{"B", "Back"}};
+    DrawFooter(footer, panel_y + panel_height - 28);
     DrawFadeIn();
     SDL_RenderPresent(m_renderer);
     WaitForNextFrame();
@@ -5996,9 +6556,9 @@ int Launcher::RunRows(std::string_view title, std::string_view context,
     m_row_positions[position_key] = {selection, top};
     return result;
   };
-  constexpr int row_height = 46;
-  constexpr int list_top = 118;
-  const int visible = std::max(1, (m_height - list_top - 72) / row_height);
+  const int row_height = SettingsRowHeight();
+  const int list_top = SettingsListY();
+  const int visible = std::max(1, (m_height - list_top - SettingsFooterReserve()) / row_height);
   BeginScreenFx();
   while (BeginFrame())
   {
@@ -6022,13 +6582,15 @@ int Launcher::RunRows(std::string_view title, std::string_view context,
       }
       if (touch == TouchKind::Tap)
       {
-        if (touch_y < (m_width >= 1600 ? 112 : 80) || touch_y >= m_height - 40)
+        if (touch_y < TopBarHeight() || touch_y >= m_height - 40)
           return finish(-1);
         const int index = top + (touch_y - list_top) / row_height;
         const int column_width = std::min(980, m_width - 180);
         const int column_x = (m_width - column_width) / 2;
+        // Only taps on the visible rows count.
         if (touch_x >= column_x && touch_x < column_x + column_width && touch_y >= list_top &&
-            index >= 0 && index < static_cast<int>(rows.size()))
+            touch_y < list_top + visible * row_height && index >= 0 &&
+            index < static_cast<int>(rows.size()))
         {
           selection = index;
           if ((touch_activates_full_row || touch_x >= column_x + column_width / 2) &&
@@ -6134,34 +6696,31 @@ int Launcher::RunRows(std::string_view title, std::string_view context,
     const int column_x = (m_width - column_width) / 2;
     const int label_x = column_x + 40;
     const int value_x = column_x + column_width - 40;
-    GlassPanel(column_x - 12, list_top - 10, column_width + 24, visible * row_height + 18);
+    GlassPanel(column_x - 12, list_top - 10, column_width + 24,
+               std::min(visible, static_cast<int>(rows.size()) - top) * row_height + 18);
     const float target_y = static_cast<float>(list_top + (selection - top) * row_height + 1);
     m_highlight_y = (!m_animations || m_highlight_y < 0.0f) ?
                         target_y :
                         m_highlight_y + (target_y - m_highlight_y) * 0.30f;
-    FillRect(column_x, static_cast<int>(m_highlight_y), column_width, row_height - 2, m_focus);
-    FillRect(column_x, static_cast<int>(m_highlight_y), 5, row_height - 2, m_selection);
+    DrawRowHighlight(column_x, static_cast<int>(m_highlight_y), column_width, row_height - 2);
     for (int row = 0; row < visible && top + row < static_cast<int>(rows.size()); ++row)
     {
       const int index = top + row;
       const int slot_y = list_top + row * row_height;
-      const int y = slot_y + (row_height - TTF_FontHeight(m_font)) / 2;
       const bool current = index == selection;
       const SDL_Color label_color = !rows[index].enabled    ? m_dim :
                                     rows[index].destructive ? SDL_Color{255, 120, 120, 255} :
                                     current                 ? m_value :
                                                               m_text;
+      const SDL_Color value_color = !rows[index].enabled ? m_dim : current ? m_value : m_dim;
       const std::string_view localized_label = rows[index].localize_label ?
                                                    m_localization.Translate(rows[index].label) :
                                                    std::string_view(rows[index].label);
-      DrawText(m_font, label_x, y, Ellipsize(m_font, localized_label, column_width * 2 / 3),
-               label_color);
       const std::string_view displayed_value = rows[index].localize_value ?
                                                    m_localization.Translate(rows[index].value) :
                                                    std::string_view(rows[index].value);
-      DrawTextRight(
-          m_font_small, value_x, y + (TTF_FontHeight(m_font) - TTF_FontHeight(m_font_small)) / 2,
-          Ellipsize(m_font_small, displayed_value, column_width / 3), current ? m_value : m_dim);
+      DrawSettingsRowText(localized_label, displayed_value, slot_y, column_width, label_x, value_x,
+                          current, label_color, value_color, false, row_height);
     }
     if (static_cast<int>(rows.size()) > visible)
     {
@@ -6174,17 +6733,25 @@ int Launcher::RunRows(std::string_view title, std::string_view context,
       FillRect(track_x, track_y + (track_height - thumb_height) * top / denominator, 4,
                thumb_height, m_selection);
     }
-    const bool has_adjustable_row =
-        std::ranges::any_of(rows, [](const Row& row) { return row.enabled && row.adjustable; });
+    // Only show hints that apply to the selected row.
+    const bool can_adjust = rows[selection].enabled && rows[selection].adjustable;
     const bool can_reset = reset && rows[selection].enabled &&
                            (rows[selection].adjustable || (resettable && resettable(selection)));
-    if (has_adjustable_row && can_reset)
-      DrawSettingsFooter(
-          "Left / Right  Change       A  Choose       X  Info       Y  Reset       B  Back");
-    else if (has_adjustable_row)
-      DrawSettingsFooter("Left / Right  Change       A  Choose       X  Info       B  Back");
-    else
-      DrawSettingsFooter("A  Choose       X  Info       B  Back");
+    std::array<std::pair<std::string_view, std::string_view>, 6> footer{};
+    int hint_count = 0;
+    if (can_adjust)
+    {
+      // The empty label is the deliberate glyph pair: Left and Right share one caption.
+      footer[hint_count++] = {"Left", ""};
+      footer[hint_count++] = {"Right", "Change"};
+    }
+    if (rows[selection].enabled)
+      footer[hint_count++] = {"A", "Choose"};
+    footer[hint_count++] = {"X", "Info"};
+    if (can_reset)
+      footer[hint_count++] = {"Y", "Reset"};
+    footer[hint_count++] = {"B", "Back"};
+    DrawFooter(std::span(footer).first(hint_count));
     DrawFadeIn();
     SDL_RenderPresent(m_renderer);
     WaitForNextFrame();
@@ -6506,8 +7073,11 @@ SDL_Texture* Launcher::LoadScaledTexture(const std::string& path, int width, int
   SDL_Surface* source = IMG_Load(path.c_str());
   if (!source)
     return nullptr;
-  SDL_Surface* scaled = SDL_CreateRGBSurfaceWithFormat(0, std::max(1, width), std::max(1, height),
-                                                       32, SDL_PIXELFORMAT_RGBA32);
+  // Decode at output resolution; callers pass logical sizes.
+  const int decode_width = std::max(1, static_cast<int>(std::lround(width * m_ui_scale)));
+  const int decode_height = std::max(1, static_cast<int>(std::lround(height * m_ui_scale)));
+  SDL_Surface* scaled = SDL_CreateRGBSurfaceWithFormat(0, decode_width, decode_height, 32,
+                                                       SDL_PIXELFORMAT_RGBA32);
   if (!scaled)
   {
     SDL_FreeSurface(source);
@@ -6639,39 +7209,53 @@ int Launcher::GridPage(int selection, int direction) const
                   static_cast<int>(m_visible_games.size()) - 1);
 }
 
-int Launcher::GridHitTest(int x, int y, int page_start) const
+GridLayout Launcher::ComputeGridLayout()
 {
-  const bool large = m_width >= 1600;
-  const int top = large ? 112 : 80;
-  const int footer = large ? 54 : 38;
-  const int gap_x = large ? 24 : 18;
-  const int gap_y = large ? 18 : 14;
-  const int title_height = m_show_titles ? (large ? 30 : 24) : 0;
-  const int available_height = m_height - top - footer;
-  const int caption = title_height ? title_height + 8 : 0;
-  const int cover_height = std::max(
-      72, (available_height - (GridRows() - 1) * gap_y - GridRows() * caption) / GridRows());
-  const int automatic_width = cover_height * 2 / 3;
-  const int margin = large ? 60 : 40;
-  const int maximum_width = (m_width - margin * 2 - (GridColumns() - 1) * gap_x) / GridColumns();
-  int cover_width = std::max(48, std::min(automatic_width, maximum_width));
-  const int actual_height = std::min(cover_height, cover_width * 3 / 2);
-  cover_width = actual_height * 2 / 3;
-  const int grid_width = GridColumns() * cover_width + (GridColumns() - 1) * gap_x;
-  const int x0 = (m_width - grid_width) / 2;
-  const int grid_height = GridRows() * (actual_height + caption) + (GridRows() - 1) * gap_y;
-  const int y0 = top + std::max(0, (available_height - grid_height) / 2);
-  for (int row = 0; row < GridRows(); ++row)
+  GridLayout layout;
+  layout.gap_x = 32;
+  layout.gap_y = 20;
+  layout.title_height = m_show_titles ? FontHeight(m_font_small) : 0;
+  layout.columns = GridColumns();
+  layout.rows = GridRows();
+  const int top_bar = TopBarHeight() + 18;
+  const int footer = MeasureFooter(LIBRARY_FOOTER).height + 12;
+  const int available_height = m_height - top_bar - footer;
+  const int caption = layout.title_height ? layout.title_height + 8 : 0;
+  const int maximum_cover_height = std::max(
+      72, (available_height - (layout.rows - 1) * layout.gap_y - layout.rows * caption) /
+              layout.rows);
+  constexpr int margin = 56;
+  const int automatic_width = maximum_cover_height * 2 / 3;
+  const int maximum_cover_width =
+      (m_width - margin * 2 - (layout.columns - 1) * layout.gap_x) / layout.columns;
+  layout.cover_width = std::max(48, std::min(automatic_width, maximum_cover_width));
+  layout.cover_height = std::min(maximum_cover_height, layout.cover_width * 3 / 2);
+  layout.cover_width = layout.cover_height * 2 / 3;
+  const int grid_width =
+      layout.columns * layout.cover_width + (layout.columns - 1) * layout.gap_x;
+  layout.x0 = (m_width - grid_width) / 2;
+  const int grid_height =
+      layout.rows * (layout.cover_height + caption) + (layout.rows - 1) * layout.gap_y;
+  layout.y0 = top_bar + std::max(0, (available_height - grid_height) / 2);
+  return layout;
+}
+
+int Launcher::GridHitTest(int x, int y, int page_start)
+{
+  const GridLayout layout = ComputeGridLayout();
+  const int caption = layout.title_height ? layout.title_height + 8 : 0;
+  const int row_stride = layout.RowStride();
+  for (int row = 0; row < layout.rows; ++row)
   {
-    for (int column = 0; column < GridColumns(); ++column)
+    for (int column = 0; column < layout.columns; ++column)
     {
-      const int index = page_start + row * GridColumns() + column;
+      const int index = page_start + row * layout.columns + column;
       if (index >= static_cast<int>(m_visible_games.size()))
         continue;
-      const int cell_x = x0 + column * (cover_width + gap_x);
-      const int cell_y = y0 + row * (actual_height + caption + gap_y);
-      if (x >= cell_x - 4 && x < cell_x + cover_width + 4 && y >= cell_y - 4 &&
-          y < cell_y + actual_height + caption)
+      const int cell_x = layout.x0 + column * (layout.cover_width + layout.gap_x);
+      const int cell_y = layout.y0 + row * row_stride;
+      if (x >= cell_x - 4 && x < cell_x + layout.cover_width + 4 && y >= cell_y - 4 &&
+          y < cell_y + layout.cover_height + caption)
         return index;
     }
   }
@@ -6684,27 +7268,8 @@ void Launcher::RenderGrid(int selection)
   m_cover_decode_budget = COVER_REQUEST_BUDGET;
   if (Game* selected = VisibleGame(selection))
     EnsureCover(selected, true);
-  const bool large = m_width >= 1600;
-  const int top = large ? 112 : 80;
-  const int footer = large ? 54 : 38;
-  const int gap_x = large ? 24 : 18;
-  const int gap_y = large ? 18 : 14;
-  const int title_height = m_show_titles ? (large ? 30 : 24) : 0;
-  const int caption = title_height ? title_height + 8 : 0;
-  const int available_height = m_height - top - footer;
-  const int maximum_cover_height = std::max(
-      72, (available_height - (GridRows() - 1) * gap_y - GridRows() * caption) / GridRows());
-  const int automatic_width = maximum_cover_height * 2 / 3;
-  const int margin = large ? 60 : 40;
-  const int maximum_cover_width =
-      (m_width - margin * 2 - (GridColumns() - 1) * gap_x) / GridColumns();
-  int cover_width = std::max(48, std::min(automatic_width, maximum_cover_width));
-  const int cover_height = std::min(maximum_cover_height, cover_width * 3 / 2);
-  cover_width = cover_height * 2 / 3;
-  const int grid_width = GridColumns() * cover_width + (GridColumns() - 1) * gap_x;
-  const int x0 = (m_width - grid_width) / 2;
-  const int grid_height = GridRows() * (cover_height + caption) + (GridRows() - 1) * gap_y;
-  const int y0 = top + std::max(0, (available_height - grid_height) / 2);
+  const GridLayout layout = ComputeGridLayout();
+  const int row_stride = layout.RowStride();
   const int per_page = GridPageSize();
   const int page_start = m_visible_games.empty() ? 0 : selection / per_page * per_page;
   const int page_count = m_visible_games.empty() ?
@@ -6712,51 +7277,46 @@ void Launcher::RenderGrid(int selection)
                              (static_cast<int>(m_visible_games.size()) + per_page - 1) / per_page;
   const int page = m_visible_games.empty() ? 1 : selection / per_page + 1;
 
-  const int band_height = y0 - 4;
-  FillRect(0, 0, m_width, band_height, m_panel);
-  if (!HasAnimatedBackground())
-    FillRect(0, band_height, m_width, 2, m_selection);
-  const int logo_size = band_height - 12;
-  if (m_logo)
-  {
-    SDL_Rect logo{26, (band_height - logo_size) / 2, logo_size, logo_size};
-    SDL_RenderCopy(m_renderer, m_logo, nullptr, &logo);
-  }
   static constexpr std::array<std::string_view, 3> SORT_NAMES = {"A-Z", "Recently played",
                                                                  "Recently added"};
-  std::string status =
-      std::to_string(m_visible_games.empty() ? 0 : selection + 1) + " / " +
-      std::to_string(m_visible_games.size()) + "   ·   " +
-      std::string(m_localization.Translate("Page")) + " " + std::to_string(page) + " / " +
-      std::to_string(page_count) + "   ·   " + std::string(m_localization.Translate("Sort:")) +
-      " " + std::string(m_localization.Translate(SORT_NAMES[static_cast<int>(m_sort_mode)]));
+  const Game* const selected_game = VisibleGame(selection);
+  const std::string library(m_localization.Translate("Library"));
+  std::string eyebrow = library;
+  if (selected_game)
+    eyebrow += "  ·  " + GameLocationLabel(*selected_game);
   if (!m_active_collection.empty())
-    status += "   ·   " + (m_active_collection == "favorites" ?
-                               std::string(m_localization.Translate("Favorites")) :
-                               m_active_collection);
-  if (!m_search_query.empty())
-    status += "   ·   " + std::string(m_localization.Translate("Search:")) + " " + m_search_query;
-  DrawTextCentered(m_font, m_width / 2, (band_height - TTF_FontHeight(m_font)) / 2, status,
-                   m_value);
-  const int status_right = m_width / 2 + TextWidth(m_font, status) / 2;
-  const int maximum_width = (m_width - 34) - (status_right + 24);
-  DrawScrollingTextRight(
-      m_font_small, m_width - 34, (band_height - TTF_FontHeight(m_font_small)) / 2, maximum_width,
-      m_visible_games.empty() ? std::string(m_localization.Translate("No game selected")) :
-                                GameLocationLabel(*VisibleGame(selection)),
-      m_dim);
-
-  for (int row = 0; row < GridRows(); ++row)
   {
-    for (int column = 0; column < GridColumns(); ++column)
+    eyebrow += "  ·  " + (m_active_collection == "favorites" ?
+                           std::string(m_localization.Translate("Favorites")) :
+                           m_active_collection);
+  }
+  if (!m_search_query.empty())
+    eyebrow += "  ·  " + std::string(m_localization.Translate("Search:")) + " " + m_search_query;
+  const std::string summary =
+      std::to_string(m_visible_games.empty() ? 0 : selection + 1) + " / " +
+      std::to_string(m_visible_games.size()) + "  ·  " +
+      std::string(m_localization.Translate("Page")) + " " + std::to_string(page) + " / " +
+      std::to_string(page_count);
+  const std::string sorting =
+      std::string(m_localization.Translate("Sort:")) + " " +
+      std::string(m_localization.Translate(SORT_NAMES[static_cast<int>(m_sort_mode)]));
+  DrawPageHeader(selected_game ? std::string_view(selected_game->title) :
+                                 std::string_view(library),
+                 eyebrow, summary, sorting);
+
+  const int cover_width = layout.cover_width;
+  const int cover_height = layout.cover_height;
+  for (int row = 0; row < layout.rows; ++row)
+  {
+    for (int column = 0; column < layout.columns; ++column)
     {
-      const int index = page_start + row * GridColumns() + column;
+      const int index = page_start + row * layout.columns + column;
       if (index >= static_cast<int>(m_visible_games.size()))
         continue;
       Game& game = *VisibleGame(index);
       EnsureCover(&game);
-      const int x = x0 + column * (cover_width + gap_x);
-      const int y = y0 + row * (cover_height + caption + gap_y);
+      const int x = layout.x0 + column * (cover_width + layout.gap_x);
+      const int y = layout.y0 + row * row_stride;
       const bool current = index == selection;
       FillRect(x + 4, y + 6, cover_width, cover_height, SDL_Color{0, 0, 0, 55});
       FillRect(x + 2, y + 3, cover_width, cover_height, SDL_Color{0, 0, 0, 70});
@@ -6766,8 +7326,8 @@ void Launcher::RenderGrid(int selection)
         if (m_animations && SDL_GetTicks() - game.cover_loaded_at < 180)
           alpha = static_cast<Uint8>((SDL_GetTicks() - game.cover_loaded_at) * 255 / 180);
         SDL_SetTextureAlphaMod(game.cover, alpha);
-        SDL_SetTextureColorMod(game.cover, current ? 255 : 150, current ? 255 : 150,
-                               current ? 255 : 150);
+        SDL_SetTextureColorMod(game.cover, current ? 255 : 225, current ? 255 : 225,
+                               current ? 255 : 225);
         SDL_Rect destination{x, y, cover_width, cover_height};
         SDL_RenderCopy(m_renderer, game.cover, nullptr, &destination);
       }
@@ -6776,11 +7336,11 @@ void Launcher::RenderGrid(int selection)
         FillRect(x, y, cover_width, cover_height, m_card);
         const std::string_view no_cover = m_localization.Translate("NO COVER");
         const int text_width = cover_width - 16;
-        const int line_height = TTF_FontHeight(m_font_small) + 4;
+        const int line_height = FontHeight(m_font_small) + 4;
         const int center_y = y + cover_height / 2;
         if (TextWidth(m_font_small, no_cover) <= text_width)
           DrawTextCentered(m_font_small, x + cover_width / 2,
-                           center_y - TTF_FontHeight(m_font_small) / 2, no_cover, m_dim);
+                           center_y - FontHeight(m_font_small) / 2, no_cover, m_dim);
         else
           DrawWrappedCentered(m_font_small, x + cover_width / 2, center_y - line_height, text_width,
                               line_height, 2, no_cover, m_dim);
@@ -6788,16 +7348,7 @@ void Launcher::RenderGrid(int selection)
       Border(x, y, cover_width, cover_height, 1, SDL_Color{12, 13, 18, 255});
       FillRect(x, y, cover_width, 1, SDL_Color{255, 255, 255, 26});
       if (current)
-      {
-        constexpr int glow = 6;
-        for (int glow_index = glow; glow_index >= 1; --glow_index)
-        {
-          const Uint8 alpha = static_cast<Uint8>(150 * (glow - glow_index + 1) / glow);
-          Border(x - 2 - glow_index, y - 2 - glow_index, cover_width + 4 + glow_index * 2,
-                 cover_height + 4 + glow_index * 2, 1, SDL_Color{255, 170, 0, alpha});
-        }
         Border(x - 2, y - 2, cover_width + 4, cover_height + 4, 2, m_selection);
-      }
       int flag_index = 0;
       if (game.region == DiscIO::Region::NTSC_U)
         flag_index = 1;
@@ -6835,29 +7386,47 @@ void Launcher::RenderGrid(int selection)
     EnsureCover(VisibleGame(index));
   if (m_visible_games.empty())
   {
+    std::string empty_state;
     if (m_library_scan)
     {
       const std::size_t processed = m_library_scan->processed.load(std::memory_order_acquire);
       const std::size_t discovered = m_library_scan->discovered.load(std::memory_order_acquire);
-      const std::string progress =
+      empty_state =
           discovered ? std::string(m_localization.Translate("Scanning game library...")) + "  " +
                            std::to_string(processed) + " / " + std::to_string(discovered) :
                        std::string(m_localization.Translate("Scanning game folders..."));
-      DrawTextCentered(m_font, m_width / 2, m_height / 2, progress, m_dim);
     }
     else
     {
-      DrawTextCentered(
-          m_font, m_width / 2, m_height / 2,
-          m_localization.Translate("No games match this view -- press - to change filters"), m_dim);
+      empty_state =
+          m_localization.Translate("No games match this view -- press - to change filters");
     }
+    const int panel_width = std::min(940, m_width - 64);
+    const int panel_height = std::max(140, FontHeight(m_font) + 96);
+    GlassPanel((m_width - panel_width) / 2, (m_height - panel_height) / 2, panel_width,
+               panel_height);
+    DrawTextCentered(m_font, m_width / 2, (m_height - FontHeight(m_font)) / 2,
+                     Ellipsize(m_font, empty_state, panel_width - 64), m_dim);
   }
   DrawUpdateNotification();
-  const std::array<std::pair<std::string_view, std::string_view>, 8> footer_hints = {
-      std::pair{"A", "Launch"},    std::pair{"Y", "Sort"},   std::pair{"X", "Settings"},
-      std::pair{"+", "Game Menu"}, std::pair{"-", "Filter"}, std::pair{"L", ""},
-      std::pair{"R", "Page"},      std::pair{"B", "Quit"}};
-  DrawFooter(footer_hints);
+  std::array<std::pair<std::string_view, std::string_view>, LIBRARY_FOOTER.size()> hints{};
+  int hint_count = 0;
+  const bool has_games = !m_visible_games.empty();
+  if (has_games)
+    hints[hint_count++] = {"A", "Launch"};
+  if (has_games)
+    hints[hint_count++] = {"Y", "Sort"};
+  hints[hint_count++] = {"X", "Settings"};
+  if (has_games)
+    hints[hint_count++] = {"+", "Game Menu"};
+  hints[hint_count++] = {"-", "Filter"};
+  if (page_count > 1)
+  {
+    hints[hint_count++] = {"L", ""};
+    hints[hint_count++] = {"R", "Page"};
+  }
+  hints[hint_count++] = {"B", "Quit"};
+  DrawFooter(std::span(hints).first(hint_count));
   SDL_RenderPresent(m_renderer);
 }
 
@@ -10085,7 +10654,6 @@ void Launcher::RenderControllerCapture(const InputBinding& binding, int position
   const int panel_x = (m_width - panel_width) / 2;
   const int panel_y = (m_height - panel_height) / 2 - 20;
   GlassPanel(panel_x, panel_y, panel_width, panel_height);
-  Border(panel_x, panel_y, panel_width, panel_height, 3, m_selection);
   DrawTextCentered(m_font_small, m_width / 2, panel_y + 36,
                    std::string(m_localization.Translate("Control")) + " " +
                        std::to_string(position + 1) + " " +
@@ -10103,10 +10671,16 @@ void Launcher::RenderControllerCapture(const InputBinding& binding, int position
   DrawTextCentered(m_font_small, m_width / 2, panel_y + 238,
                    status.empty() ? current_line : std::string(m_localization.Translate(status)),
                    status.empty() ? m_dim : m_highlight);
-  DrawTextCentered(m_font_small, m_width / 2, m_height - 72,
+  // Hold actions can't be triggered by a tap, so this legend isn't a footer.
+  constexpr int hint_band = 100;
+  const int hint_step = FontHeight(m_font_small) + 10;
+  const int hint_y =
+      m_height - hint_band + (hint_band - hint_step - FontHeight(m_font_small)) / 2;
+  DrawFooterBand(hint_band);
+  DrawTextCentered(m_font_small, m_width / 2, hint_y,
                    m_localization.Translate("Hold Plus to clear       Hold Minus to cancel"),
                    m_dim);
-  DrawTextCentered(m_font_small, m_width / 2, m_height - 38,
+  DrawTextCentered(m_font_small, m_width / 2, hint_y + hint_step,
                    m_localization.Translate("Touch left to clear       Touch right to cancel"),
                    m_dim);
   SDL_RenderPresent(m_renderer);
@@ -10235,9 +10809,9 @@ void Launcher::ControllerMappingSettings(bool wii, int port, bool per_game, Game
   const int count = static_cast<int>(bindings.size());
   int selection = std::clamp(saved.first, 0, count - 1);
   int top = std::max(0, saved.second);
-  constexpr int row_height = 46;
-  constexpr int list_top = 118;
-  const int visible = std::max(1, (m_height - list_top - 72) / row_height);
+  const int row_height = SettingsRowHeight();
+  const int list_top = SettingsListY();
+  const int visible = std::max(1, (m_height - list_top - SettingsFooterReserve()) / row_height);
   const auto finish = [&] { saved = {selection, top}; };
   const auto assign_selected = [&] {
     if (!m_controller || !SDL_GameControllerGetAttached(m_controller))
@@ -10349,7 +10923,7 @@ void Launcher::ControllerMappingSettings(bool wii, int port, bool per_game, Game
         continue;
       if (touch == TouchKind::Tap)
       {
-        if (touch_y < (m_width >= 1600 ? 112 : 80) || touch_y >= m_height - 40)
+        if (touch_y < TopBarHeight() || touch_y >= m_height - 40)
         {
           finish();
           return;
@@ -10409,24 +10983,23 @@ void Launcher::ControllerMappingSettings(bool wii, int port, bool per_game, Game
     const int column_x = (m_width - column_width) / 2;
     const int label_x = column_x + 40;
     const int value_x = column_x + column_width - 40;
-    GlassPanel(column_x - 12, list_top - 10, column_width + 24, visible * row_height + 18);
+    GlassPanel(column_x - 12, list_top - 10, column_width + 24,
+               std::min(visible, count - top) * row_height + 18);
     const float target = static_cast<float>(list_top + (selection - top) * row_height + 1);
     m_highlight_y = (!m_animations || m_highlight_y < 0.0f) ?
                         target :
                         m_highlight_y + (target - m_highlight_y) * 0.30f;
-    FillRect(column_x, static_cast<int>(m_highlight_y), column_width, row_height - 2, m_focus);
-    FillRect(column_x, static_cast<int>(m_highlight_y), 5, row_height - 2, m_selection);
+    DrawRowHighlight(column_x, static_cast<int>(m_highlight_y), column_width, row_height - 2);
     for (int row = 0; row < visible && top + row < count; ++row)
     {
       const int index = top + row;
-      const int y = list_top + row * row_height + (row_height - TTF_FontHeight(m_font)) / 2;
       const bool current = index == selection;
-      DrawText(m_font, label_x, y, m_localization.Translate(bindings[index].label),
-               current ? m_value : m_text);
       const std::string expression = BindingDisplayName(ReadControllerValue(
           shown_target, bindings[index].key, bindings[index].default_expression));
-      DrawTextRight(m_font, value_x, y, Ellipsize(m_font, expression, column_width / 2),
-                    current ? m_value : m_dim);
+      DrawSettingsRowText(m_localization.Translate(bindings[index].label), expression,
+                          list_top + row * row_height, column_width, label_x, value_x, current,
+                          current ? m_value : m_text, current ? m_value : m_dim, false,
+                          row_height);
     }
     if (count > visible)
     {
@@ -12373,14 +12946,13 @@ bool Launcher::ChooseForwarderIcon(Game* game, std::string* output_path)
   const int count = static_cast<int>(paths.size());
   const int columns = std::max(1, std::min(count, 5));
   const int rows = (count + columns - 1) / columns;
-  constexpr int gap = 18;
-  constexpr int top = 150;
-  constexpr int bottom = 40;
-  const int cell_width = (m_width - 80 - (columns - 1) * gap) / columns;
-  const int cell_height = (m_height - top - bottom - (rows - 1) * gap) / rows;
-  const int cell = std::clamp(std::min(cell_width, cell_height), 90, 200);
+  constexpr int gap = 24;
+  const int top = TopBarHeight() + 32;
+  const int bottom = m_height - SettingsFooterReserve() - 12;
+  const int cell = std::max(48, std::min({200, (m_width - 96 - (columns - 1) * gap) / columns,
+                                          (bottom - top - (rows - 1) * gap) / rows}));
   const int x0 = (m_width - (columns * cell + (columns - 1) * gap)) / 2;
-  const int y0 = top;
+  const int y0 = top + std::max(0, (bottom - top - rows * cell - (rows - 1) * gap) / 2);
   std::vector<SDL_Texture*> textures(count, nullptr);
   for (int index = 0; index < count; ++index)
     textures[index] = LoadScaledTexture(paths[index], cell, cell);
@@ -12475,7 +13047,9 @@ bool Launcher::ChooseForwarderIcon(Game* game, std::string* output_path)
       const int x = x0 + column * (cell + gap);
       const int y = y0 + row * (cell + gap);
       if (index == selection)
-        FillRect(x - 6, y - 6, cell + 12, cell + 12, m_selection);
+        RoundedPanel(x - 8, y - 8, cell + 16, cell + 16, m_panel, m_selection);
+      else
+        GlassPanel(x - 8, y - 8, cell + 16, cell + 16);
       FillRect(x, y, cell, cell, m_card);
       if (textures[index])
       {
@@ -12487,7 +13061,9 @@ bool Launcher::ChooseForwarderIcon(Game* game, std::string* output_path)
         DrawTextCentered(m_font_small, x + cell / 2, y + cell / 2, "?", m_dim);
       }
     }
-    DrawSettingsFooter("A  Select       B  Back");
+    static constexpr std::array<std::pair<std::string_view, std::string_view>, 2> footer = {
+        std::pair{"A", "Use icon"}, std::pair{"B", "Back"}};
+    DrawFooter(footer);
     DrawFadeIn();
     SDL_RenderPresent(m_renderer);
     WaitForNextFrame();
@@ -12507,16 +13083,20 @@ void Launcher::CreateHomeShortcut(Game* game)
 {
   if (!game)
     return;
-  constexpr int icon_x = 110;
-  constexpr int icon_y = 176;
-  constexpr int icon_size = 280;
-  constexpr int name_y = 196;
-  constexpr int author_y = 290;
-  constexpr int create_y = 406;
-  constexpr int field_height = 64;
-  constexpr int create_height = 58;
-  const int right_x = icon_x + icon_size + 70;
-  const int right_width = m_width - right_x - 90;
+  const GameDetailLayout layout = ComputeGameDetailLayout();
+  constexpr int icon_size = 260;
+  const int icon_x = layout.preview.x + (layout.preview.w - icon_size) / 2;
+  const int icon_y = layout.preview.y + (layout.preview.h - icon_size) / 2;
+  constexpr int panel_height = 340;
+  const SDL_Rect panel{layout.content.x, layout.content.y + (layout.content.h - panel_height) / 2,
+                       layout.content.w, panel_height};
+  const int right_x = panel.x + 24;
+  const int right_width = panel.w - 48;
+  const int name_y = panel.y + 32;
+  const int author_y = panel.y + 126;
+  const int create_y = panel.y + 240;
+  constexpr int field_height = 86;
+  constexpr int create_height = 68;
   std::string name = game->title;
   std::string author =
       game->metadata ?
@@ -12624,17 +13204,20 @@ void Launcher::CreateHomeShortcut(Game* game)
           selection = 0;
           activate();
         }
-        else if (touch_y >= name_y - 6 && touch_y < name_y + field_height)
+        else if (touch_x >= right_x - 10 && touch_x < right_x + right_width + 10 &&
+                 touch_y >= name_y - 6 && touch_y < name_y - 6 + field_height)
         {
           selection = 1;
           activate();
         }
-        else if (touch_y >= author_y - 6 && touch_y < author_y + field_height)
+        else if (touch_x >= right_x - 10 && touch_x < right_x + right_width + 10 &&
+                 touch_y >= author_y - 6 && touch_y < author_y - 6 + field_height)
         {
           selection = 2;
           activate();
         }
-        else if (touch_y >= create_y - 6 && touch_y < create_y + create_height)
+        else if (touch_x >= right_x - 10 && touch_x < right_x + right_width + 10 &&
+                 touch_y >= create_y - 6 && touch_y < create_y - 6 + create_height)
         {
           selection = 3;
           activate();
@@ -12678,30 +13261,18 @@ void Launcher::CreateHomeShortcut(Game* game)
 
     ClearBackground();
     DrawHeader("Create HOME shortcut", game->title);
-    if (selection == 0)
-      FillRect(icon_x - 6, icon_y - 6, icon_size + 12, icon_size + 12, m_selection);
-    FillRect(icon_x, icon_y, icon_size, icon_size, m_card);
-    if (icon)
-    {
-      SDL_Rect destination{icon_x, icon_y, icon_size, icon_size};
-      SDL_RenderCopy(m_renderer, icon, nullptr, &destination);
-    }
-    else
-    {
-      DrawTextCentered(m_font_small, icon_x + icon_size / 2, icon_y + icon_size / 2,
-                       m_localization.Translate("(no icon)"), m_dim);
-    }
+    DrawArtworkPreview(icon, SDL_Rect{icon_x, icon_y, icon_size, icon_size}, selection == 0,
+                       "(no icon)");
     DrawTextCentered(m_font_small, icon_x + icon_size / 2, icon_y + icon_size + 20,
                      m_localization.Translate("Icon"), selection == 0 ? m_value : m_dim);
+    GlassPanel(panel.x, panel.y, panel.w, panel.h);
     const auto field = [&](int index, int y, std::string_view label, std::string_view value) {
       const bool current = selection == index;
+      RoundedRect(right_x - 10, y - 6, right_width + 20, field_height, 4, m_card);
       if (current)
-      {
-        FillRect(right_x - 10, y - 6, right_width + 20, field_height, m_focus);
-        FillRect(right_x - 10, y - 6, 5, field_height, m_selection);
-      }
-      DrawText(m_font_small, right_x, y, label, current ? m_value : m_dim);
-      DrawScrollingTextLeft(m_font, right_x, y + 26, right_width - 8, value,
+        DrawRowHighlight(right_x - 10, y - 6, right_width + 20, field_height);
+      DrawText(m_font_small, right_x + 8, y + 4, label, m_highlight);
+      DrawScrollingTextLeft(m_font, right_x + 8, y + 34, right_width - 16, value,
                             current ? m_value : m_text);
     };
     field(1, name_y, m_localization.Translate("Name"), name);
@@ -12709,14 +13280,16 @@ void Launcher::CreateHomeShortcut(Game* game)
         author + "  |  " + Updater::BuiltReleaseTag();
     field(2, author_y, m_localization.Translate("Author / Version"), metadata);
     const bool create_selected = selection == 3;
-    FillRect(right_x - 10, create_y - 6, right_width + 20, create_height,
-             create_selected ? SDL_Color{44, 86, 44, 240} : SDL_Color{30, 46, 32, 200});
-    if (create_selected)
-      FillRect(right_x - 10, create_y - 6, 5, create_height, m_selection);
-    DrawTextCentered(m_font, right_x + right_width / 2, create_y + 12,
+    DrawButtonPanel(right_x - 10, create_y - 6, right_width + 20, create_height, create_selected);
+    DrawTextCentered(m_font, right_x + right_width / 2,
+                     create_y - 6 + (create_height - FontHeight(m_font)) / 2,
                      m_localization.Translate("Create shortcut"),
-                     create_selected ? m_value : SDL_Color{150, 225, 150, 255});
-    DrawSettingsFooter("A  Edit / choose       B  Back");
+                     create_selected ? m_value : m_text);
+    const std::array<std::pair<std::string_view, std::string_view>, 2> footer = {
+        std::pair<std::string_view, std::string_view>{
+            "A", create_selected ? "Create shortcut" : "Edit / choose"},
+        std::pair<std::string_view, std::string_view>{"B", "Back"}};
+    DrawFooter(footer);
     DrawFadeIn();
     SDL_RenderPresent(m_renderer);
     WaitForNextFrame();
@@ -12900,7 +13473,7 @@ void Launcher::UpdateScreen()
     const int body_y = panel_y + 126;
     const int body_width = panel_width - 84;
     const int body_bottom = panel_y + panel_height - 108;
-    const int line_height = TTF_FontHeight(m_font_small) + 8;
+    const int line_height = FontHeight(m_font_small) + 8;
     const int visible_lines = std::max(1, (body_bottom - body_y) / line_height);
     const std::string release_text =
         snapshot.release.notes.empty() ?
@@ -12981,9 +13554,11 @@ void Launcher::UpdateScreen()
     ClearBackground();
     FillRect(0, 0, m_width, m_height, SDL_Color{0, 0, 0, 105});
     GlassPanel(panel_x, panel_y, panel_width, panel_height);
-    Border(panel_x, panel_y, panel_width, panel_height, 3, m_selection);
-    DrawTextCentered(m_font_large, m_width / 2, panel_y + 24,
-                     m_localization.Translate("Dolphin Update"), m_selection);
+    DrawText(m_font_large, panel_x + 28, panel_y + 22,
+             Ellipsize(m_font_large, m_localization.Translate("Dolphin Update"),
+                       panel_width - 48),
+             m_text);
+    FillRect(panel_x + 28, panel_y + 72, panel_width - 56, 1, SDL_Color{255, 255, 255, 24});
 
     std::string status;
     switch (snapshot.state)
@@ -13060,8 +13635,8 @@ void Launcher::UpdateScreen()
       const int bar_y = panel_y + panel_height - 82;
       const int bar_width = body_width;
       constexpr int bar_height = 24;
-      Border(bar_x, bar_y, bar_width, bar_height, 2, m_selection);
-      FillRect(bar_x + 3, bar_y + 3, (bar_width - 6) * percent / 100, bar_height - 6, m_highlight);
+      DrawProgressBar(bar_x, bar_y, bar_width, bar_height,
+                      total ? static_cast<double>(snapshot.downloaded) / total : 0.0);
       char progress[96];
       std::snprintf(progress, sizeof(progress), "%d%%    %.1f / %.1f MiB", percent,
                     snapshot.downloaded / (1024.0 * 1024.0), total / (1024.0 * 1024.0));
@@ -13072,17 +13647,25 @@ void Launcher::UpdateScreen()
     }
     else
     {
-      std::vector<std::pair<std::string_view, std::string_view>> controls = {
-          {"B", "Back"}, {"Up / Down", "Scroll"}, {"L", "Page"}, {"R", "Page"}};
+      std::array<std::pair<std::string_view, std::string_view>, 5> controls{};
+      int hint_count = 0;
       if (snapshot.state == Updater::State::UpdateAvailable)
-        controls = {{"A", "Download"}, {"B", "Back"}, {"Up / Down", "Scroll"}};
+        controls[hint_count++] = {"A", "Download"};
       else if (snapshot.state == Updater::State::ReadyToInstall)
-        controls = {{"A", "Install & Exit"}, {"B", "Back"}};
+        controls[hint_count++] = {"A", "Install & Exit"};
       else if (snapshot.state == Updater::State::Error ||
                snapshot.state == Updater::State::Cancelled ||
                snapshot.state == Updater::State::UpToDate)
-        controls = {{"A", "Check again"}, {"B", "Back"}};
-      DrawFooter(controls, panel_y + panel_height - 35);
+        controls[hint_count++] = {"A", "Check again"};
+      controls[hint_count++] = {"B", "Back"};
+      if (max_scroll > 0)
+      {
+        controls[hint_count++] = {"Up / Down", "Scroll"};
+        // The empty label is the deliberate glyph pair: L and R share the "Page" caption.
+        controls[hint_count++] = {"L", ""};
+        controls[hint_count++] = {"R", "Page"};
+      }
+      DrawFooter(std::span(controls).first(hint_count), panel_y + panel_height - 35);
     }
     DrawFadeIn();
     SDL_RenderPresent(m_renderer);
@@ -13115,7 +13698,6 @@ void Launcher::DrawUpdateNotification()
   const int x = m_width - width - 24;
   const int y = m_height - height - 58;
   GlassPanel(x, y, width, height);
-  Border(x, y, width, height, 2, m_selection);
   const std::string title = "Dolphin " + m_update_notice_tag + " " +
                             std::string(m_localization.Translate("is available"));
   DrawText(m_font, x + 22, y + 16, Ellipsize(m_font, title, width - 44), m_value);
@@ -13132,8 +13714,8 @@ void Launcher::AppearanceSettings()
   constexpr int option_count = 11;
   constexpr int update_row = option_count;
   constexpr int selection_count = option_count + 1;
-  constexpr int row_height = 46;
-  constexpr int list_top = 118;
+  const int row_height = SettingsRowHeight();
+  const int list_top = SettingsListY();
   static int saved_selection = 0;
   static int saved_top = 0;
 
@@ -13354,7 +13936,7 @@ void Launcher::AppearanceSettings()
       }
       if (touch == TouchKind::Tap)
       {
-        if (touch_y < (m_width >= 1600 ? 112 : 80) || touch_y >= m_height - 40)
+        if (touch_y < TopBarHeight() || touch_y >= m_height - 40)
         {
           finish();
           return;
@@ -13445,21 +14027,19 @@ void Launcher::AppearanceSettings()
     DrawHeader("Launcher", {});
     const int label_x = column_x + 40;
     const int value_x = column_x + column_width - 40;
-    GlassPanel(column_x - 12, list_top - 10, column_width + 24, visible * row_height + 18);
+    GlassPanel(column_x - 12, list_top - 10, column_width + 24,
+               std::min(visible, option_count - top) * row_height + 18);
     if (selection < option_count)
     {
       const float target_y = static_cast<float>(list_top + (selection - top) * row_height + 1);
       m_highlight_y = (!m_animations || m_highlight_y < 0.0f) ?
                           target_y :
                           m_highlight_y + (target_y - m_highlight_y) * 0.30f;
-      FillRect(column_x, static_cast<int>(m_highlight_y), column_width, row_height - 2, m_focus);
-      FillRect(column_x, static_cast<int>(m_highlight_y), 5, row_height - 2, m_selection);
+      DrawRowHighlight(column_x, static_cast<int>(m_highlight_y), column_width, row_height - 2);
     }
     for (int row = 0; row < visible && top + row < option_count; ++row)
     {
       const int index = top + row;
-      const int slot_y = list_top + row * row_height;
-      const int y = slot_y + (row_height - TTF_FontHeight(m_font)) / 2;
       const bool current = index == selection;
       const std::string_view displayed_label = rows[index].localize_label ?
                                                    m_localization.Translate(rows[index].label) :
@@ -13467,11 +14047,9 @@ void Launcher::AppearanceSettings()
       const std::string_view displayed_value = rows[index].localize_value ?
                                                    m_localization.Translate(rows[index].value) :
                                                    std::string_view(rows[index].value);
-      DrawText(m_font, label_x, y, Ellipsize(m_font, displayed_label, column_width * 2 / 3),
-               current ? m_value : m_text);
-      DrawTextRight(
-          m_font_small, value_x, y + (TTF_FontHeight(m_font) - TTF_FontHeight(m_font_small)) / 2,
-          Ellipsize(m_font_small, displayed_value, column_width / 3), current ? m_value : m_dim);
+      DrawSettingsRowText(displayed_label, displayed_value, list_top + row * row_height,
+                          column_width, label_x, value_x, current, current ? m_value : m_text,
+                          current ? m_value : m_dim, false, row_height);
     }
     if (option_count > visible)
     {
@@ -13486,18 +14064,30 @@ void Launcher::AppearanceSettings()
     }
 
     const bool update_selected = selection == update_row;
-    FillRect(button_x, button_y, button_width, button_height,
-             update_selected ? m_focus : SDL_Color{35, 40, 50, 225});
-    Border(button_x, button_y, button_width, button_height, 2,
-           update_selected ? m_selection : m_dim);
-    DrawTextCentered(m_font, m_width / 2, button_y + (button_height - TTF_FontHeight(m_font)) / 2,
+    DrawButtonPanel(button_x, button_y, button_width, button_height, update_selected);
+    DrawTextCentered(m_font, m_width / 2, button_y + (button_height - FontHeight(m_font)) / 2,
                      m_localization.Translate("Check for Updates"),
                      update_selected ? m_value : m_text);
     DrawTextCentered(m_font_small, m_width / 2, button_y + button_height + 8,
                      Ellipsize(m_font_small, UpdateStatusText(), std::min(m_width - 80, 720)),
                      update_selected ? m_value : m_dim);
-    DrawSettingsFooter(
-        "Left / Right  Change       A  Choose       X  Info       Y  Reset       B  Back");
+    // selection past the option rows is the Check for Updates button.
+    std::array<std::pair<std::string_view, std::string_view>, 6> footer{};
+    int hint_count = 0;
+    if (selection < option_count && rows[selection].adjustable)
+    {
+      // The empty label is the deliberate glyph pair: Left and Right share one caption.
+      footer[hint_count++] = {"Left", ""};
+      footer[hint_count++] = {"Right", "Change"};
+    }
+    footer[hint_count++] = {"A", "Choose"};
+    if (selection < option_count)
+    {
+      footer[hint_count++] = {"X", "Info"};
+      footer[hint_count++] = {"Y", "Reset"};
+    }
+    footer[hint_count++] = {"B", "Back"};
+    DrawFooter(std::span(footer).first(hint_count));
     DrawFadeIn();
     SDL_RenderPresent(m_renderer);
     WaitForNextFrame();
@@ -13510,13 +14100,14 @@ void Launcher::GameSourcesScreen()
   int selection = 0;
   int top = 0;
   constexpr int row_height = 50;
-  constexpr int list_y = 112;
+  const int list_y = SettingsListY();
   const auto identity = [](const std::string& path) { return Lower(NormalizePath(path)); };
   BeginScreenFx();
   while (BeginFrame())
   {
     const int count = 1 + static_cast<int>(m_sources.size());
-    const int visible = std::max(1, (m_height - 176) / row_height);
+    const int visible =
+        std::max(1, (m_height - list_y - SettingsFooterReserve()) / row_height);
     selection = std::clamp(selection, 0, count - 1);
     if (selection < top)
       top = selection;
@@ -13659,10 +14250,13 @@ void Launcher::GameSourcesScreen()
     }
 
     ClearBackground();
-    DrawText(m_font_large, 64, 34, m_localization.Translate("Game folders"), m_highlight);
-    DrawTextRight(m_font_small, m_width - 64, 52,
-                  m_localization.Translate("All folders are scanned recursively by Dolphin"),
-                  m_dim);
+    const std::string summary =
+        std::to_string(m_sources.size()) + " " +
+        std::string(m_localization.Translate(m_sources.size() == 1 ? "folder" : "folders"));
+    DrawPageHeader(m_localization.Translate("Game folders"), "Dolphin", summary,
+                   m_localization.Translate("Scanned recursively"));
+    GlassPanel(44, list_y - 13, m_width - 88,
+               std::min(visible, count - top) * row_height + 18);
     for (int row = 0; row < visible && top + row < count; ++row)
     {
       const int index = top + row;
@@ -13670,8 +14264,7 @@ void Launcher::GameSourcesScreen()
       const bool current = index == selection;
       if (current)
       {
-        FillRect(56, y - 3, m_width - 112, 46, m_focus);
-        FillRect(56, y - 3, 5, 46, m_selection);
+        DrawRowHighlight(56, y - 3, m_width - 112, 46);
       }
       const std::string label = index == 0 ?
                                     std::string(m_localization.Translate("[ Add game folder ]")) :
@@ -13872,12 +14465,12 @@ bool Launcher::EditSmbShare(Storage::SmbShare* share, bool creating)
       int touch_x = 0;
       int touch_y = 0;
       const TouchKind touch = FeedTouch(event, &touch_x, &touch_y);
-      const int scale = m_width >= 1600 ? 3 : 2;
+      const int scale = 2;
       const int row_height = 27 * scale;
-      const int y0 = (m_width >= 1600 ? 112 : 80) + 26;
-      const int margin = m_width >= 1600 ? 90 : 56;
-      const int help_width = m_width >= 1600 ? 570 : 420;
-      const int gap = m_width >= 1600 ? 44 : 28;
+      const int y0 = TopBarHeight() + 26;
+      const int margin = 56;
+      const int help_width = 420;
+      const int gap = 28;
       const int form_width = m_width - margin * 2 - help_width - gap;
       if (touch == TouchKind::Tap)
       {
@@ -13937,12 +14530,12 @@ bool Launcher::EditSmbShare(Storage::SmbShare* share, bool creating)
 
     ClearBackground();
     DrawHeader(creating ? "Add SMB network share" : "Edit SMB network share", edited.name);
-    const int scale = m_width >= 1600 ? 3 : 2;
+    const int scale = 2;
     const int row_height = 27 * scale;
-    const int y0 = (m_width >= 1600 ? 112 : 80) + 26;
-    const int margin = m_width >= 1600 ? 90 : 56;
-    const int help_width = m_width >= 1600 ? 570 : 420;
-    const int gap = m_width >= 1600 ? 44 : 28;
+    const int y0 = TopBarHeight() + 26;
+    const int margin = 56;
+    const int help_width = 420;
+    const int gap = 28;
     const int form_width = m_width - margin * 2 - help_width - gap;
     const int help_x = margin + form_width + gap;
     const int panel_height = field_count * row_height + row_height + 30;
@@ -13969,23 +14562,19 @@ bool Launcher::EditSmbShare(Storage::SmbShare* share, bool creating)
       const bool current = selection == index;
       if (current)
       {
-        FillRect(margin + 8, y, form_width - 16, row_height - 2, m_focus);
-        FillRect(margin + 8, y, 5, row_height - 2, m_selection);
+        DrawRowHighlight(margin + 8, y, form_width - 16, row_height - 2);
       }
-      DrawText(m_font_small, margin + 30, y + (row_height - TTF_FontHeight(m_font_small)) / 2,
+      DrawText(m_font_small, margin + 30, y + (row_height - FontHeight(m_font_small)) / 2,
                m_localization.Translate(labels[index]), current ? m_value : m_dim);
       DrawScrollingTextRight(m_font, margin + form_width - 24,
-                             y + (row_height - TTF_FontHeight(m_font)) / 2, form_width / 2 - 30,
+                             y + (row_height - FontHeight(m_font)) / 2, form_width / 2 - 30,
                              values[index], current ? m_value : m_text);
     }
     const int button_y = y0 + field_count * row_height + 10;
     const bool button_selected = selection == save_row;
-    FillRect(margin + 14, button_y, form_width - 28, row_height - 4,
-             button_selected ? m_focus : m_card);
-    if (button_selected)
-      Border(margin + 14, button_y, form_width - 28, row_height - 4, 2, m_selection);
+    DrawButtonPanel(margin + 14, button_y, form_width - 28, row_height - 4, button_selected);
     DrawTextCentered(m_font, margin + form_width / 2,
-                     button_y + (row_height - TTF_FontHeight(m_font)) / 2 - 2,
+                     button_y + (row_height - FontHeight(m_font)) / 2 - 2,
                      m_localization.Translate(creating ? "Connect and save" : "Save changes"),
                      button_selected ? m_value : m_highlight);
 
@@ -14012,7 +14601,7 @@ bool Launcher::EditSmbShare(Storage::SmbShare* share, bool creating)
         "Connection errors will be shown after saving."};
     DrawText(m_font_large, help_x + 28, y0 + 22, m_localization.Translate(help_titles[selection]),
              m_highlight);
-    const int help_line_height = TTF_FontHeight(m_font_small) + 4;
+    const int help_line_height = FontHeight(m_font_small) + 4;
     DrawWrapped(m_font_small, help_x + 28, y0 + 92, help_width - 56, help_line_height, 2,
                 m_localization.Translate(help_line_1[selection]), m_text);
     DrawWrapped(m_font_small, help_x + 28, y0 + 156, help_width - 56, help_line_height, 2,
@@ -14023,8 +14612,12 @@ bool Launcher::EditSmbShare(Storage::SmbShare* share, bool creating)
     DrawText(m_font_small, help_x + 28, y0 + 210, m_localization.Translate("Connection preview"),
              m_dim);
     DrawScrollingTextLeft(m_font, help_x + 28, y0 + 244, help_width - 56, address, m_value);
-    DrawButtonHint(help_x + 28, y0 + panel_height - 67, "A", "Edit / toggle");
-    DrawButtonHint(help_x + 28, y0 + panel_height - 33, "B", "Cancel");
+    const std::array<std::pair<std::string_view, std::string_view>, 2> hints = {
+        std::pair<std::string_view, std::string_view>{
+            "A", button_selected ? (creating ? "Connect and save" : "Save changes") :
+                                   "Edit / toggle"},
+        std::pair<std::string_view, std::string_view>{"B", "Cancel"}};
+    DrawFooter(hints);
     DrawFadeIn();
     SDL_RenderPresent(m_renderer);
     WaitForNextFrame();
@@ -14047,13 +14640,14 @@ void Launcher::NetworkSharesScreen()
   });
   int selection = 0;
   int top = 0;
-  constexpr int list_y = 112;
+  const int list_y = SettingsListY();
   constexpr int row_height = 60;
   BeginScreenFx();
   while (BeginFrame())
   {
     const int count = 1 + static_cast<int>(m_shares.size());
-    const int visible = std::max(1, (m_height - list_y - 58) / row_height);
+    const int visible =
+        std::max(1, (m_height - list_y - SettingsFooterReserve()) / row_height);
     selection = std::clamp(selection, 0, count - 1);
     if (selection < top)
       top = selection;
@@ -14245,6 +14839,8 @@ void Launcher::NetworkSharesScreen()
                                 std::string(m_localization.Translate(
                                     m_shares.size() == 1 ? "saved share" : "saved shares"));
     DrawHeader("SMB network shares", summary);
+    GlassPanel(44, list_y - 13, m_width - 88,
+               std::min(visible, count - top) * row_height + 18);
     for (int row = 0; row < visible && top + row < count; ++row)
     {
       const int index = top + row;
@@ -14252,12 +14848,11 @@ void Launcher::NetworkSharesScreen()
       const bool current = index == selection;
       if (current)
       {
-        FillRect(56, y - 3, m_width - 112, row_height - 4, m_focus);
-        FillRect(56, y - 3, 5, row_height - 4, m_selection);
+        DrawRowHighlight(56, y - 3, m_width - 112, row_height - 4);
       }
       if (index == 0)
       {
-        DrawText(m_font, 82, y + (row_height - TTF_FontHeight(m_font)) / 2 - 2,
+        DrawText(m_font, 82, y + (row_height - FontHeight(m_font)) / 2 - 2,
                  m_localization.Translate("[ Add SMB share ]"), current ? m_value : m_highlight);
       }
       else
@@ -14534,14 +15129,13 @@ bool Launcher::RenderTransfer(TransferState* state)
   const int bar_width = m_width * 2 / 3;
   const int bar_x = (m_width - bar_width) / 2;
   const int bar_y = m_height / 2 - 24;
-  const int bar_height = m_height >= 1080 ? 50 : 38;
-  Border(bar_x, bar_y, bar_width, bar_height, 2, m_selection);
+  const int bar_height = 38;
+  GlassPanel(bar_x - 32, bar_y - 56, bar_width + 64, bar_height + 148);
   const std::uint64_t done = state->done.load(std::memory_order_relaxed);
   const std::uint64_t total = state->total.load(std::memory_order_relaxed);
   const std::uint64_t progress = total ? std::min(done, total) : 0;
-  const int fill =
-      total ? static_cast<int>((bar_width - 6) * (static_cast<long double>(progress) / total)) : 0;
-  FillRect(bar_x + 3, bar_y + 3, fill, bar_height - 6, m_highlight);
+  DrawProgressBar(bar_x, bar_y, bar_width, bar_height,
+                  total ? static_cast<double>(progress) / total : 0.0);
   char text[128];
   const int percent = total ? static_cast<int>(progress * 100 / total) : 0;
   std::snprintf(text, sizeof(text), "%d%%  ·  %.1f / %.1f MiB", percent, done / 1048576.0,
@@ -14549,14 +15143,16 @@ bool Launcher::RenderTransfer(TransferState* state)
   DrawTextCentered(m_font, m_width / 2, bar_y + bar_height + 28, text, m_text);
   if (state->cancelled.load(std::memory_order_relaxed))
   {
-    DrawTextCentered(m_font_small, m_width / 2, m_height - (m_height >= 1080 ? 78 : 58),
+    // Same band and baseline as DrawFooter, so the text doesn't jump.
+    DrawFooterBand(FontHeight(m_font_small) + 32);
+    DrawTextCentered(m_font_small, m_width / 2, m_height - 26 - FontHeight(m_font_small) / 2,
                      m_localization.Translate("Cancelling..."), m_value);
   }
   else
   {
     const std::array<std::pair<std::string_view, std::string_view>, 1> controls = {
         std::pair{"B", "Cancel"}};
-    DrawFooter(controls, m_height - (m_height >= 1080 ? 64 : 44));
+    DrawFooter(controls);
   }
   SDL_RenderPresent(m_renderer);
   return !state->cancelled.load(std::memory_order_relaxed);
@@ -14604,17 +15200,17 @@ void Launcher::RunBusyTask(std::string_view title, std::string_view detail,
       ClearBackground();
       DrawHeader(owned_title, owned_detail);
       const int panel_width = std::min(920, m_width - 180);
-      const int panel_height = m_height >= 1080 ? 260 : 196;
+      const int panel_height = 196;
       const int panel_x = (m_width - panel_width) / 2;
       const int panel_y = (m_height - panel_height) / 2;
       GlassPanel(panel_x, panel_y, panel_width, panel_height);
       const int phase = static_cast<int>((SDL_GetTicks() / 220) % 4);
       std::string message(m_localization.Translate("Working"));
       message.append(static_cast<std::size_t>(phase), '.');
-      DrawTextCentered(m_font_large, m_width / 2, panel_y + (m_height >= 1080 ? 62 : 44), message,
+      DrawTextCentered(m_font_large, m_width / 2, panel_y + 44, message,
                        m_value);
       DrawTextCentered(
-          m_font_small, m_width / 2, panel_y + (m_height >= 1080 ? 148 : 112),
+          m_font_small, m_width / 2, panel_y + 112,
           m_localization.Translate(cancel && cancel->load(std::memory_order_acquire) ?
                                        "Cancelling at the next safe point..." :
                                        "Do not remove the active storage device or close Dolphin."),
@@ -14626,8 +15222,13 @@ void Launcher::RunBusyTask(std::string_view title, std::string_view detail,
         DrawFooter(hints);
       }
       SDL_RenderPresent(m_renderer);
+      WaitForNextFrame();
     }
-    WaitForNextFrame();
+    else
+    {
+      // Nothing was presented, so pace the loop instead of spinning.
+      SDL_Delay(16);
+    }
   }
   if (worker_started)
   {
@@ -14947,8 +15548,8 @@ std::string Launcher::FileBrowser(const std::string& start, bool select_folder, 
   int selection = 0;
   int top = 0;
   constexpr int row_height = 46;
-  constexpr int list_top = 112;
-  const int visible = std::max(1, (m_height - 178) / row_height);
+  const int list_top = SettingsListY();
+  const int visible = std::max(1, (m_height - list_top - SettingsFooterReserve()) / row_height);
   std::vector<Entry> entries;
   std::string entries_path;
   std::uint64_t locations_generation = Storage::UsbStatusGeneration();
@@ -15211,29 +15812,31 @@ std::string Launcher::FileBrowser(const std::string& start, bool select_folder, 
                                           manage                   ? "File manager" :
                                           select_game              ? "Select game" :
                                                                      "Select game folder";
-    DrawText(m_font_large, 64, 30, m_localization.Translate(screen_title), m_highlight);
-    DrawTextRight(m_font_small, m_width - 64, 48,
-                  current.empty() ? std::string(m_localization.Translate("Locations")) :
-                                    Ellipsize(m_font_small, current, m_width / 2),
-                  m_dim);
+    DrawHeader(screen_title, current.empty() ? m_localization.Translate("Locations") :
+                                               std::string_view(current));
     constexpr int x = 54;
     const int width = m_width - 108;
+    const int shown_rows =
+        std::min(visible, std::max(0, static_cast<int>(entries.size()) - top));
+    if (shown_rows > 0)
+      GlassPanel(x - 10, list_top - 16, width + 20, shown_rows * row_height + 18);
     for (int row = 0; row < visible && top + row < static_cast<int>(entries.size()); ++row)
     {
       const int index = top + row;
       const int y = list_top + row * row_height;
       if (index == selection)
       {
-        FillRect(x, y - 3, width, 42, m_focus);
-        FillRect(x, y - 3, 5, 42, m_selection);
+        DrawRowHighlight(x, y - 3, width, 42);
       }
       const bool action_row =
           entries[index].kind == Kind::UseFolder || entries[index].kind == Kind::Paste;
       const SDL_Color color = action_row                        ? m_highlight :
                               entries[index].kind == Kind::File ? SDL_Color{120, 220, 120, 255} :
                                                                   m_text;
-      DrawText(m_font, 80, y, Ellipsize(m_font, entries[index].label, m_width - 180),
-               index == selection ? m_value : color);
+      if (index == selection)
+        DrawScrollingTextLeft(m_font, 80, y, m_width - 180, entries[index].label, m_value);
+      else
+        DrawText(m_font, 80, y, Ellipsize(m_font, entries[index].label, m_width - 180), color);
     }
     const bool usb_root_selected = manage && current.empty() && selection >= 0 &&
                                    selection < static_cast<int>(entries.size()) &&
@@ -15255,10 +15858,19 @@ std::string Launcher::FileBrowser(const std::string& start, bool select_folder, 
       }
       else
       {
-        static constexpr std::array<std::pair<std::string_view, std::string_view>, 4> hints = {
-            std::pair{"A", "Open"}, std::pair{"X", "Actions"}, std::pair{"Y", "Paste"},
-            std::pair{"B", "Back"}};
-        DrawFooter(hints);
+        const Kind kind = entries[selection].kind;
+        std::array<std::pair<std::string_view, std::string_view>, 4> hints{};
+        int hint_count = 0;
+        if (kind == Kind::Paste)
+          hints[hint_count++] = {"A", "Paste"};
+        else if (kind != Kind::File)
+          hints[hint_count++] = {"A", "Open"};
+        if (kind == Kind::Directory || kind == Kind::File)
+          hints[hint_count++] = {"X", "Actions"};
+        if (!m_clipboard_path.empty())
+          hints[hint_count++] = {"Y", "Paste"};
+        hints[hint_count++] = {"B", "Back"};
+        DrawFooter(std::span(hints).first(hint_count));
       }
     }
     else
@@ -15606,8 +16218,8 @@ bool Launcher::EjectUsbLocation(std::string_view stable_id)
 void Launcher::LibrarySettings()
 {
   constexpr int row_count = 7;
-  constexpr int row_height = 56;
-  constexpr int start_y = 110;
+  const int row_height = SettingsRowHeight();
+  const int start_y = SettingsListY();
   auto& saved = m_row_positions["Library & storage\n"];
   int selection = std::clamp(saved.first, 0, row_count - 1);
   std::size_t installed_count = Tools::ListInstalledWiiTitles().size();
@@ -15640,7 +16252,7 @@ void Launcher::LibrarySettings()
       const TouchKind touch = FeedTouch(event, &touch_x, &touch_y);
       if (touch == TouchKind::Tap)
       {
-        if (touch_y < (m_width >= 1600 ? 112 : 80) || touch_y >= m_height - 40)
+        if (touch_y < TopBarHeight() || touch_y >= m_height - 40)
         {
           saved.first = selection;
           return;
@@ -15688,8 +16300,7 @@ void Launcher::LibrarySettings()
     m_highlight_y = (!m_animations || m_highlight_y < 0.0f) ?
                         target :
                         m_highlight_y + (target - m_highlight_y) * 0.30f;
-    FillRect(column_x, static_cast<int>(m_highlight_y), column_width, row_height - 4, m_focus);
-    FillRect(column_x, static_cast<int>(m_highlight_y), 5, row_height - 4, m_selection);
+    DrawRowHighlight(column_x, static_cast<int>(m_highlight_y), column_width, row_height - 4);
 
     const int connected = std::ranges::count_if(
         m_shares, [](const Storage::SmbShare& share) { return Storage::IsSmbMounted(share.id); });
@@ -15714,17 +16325,13 @@ void Launcher::LibrarySettings()
         save_value,
         installed_value,
         std::string(m_localization.Translate("Select package or file"))};
-    const int font_height = TTF_FontHeight(m_font);
-    const int small_height = TTF_FontHeight(m_font_small);
     for (int row = 0; row < row_count; ++row)
     {
-      const int slot = start_y + row * row_height;
-      const int y = slot + (row_height - font_height) / 2;
       const bool current = row == selection;
-      DrawText(m_font, label_x, y, m_localization.Translate(labels[row]),
-               current ? m_value : m_text);
-      DrawTextRight(m_font_small, value_x, slot + (row_height - small_height) / 2, values[row],
-                    current ? m_value : m_dim);
+      DrawSettingsRowText(m_localization.Translate(labels[row]), values[row],
+                          start_y + row * row_height, column_width, label_x, value_x, current,
+                          current ? m_value : m_text, current ? m_value : m_dim, false,
+                          row_height);
     }
     DrawSettingsFooter("A  Open       B  Back");
     DrawFadeIn();
@@ -15739,15 +16346,14 @@ int Launcher::ChooseCoverArtwork(const std::vector<CoverDownload::Artwork>& artw
 {
   if (artwork.empty())
     return -1;
-  constexpr int list_x = 56;
-  const int list_width = m_width / 2 - 78;
-  constexpr int row_height = 52;
-  constexpr int start_y = 116;
-  const int preview_x = m_width / 2 + 28;
-  const int preview_area_width = m_width - preview_x - 56;
-  const int preview_height = std::min(m_height - 210, m_width >= 1600 ? 720 : 510);
-  const int preview_width = preview_height * 2 / 3;
-  const int visible = std::max(1, (m_height - start_y - 72) / row_height);
+  const GameDetailLayout layout = ComputeGameDetailLayout();
+  const int list_x = layout.content.x;
+  const int list_width = layout.content.w;
+  const int row_height = SettingsRowHeight() + 8;
+  const int start_y = layout.content.y + 44;
+  const int preview_width = layout.preview.w;
+  const int preview_height = layout.preview.h;
+  const int visible = std::max(1, (layout.content.h - 52) / row_height);
   const std::string temporary = std::string(COVER_DIRECTORY) + "/.sgdb-preview.img";
   int selection = 0;
   int top = 0;
@@ -15766,7 +16372,8 @@ int Launcher::ChooseCoverArtwork(const std::vector<CoverDownload::Artwork>& artw
     preview_failed = false;
     ClearBackground();
     DrawHeader("Choose cover artwork", game_name);
-    DrawTextCentered(m_font, preview_x + preview_area_width / 2, m_height / 2 - 18,
+    DrawArtworkPreview(nullptr, layout.preview, false, std::string_view{});
+    DrawTextCentered(m_font, layout.preview.x + layout.preview.w / 2, m_height / 2 - 18,
                      m_localization.Translate("Loading preview..."), m_dim);
     SDL_RenderPresent(m_renderer);
     const std::string& url =
@@ -15850,18 +16457,18 @@ int Launcher::ChooseCoverArtwork(const std::vector<CoverDownload::Artwork>& artw
 
     ClearBackground();
     DrawHeader("Choose cover artwork", game_name);
-    GlassPanel(list_x - 10, start_y - 10, list_width + 20,
-               std::min(visible, static_cast<int>(artwork.size())) * row_height + 18);
+    DrawSectionHeading("Online artwork", list_x, start_y - 44, list_width);
+    GlassPanel(list_x - 8, start_y - 8, list_width + 16,
+               std::min(visible, static_cast<int>(artwork.size())) * row_height + 16);
     for (int row = 0; row < visible && top + row < static_cast<int>(artwork.size()); ++row)
     {
       const int index = top + row;
       const int y = start_y + row * row_height;
-      const int text_y = y + (row_height - TTF_FontHeight(m_font)) / 2;
+      const int text_y = y + (row_height - FontHeight(m_font)) / 2;
       const bool current = index == selection;
       if (current)
       {
-        FillRect(list_x, y, list_width, row_height - 3, m_focus);
-        FillRect(list_x, y, 5, row_height - 3, m_selection);
+        DrawRowHighlight(list_x, y, list_width, row_height - 3);
       }
       DrawText(m_font, list_x + 26, text_y,
                std::string(m_localization.Translate("Artwork")) + " " + std::to_string(index + 1),
@@ -15871,26 +16478,23 @@ int Launcher::ChooseCoverArtwork(const std::vector<CoverDownload::Artwork>& artw
         const std::string dimensions =
             std::to_string(artwork[index].width) + "x" + std::to_string(artwork[index].height);
         DrawTextRight(m_font_small, list_x + list_width - 20,
-                      text_y + (TTF_FontHeight(m_font) - TTF_FontHeight(m_font_small)) / 2,
+                      text_y + (FontHeight(m_font) - FontHeight(m_font_small)) / 2,
                       dimensions, current ? m_value : m_dim);
       }
     }
-    const int image_x = preview_x + (preview_area_width - preview_width) / 2;
-    const int image_y = start_y;
-    FillRect(image_x, image_y, preview_width, preview_height, m_card);
-    if (loaded == selection && preview)
+    const bool show_failure = loaded == selection && preview_failed;
+    DrawArtworkPreview(loaded == selection ? preview : nullptr, layout.preview, false,
+                       show_failure ? std::string_view{} : std::string_view{"NO COVER"});
+    if (show_failure)
     {
-      SDL_Rect destination{image_x, image_y, preview_width, preview_height};
-      SDL_RenderCopy(m_renderer, preview, nullptr, &destination);
+      const SDL_Rect& rectangle = layout.preview;
+      DrawWrapped(m_font_small, rectangle.x + 16, rectangle.y + rectangle.h / 2 - 30,
+                  rectangle.w - 32, FontHeight(m_font_small) + 6, 3,
+                  m_localization.Translate("Preview unavailable"), m_dim);
     }
-    else if (loaded == selection && preview_failed)
-    {
-      DrawTextCentered(m_font_small, image_x + preview_width / 2, image_y + preview_height / 2,
-                       m_localization.Translate("Preview unavailable"), m_dim);
-    }
-    Border(image_x, image_y, preview_width, preview_height, 2,
-           loaded == selection ? m_selection : m_dim);
-    DrawSettingsFooter("A  Use artwork       B  Back");
+    static constexpr std::array<std::pair<std::string_view, std::string_view>, 2> footer = {
+        std::pair{"A", "Use artwork"}, std::pair{"B", "Back"}};
+    DrawFooter(footer);
     DrawFadeIn();
     SDL_RenderPresent(m_renderer);
     WaitForNextFrame();
@@ -16200,20 +16804,13 @@ void Launcher::CoverSettings(Game* game)
   };
   int selection = 0;
 
-  const int header_height = m_width >= 1600 ? 112 : 80;
-  const int content_top = header_height + (m_height >= 1080 ? 92 : 58);
-  const int content_bottom = m_height - (m_height >= 1080 ? 112 : 82);
-  const int cards_width =
-      std::min(m_width - (m_width >= 1600 ? 240 : 120), m_width >= 1600 ? 1420 : 1080);
-  const int card_gap = m_width >= 1600 ? 36 : 24;
-  const int card_width = (cards_width - card_gap) / 2;
-  const int maximum_card_height = m_height >= 1080 ? 540 : 390;
-  const int card_height = std::min(maximum_card_height, content_bottom - content_top);
-  const int cards_x = (m_width - cards_width) / 2;
-  const int cards_y = content_top + std::max(0, content_bottom - content_top - card_height) / 2;
+  const GameDetailLayout layout = ComputeGameDetailLayout();
+  constexpr int card_gap = 20;
+  const int card_height = (layout.content.h - card_gap) / 2;
   const std::array<SDL_Rect, 2> cards = {
-      SDL_Rect{cards_x, cards_y, card_width, card_height},
-      SDL_Rect{cards_x + card_width + card_gap, cards_y, card_width, card_height},
+      SDL_Rect{layout.content.x, layout.content.y, layout.content.w, card_height},
+      SDL_Rect{layout.content.x, layout.content.y + card_height + card_gap, layout.content.w,
+               card_height},
   };
   const auto contains = [](const SDL_Rect& rectangle, int x, int y) {
     return x >= rectangle.x && x < rectangle.x + rectangle.w && y >= rectangle.y &&
@@ -16264,11 +16861,10 @@ void Launcher::CoverSettings(Game* game)
     BeginScreenFx();
   };
 
-  m_footer_hit_count = 0;
+  bool has_custom_cover = RegularFileExists(cover_path);
   BeginScreenFx();
   while (BeginFrame())
   {
-    const bool has_custom_cover = RegularFileExists(cover_path);
     SDL_Event event{};
     while (PollEvent(&event))
     {
@@ -16292,18 +16888,7 @@ void Launcher::CoverSettings(Game* game)
           selection = 1;
           choose = true;
         }
-        else
-        {
-          const int footer = FooterHitTest(touch_x, touch_y);
-          if (footer == 0)
-            choose = true;
-          else if (footer == 1)
-            info = true;
-          else if (has_custom_cover && footer == 2)
-            remove = true;
-          else if (footer == (has_custom_cover ? 3 : 2))
-            back = true;
-        }
+        // Footer taps are dispatched by FeedTouch as synthetic controller presses.
       }
 
       if (event.type == SDL_CONTROLLERBUTTONDOWN)
@@ -16346,45 +16931,42 @@ void Launcher::CoverSettings(Game* game)
       if (back)
         return;
       if (info)
+      {
         show_info();
+      }
       else if (remove)
+      {
         remove_custom_cover();
+        has_custom_cover = RegularFileExists(cover_path);
+      }
       else if (choose)
+      {
         activate();
+        has_custom_cover = RegularFileExists(cover_path);
+      }
     }
 
     ClearBackground();
     DrawHeader("Cover settings", game->title);
+    DrawGamePreview(game, layout.preview);
     for (int index = 0; index < static_cast<int>(cards.size()); ++index)
     {
       const SDL_Rect& card = cards[index];
       const bool selected = index == selection;
-      FillRect(card.x + 5, card.y + 7, card.w, card.h, SDL_Color{0, 0, 0, 62});
-      FillRect(card.x, card.y, card.w, card.h, selected ? m_focus : m_card);
-      Border(card.x, card.y, card.w, card.h, selected ? 4 : 2, selected ? m_selection : m_dim);
+      GlassPanel(card.x, card.y, card.w, card.h);
       if (selected)
-        FillRect(card.x, card.y, 8, card.h, m_selection);
-
-      const std::string_view title = m_localization.Translate(actions[index].label);
-      TTF_Font* const title_font =
-          TextWidth(m_font_large, title) <= card.w - 64 ? m_font_large : m_font;
-      const int title_line_height = TTF_FontHeight(title_font) + 8;
-      DrawWrappedCentered(title_font, card.x + card.w / 2, card.y + 44, card.w - 64,
-                          title_line_height, 2, title, selected ? m_value : m_text);
-
+        DrawRowHighlight(card.x + 8, card.y + 8, card.w - 16, card.h - 16);
+      const int x = card.x + 28;
+      const int width = card.w - 56;
       const SettingHelpInfo info = SettingHelpFor("Cover settings", actions[index]);
-      DrawTextCentered(m_font, card.x + card.w / 2, card.y + (m_height >= 1080 ? 190 : 142),
-                       m_localization.Translate(info.kind), selected ? m_highlight : m_dim);
-      const int description_y = card.y + (m_height >= 1080 ? 264 : 202);
-      const int description_lines = m_height >= 1080 ? 5 : 4;
-      DrawWrappedCentered(m_font_small, card.x + card.w / 2, description_y, card.w - 76,
-                          TTF_FontHeight(m_font_small) + 8, description_lines,
-                          m_localization.Translate(info.description), selected ? m_text : m_dim);
-
-      const std::string_view value = m_localization.Translate(actions[index].value);
-      DrawTextCentered(m_font_small, card.x + card.w / 2,
-                       card.y + card.h - TTF_FontHeight(m_font_small) - 30, value,
-                       selected ? m_value : m_dim);
+      DrawText(m_font_small, x, card.y + 24, m_localization.Translate(info.kind), m_highlight);
+      DrawScrollingTextLeft(m_font, x, card.y + 62, width,
+                            m_localization.Translate(actions[index].label),
+                            selected ? m_value : m_text);
+      const int description_line_height = FontHeight(m_font_small) + 7;
+      DrawWrapped(m_font_small, x, card.y + 112, width, description_line_height,
+                  std::max(1, (card.h - 132) / description_line_height),
+                  m_localization.Translate(info.description), m_dim);
     }
 
     if (has_custom_cover)
@@ -16417,9 +16999,9 @@ void Launcher::SettingsRoot()
   constexpr int section_start = 4;
   int selection = 0;
   int top = 0;
-  constexpr int row_height = 54;
-  constexpr int y0 = 92;
-  constexpr int section_gap = 34;
+  const int row_height = SettingsRowHeight();
+  const int y0 = SettingsListY() + 40;
+  constexpr int section_gap = 56;
   static constexpr std::array<std::string_view, count> labels = {"Launcher",
                                                                  "Library & storage",
                                                                  "RetroAchievements",
@@ -16430,7 +17012,8 @@ void Launcher::SettingsRoot()
                                                                  "GameCube & Wii",
                                                                  "Controller / Input",
                                                                  "Online & accounts"};
-  const int visible = std::max(1, (m_height - y0 - 42 - section_gap) / row_height);
+  const int visible =
+      std::max(1, (m_height - y0 - SettingsFooterReserve() - section_gap) / row_height);
   const auto row_y = [&](int index) {
     return y0 + (index - top) * row_height + (index >= section_start ? section_gap : 0);
   };
@@ -16479,7 +17062,7 @@ void Launcher::SettingsRoot()
       }
       else if (touch == TouchKind::Tap)
       {
-        if (touch_y < (m_width >= 1600 ? 112 : 80) || touch_y >= m_height - 40)
+        if (touch_y < TopBarHeight() || touch_y >= m_height - 40)
           return;
         for (int row = 0; row < visible && top + row < count; ++row)
         {
@@ -16525,12 +17108,13 @@ void Launcher::SettingsRoot()
     }
 
     ClearBackground();
-    DrawHeader("Settings");
+    DrawPageHeader(m_localization.Translate("Settings"), "Dolphin",
+                   m_localization.Translate("Global settings"));
     const int column_width = std::min(980, m_width - 180);
     const int column_x = (m_width - column_width) / 2;
     const int label_x = column_x + 40;
     const int value_x = column_x + column_width - 40;
-    const auto draw_visible_section = [&](int begin, int end) {
+    const auto draw_visible_section = [&](std::string_view heading, int begin, int end) {
       const int first = std::max(begin, top);
       const int last = std::min(end, top + visible);
       if (first >= last)
@@ -16538,24 +17122,23 @@ void Launcher::SettingsRoot()
 
       const int panel_y = row_y(first) - 10;
       const int panel_bottom = row_y(last - 1) + row_height + 8;
+      // The heading only belongs to a section whose real first row is on screen.
+      if (first == begin)
+        DrawSectionHeading(heading, column_x, panel_y - 34, column_width);
       GlassPanel(column_x - 12, panel_y, column_width + 24, panel_bottom - panel_y);
     };
-    draw_visible_section(0, section_start);
-    draw_visible_section(section_start, count);
+    draw_visible_section("General", 0, section_start);
+    draw_visible_section("Emulator", section_start, count);
     const float target = static_cast<float>(row_y(selection) + 2);
     m_highlight_y = (!m_animations || m_highlight_y < 0.0f) ?
                         target :
                         m_highlight_y + (target - m_highlight_y) * 0.30f;
-    FillRect(column_x, static_cast<int>(m_highlight_y), column_width, row_height - 4, m_focus);
-    FillRect(column_x, static_cast<int>(m_highlight_y), 5, row_height - 4, m_selection);
+    DrawRowHighlight(column_x, static_cast<int>(m_highlight_y), column_width, row_height - 4);
     for (int row = 0; row < visible && top + row < count; ++row)
     {
       const int index = top + row;
       const int slot = row_y(index);
-      const int y = slot + (row_height - TTF_FontHeight(m_font)) / 2;
       const bool current = index == selection;
-      DrawText(m_font, label_x, y, m_localization.Translate(labels[index]),
-               current ? m_value : m_text);
       std::string value;
       if (index == launcher_row)
       {
@@ -16584,10 +17167,9 @@ void Launcher::SettingsRoot()
                                       Config::Get(Config::RA_ENABLED);
       const std::string_view displayed_value =
           value_is_user_text ? std::string_view(value) : m_localization.Translate(value);
-      DrawTextRight(
-          index < section_start ? m_font_small : m_font, value_x,
-          slot + (row_height - TTF_FontHeight(index < section_start ? m_font_small : m_font)) / 2,
-          displayed_value, current ? m_value : m_dim);
+      DrawSettingsRowText(m_localization.Translate(labels[index]), displayed_value, slot,
+                          column_width, label_x, value_x, current, current ? m_value : m_text,
+                          current ? m_value : m_dim, false, row_height);
     }
     DrawSettingsFooter("A  Choose       X  Info       B  Back");
     DrawFadeIn();
@@ -16601,8 +17183,8 @@ void Launcher::PerGameSettingsRoot(Game* game)
   if (!game)
     return;
   constexpr int count = 7;
-  constexpr int row_height = 58;
-  constexpr int y0 = 92;
+  const int row_height = SettingsRowHeight();
+  const int y0 = SettingsListY() + 40;
   static constexpr std::array<std::string_view, count> labels = {
       "CPU / Emulation",
       "Graphics",
@@ -16657,10 +17239,14 @@ void Launcher::PerGameSettingsRoot(Game* game)
       }
       else if (touch == TouchKind::Tap)
       {
-        if (touch_y < (m_width >= 1600 ? 112 : 80) || touch_y >= m_height - 40)
+        if (touch_y < TopBarHeight() || touch_y >= m_height - 40)
           return;
-        const int index = (touch_y - y0) / row_height;
-        if (index >= 0 && index < count)
+        // Match the drawn column so taps outside the list don't select row 0.
+        const int tap_column_width = std::min(980, m_width - 180);
+        const int tap_column_x = (m_width - tap_column_width) / 2;
+        const int index = touch_y < y0 ? -1 : (touch_y - y0) / row_height;
+        if (index >= 0 && index < count && touch_x >= tap_column_x &&
+            touch_x < tap_column_x + tap_column_width)
         {
           selection = index;
           activate = true;
@@ -16694,20 +17280,19 @@ void Launcher::PerGameSettingsRoot(Game* game)
     const int column_x = (m_width - column_width) / 2;
     const int label_x = column_x + 40;
     const int value_x = column_x + column_width - 40;
+    DrawSectionHeading("Emulator", column_x, y0 - 44, column_width);
     GlassPanel(column_x - 12, y0 - 10, column_width + 24, count * row_height + 18);
     const float target = static_cast<float>(y0 + selection * row_height + 2);
     m_highlight_y = (!m_animations || m_highlight_y < 0.0f) ?
                         target :
                         m_highlight_y + (target - m_highlight_y) * 0.30f;
-    FillRect(column_x, static_cast<int>(m_highlight_y), column_width, row_height - 4, m_focus);
-    FillRect(column_x, static_cast<int>(m_highlight_y), 5, row_height - 4, m_selection);
+    DrawRowHighlight(column_x, static_cast<int>(m_highlight_y), column_width, row_height - 4);
     for (int index = 0; index < count; ++index)
     {
-      const int y = y0 + index * row_height + (row_height - TTF_FontHeight(m_font)) / 2;
       const bool current = index == selection;
-      DrawText(m_font, label_x, y, m_localization.Translate(labels[index]),
-               current ? m_value : m_text);
-      DrawTextRight(m_font, value_x, y, ">", current ? m_value : m_dim);
+      DrawSettingsRowText(m_localization.Translate(labels[index]), ">",
+                          y0 + index * row_height, column_width, label_x, value_x, current,
+                          current ? m_value : m_text, current ? m_value : m_dim, false, row_height);
     }
     DrawSettingsFooter("A  Choose       X  Info       B  Back");
     DrawFadeIn();
@@ -16716,21 +17301,73 @@ void Launcher::PerGameSettingsRoot(Game* game)
   }
 }
 
+GameMenuLayout Launcher::ComputeGameMenuLayout() const
+{
+  const GameDetailLayout detail = ComputeGameDetailLayout();
+  const int row_height = SettingsRowHeight();
+  const int height = GAME_MENU_COUNT * row_height + 56 + 44 + 8;
+  return {detail, detail.content.y + 44 + std::max(0, (detail.content.h - height) / 2), row_height,
+          GAME_MENU_MANAGE_START};
+}
+
+void Launcher::DrawGameMenu(Game* game, int selection)
+{
+  if (!game)
+    return;
+  const GameMenuLayout layout = ComputeGameMenuLayout();
+  const SDL_Rect& menu = layout.detail.content;
+  ClearBackground();
+  const std::string summary =
+      game->game_id.empty() ?
+          std::string(m_localization.Translate("Game ID unavailable")) :
+          std::string(m_localization.Translate("Game ID")) + "  " + game->game_id;
+  DrawPageHeader(game->title, m_localization.Translate("Game menu"), summary, game->platform);
+  DrawGamePreview(game, layout.detail.preview);
+  DrawSectionHeading("General", menu.x, layout.start - 44, menu.w);
+  GlassPanel(menu.x - 8, layout.start - 8, menu.w + 16,
+             GAME_MENU_MANAGE_START * layout.row_height + 16);
+  DrawSectionHeading("Manage game", menu.x, layout.RowY(GAME_MENU_MANAGE_START) - 44, menu.w);
+  GlassPanel(menu.x - 8, layout.RowY(GAME_MENU_MANAGE_START) - 8, menu.w + 16,
+             (GAME_MENU_COUNT - GAME_MENU_MANAGE_START) * layout.row_height + 16);
+  const float target = static_cast<float>(layout.RowY(selection) + 2);
+  m_highlight_y = (!m_animations || m_highlight_y < 0.0f) ?
+                      target :
+                      m_highlight_y + (target - m_highlight_y) * 0.30f;
+  DrawRowHighlight(menu.x, static_cast<int>(m_highlight_y), menu.w, layout.row_height - 4);
+  for (int index = 0; index < GAME_MENU_COUNT; ++index)
+  {
+    const bool current = index == selection;
+    const bool submenu = index == 1 || index == 3 || index == 4 || index == 5 || index == 6;
+    std::string_view label = GAME_MENU_ITEMS[index];
+    if (index == 3 && m_favorites.contains(game->key))
+      label = "Favorite / collections  ★";
+    else if (index == GAME_MENU_COUNT - 1 && game->installed_nand)
+      label = "Uninstall WAD (keep save)";
+    const SDL_Color color = index == GAME_MENU_COUNT - 1 ? SDL_Color{238, 135, 135, 255} :
+                            current                      ? m_value :
+                                                           m_text;
+    DrawSettingsRowText(m_localization.Translate(label), submenu ? ">" : "", layout.RowY(index),
+                        menu.w, menu.x + 24, menu.x + menu.w - 24, current, color,
+                        current ? m_value : m_dim, false, layout.row_height);
+  }
+  const std::array<std::pair<std::string_view, std::string_view>, 2> footer = {
+      std::pair<std::string_view, std::string_view>{"A",
+                                                    selection == 0 ? "Launch" : "Select"},
+      std::pair<std::string_view, std::string_view>{"B", "Back"}};
+  DrawFooter(footer);
+}
+
 void Launcher::PerGameMenu(Game* game, bool* launch, bool* rescan)
 {
   if (!game || !launch || !rescan)
     return;
-  constexpr int count = 10;
-  // Leave a full text line between the Game ID/platform summary and the first action.  The old
-  // 158px origin placed Launch directly on top of the summary at 720p with several system fonts.
-  constexpr int menu_y = 190;
-  constexpr int menu_step = 48;
-  constexpr int menu_height = 43;
+  constexpr int count = GAME_MENU_COUNT;
   int selection = 0;
   int touch_top = 0;
   BeginScreenFx();
   while (BeginFrame())
   {
+    const GameMenuLayout layout = ComputeGameMenuLayout();
     SDL_Event event{};
     while (PollEvent(&event))
     {
@@ -16757,12 +17394,15 @@ void Launcher::PerGameMenu(Game* game, bool* launch, bool* rescan)
       }
       else if (touch == TouchKind::Tap)
       {
-        if (touch_y >= m_height - 40)
+        if (touch_y < TopBarHeight() || touch_y >= m_height - 40)
           return;
+        const SDL_Rect& menu = layout.detail.content;
+        if (touch_x < menu.x || touch_x >= menu.x + menu.w)
+          continue;
         for (int index = 0; index < count; ++index)
         {
-          const int row_y = menu_y + index * menu_step - 5;
-          if (touch_y >= row_y && touch_y < row_y + menu_height)
+          const int row_top = layout.RowY(index);
+          if (touch_y >= row_top && touch_y < row_top + layout.row_height)
           {
             selection = index;
             activate = true;
@@ -16931,75 +17571,7 @@ void Launcher::PerGameMenu(Game* game, bool* launch, bool* rescan)
       BeginScreenFx();
     }
 
-    ClearBackground();
-    m_cover_decode_budget = 1;
-    EnsureCover(game);
-    constexpr int cover_width = 300;
-    constexpr int cover_height = 450;
-    constexpr int cover_x = 90;
-    const int cover_y = (m_height - cover_height) / 2;
-    FillRect(cover_x + 5, cover_y + 7, cover_width, cover_height, SDL_Color{0, 0, 0, 60});
-    FillRect(cover_x + 2, cover_y + 3, cover_width, cover_height, SDL_Color{0, 0, 0, 75});
-    if (game->cover)
-    {
-      SDL_SetTextureAlphaMod(game->cover, 255);
-      SDL_SetTextureColorMod(game->cover, 255, 255, 255);
-      SDL_Rect destination{cover_x, cover_y, cover_width, cover_height};
-      SDL_RenderCopy(m_renderer, game->cover, nullptr, &destination);
-      Border(cover_x, cover_y, cover_width, cover_height, 2, m_dim);
-    }
-    else
-    {
-      FillRect(cover_x, cover_y, cover_width, cover_height, SDL_Color{40, 44, 54, 255});
-      Border(cover_x, cover_y, cover_width, cover_height, 2, m_dim);
-      const std::string_view no_cover = m_localization.Translate("NO COVER");
-      const int text_width = cover_width - 32;
-      const int line_height = TTF_FontHeight(m_font) + 6;
-      const int center_y = cover_y + cover_height / 2;
-      if (TextWidth(m_font, no_cover) <= text_width)
-        DrawTextCentered(m_font, cover_x + cover_width / 2, center_y - TTF_FontHeight(m_font) / 2,
-                         no_cover, m_dim);
-      else
-        DrawWrappedCentered(m_font, cover_x + cover_width / 2, center_y - line_height, text_width,
-                            line_height, 2, no_cover, m_dim);
-    }
-    DrawScrollingTextLeft(m_font_large, cover_x + cover_width + 70, 104,
-                          m_width - (cover_x + cover_width + 70) - 50, game->title, m_text);
-    const std::string game_id = game->game_id.empty() ?
-                                    std::string(m_localization.Translate("Game ID unavailable")) :
-                                    std::string(m_localization.Translate("Game ID")) + "  " +
-                                        game->game_id + "    " + game->platform;
-    DrawText(m_font_small, cover_x + cover_width + 70, 154, game_id,
-             game->game_id.empty() ? SDL_Color{230, 130, 130, 255} : m_dim);
-
-    const int menu_x = cover_x + cover_width + 64;
-    const int menu_width = m_width - menu_x - 70;
-    const float target = static_cast<float>(menu_y + selection * menu_step - 5);
-    m_highlight_y = (!m_animations || m_highlight_y < 0.0f) ?
-                        target :
-                        m_highlight_y + (target - m_highlight_y) * 0.30f;
-    FillRect(menu_x, static_cast<int>(m_highlight_y), menu_width, menu_height, m_focus);
-    FillRect(menu_x, static_cast<int>(m_highlight_y), 5, menu_height, m_selection);
-    const std::array<std::string, count> items = {
-        "Launch",
-        "Game settings",
-        "Rename game",
-        m_favorites.contains(game->key) ? "Favorite / collections  ★" : "Favorite / collections",
-        "Cover settings",
-        "Create HOME shortcut",
-        "Manage installed content",
-        "Clear shader caches",
-        "Clear game settings",
-        game->installed_nand ? "Uninstall WAD (keep save)" : "Delete game (remove from storage)"};
-    for (int index = 0; index < count; ++index)
-    {
-      const int slot = menu_y + index * menu_step - 5;
-      const int y = slot + (menu_height - TTF_FontHeight(m_font)) / 2;
-      const bool current = index == selection;
-      const SDL_Color row_color = index == count - 1 ? SDL_Color{228, 120, 120, 255} : m_text;
-      DrawText(m_font, cover_x + cover_width + 94, y, m_localization.Translate(items[index]),
-               current ? m_value : row_color);
-    }
+    DrawGameMenu(game, selection);
     DrawFadeIn();
     SDL_RenderPresent(m_renderer);
     WaitForNextFrame();
@@ -17045,13 +17617,13 @@ bool Launcher::RunAppletInstaller()
   while (BeginFrame())
   {
     const int panel_width = std::min(980, m_width - 120);
-    const int panel_height = std::min(m_height >= 1080 ? 560 : 450, m_height - 150);
+    const int panel_height = std::min(450, m_height - 150);
     const int panel_x = (m_width - panel_width) / 2;
     const int panel_y = (m_height - panel_height) / 2 + 20;
     const int button_width = std::min(700, panel_width - 100);
-    const int button_height = m_height >= 1080 ? 112 : 86;
+    const int button_height = 86;
     const int button_x = (m_width - button_width) / 2;
-    const int button_y = panel_y + panel_height - button_height - (m_height >= 1080 ? 72 : 55);
+    const int button_y = panel_y + panel_height - button_height - 55;
 
     SDL_Event event{};
     while (PollEvent(&event))
@@ -17074,14 +17646,18 @@ bool Launcher::RunAppletInstaller()
       }
       if (event.type == SDL_CONTROLLERBUTTONDOWN)
       {
-        if (event.cbutton.button == BUTTON_CONFIRM && state != InstallState::Installed)
+        if (event.cbutton.button == BUTTON_CONFIRM && state == InstallState::Installed)
+          return true;
+        else if (event.cbutton.button == BUTTON_CONFIRM)
           install();
         else if (event.cbutton.button == BUTTON_CANCEL)
           return true;
       }
       else if (event.type == SDL_KEYDOWN)
       {
-        if (event.key.keysym.sym == SDLK_RETURN && state != InstallState::Installed)
+        if (event.key.keysym.sym == SDLK_RETURN && state == InstallState::Installed)
+          return true;
+        else if (event.key.keysym.sym == SDLK_RETURN)
           install();
         else if (event.key.keysym.sym == SDLK_ESCAPE)
           return true;
@@ -17091,10 +17667,9 @@ bool Launcher::RunAppletInstaller()
     ClearBackground();
     DrawHeader("Applet mode installer");
     GlassPanel(panel_x, panel_y, panel_width, panel_height);
-    Border(panel_x, panel_y, panel_width, panel_height, 2, m_selection);
-    const int text_width = panel_width - (m_height >= 1080 ? 160 : 100);
-    const int normal_line_height = m_height >= 1080 ? 42 : 32;
-    const int small_line_height = m_height >= 1080 ? 34 : 27;
+    const int text_width = panel_width - 100;
+    const int normal_line_height = 32;
+    const int small_line_height = 27;
 
     if (state == InstallState::Installed)
     {
@@ -17135,29 +17710,43 @@ bool Launcher::RunAppletInstaller()
 
     const bool failed = state == InstallState::Failed;
     const bool installed = state == InstallState::Installed;
-    FillRect(button_x, button_y, button_width, button_height,
-             installed ? SDL_Color{30, 92, 58, 240} :
-             failed    ? SDL_Color{105, 48, 48, 240} :
-                         m_focus);
-    Border(button_x, button_y, button_width, button_height, 3,
-           installed ? SDL_Color{100, 225, 145, 255} :
-           failed    ? SDL_Color{235, 125, 125, 255} :
-                       m_selection);
+    RoundedPanel(button_x, button_y, button_width, button_height,
+                 installed ? SDL_Color{30, 92, 58, 255} :
+                 failed    ? SDL_Color{105, 48, 48, 255} :
+                             m_focus,
+                 installed ? SDL_Color{100, 225, 145, 255} :
+                 failed    ? SDL_Color{235, 125, 125, 255} :
+                             m_selection,
+                 6, 2);
     const std::string_view button_label =
         m_localization.Translate(installed ? "Installed" :
                                  failed    ? "Try again" :
                                              "Install Dolphin to HOME Menu");
+    // Shrink long translated labels, then wrap onto two lines.
+    const int label_room = button_width - 48;
+    const SDL_Color label_color = installed ? SDL_Color{190, 255, 215, 255} : m_value;
     TTF_Font* const button_font =
-        TextWidth(m_font_large, button_label) <= button_width - 48 ? m_font_large : m_font;
-    DrawTextCentered(button_font, m_width / 2,
-                     button_y + (button_height - TTF_FontHeight(button_font)) / 2,
-                     Ellipsize(button_font, button_label, button_width - 48),
-                     installed ? SDL_Color{190, 255, 215, 255} : m_value);
+        TextWidth(m_font_large, button_label) <= label_room ?
+            m_font_large :
+            (TextWidth(m_font, button_label) <= label_room ? m_font : m_font_small);
+    if (TextWidth(button_font, button_label) <= label_room)
+    {
+      DrawTextCentered(button_font, m_width / 2,
+                       button_y + (button_height - FontHeight(button_font)) / 2, button_label,
+                       label_color);
+    }
+    else
+    {
+      const int line_height = FontHeight(m_font_small) + 4;
+      DrawWrappedCentered(m_font_small, m_width / 2,
+                          button_y + (button_height - line_height * 2) / 2, label_room, line_height,
+                          2, button_label, label_color);
+    }
 
     if (installed)
     {
       static constexpr std::array<std::pair<std::string_view, std::string_view>, 1> hints = {
-          std::pair{"B", "Exit"}};
+          std::pair{"A", "Exit"}};
       DrawFooter(hints);
     }
     else
@@ -17224,26 +17813,28 @@ std::optional<LaunchRequest> Launcher::Run()
 
   while (BeginFrame() && !launch && !m_pending_launch)
   {
-    const Game* before_pump = pin_first_library_page ? nullptr : VisibleGame(selection);
-    const std::string selected_key =
-        pin_first_library_page ? std::string{} :
-                                 (before_pump ? before_pump->key : desired_selection_key);
-    PumpGameScan();
+    if (m_library_scan)
+    {
+      const Game* before_pump = pin_first_library_page ? nullptr : VisibleGame(selection);
+      const std::string selected_key =
+          pin_first_library_page ? std::string{} :
+                                   (before_pump ? before_pump->key : desired_selection_key);
+      PumpGameScan();
+      if (pin_first_library_page)
+      {
+        selection = 0;
+        desired_selection_key.clear();
+      }
+      else if (!selected_key.empty() && select_key(selected_key))
+      {
+        desired_selection_key.clear();
+      }
+    }
     PumpUsbInitialization();
     PumpAutoMountShares();
-    if (pin_first_library_page)
-    {
-      selection = 0;
-      desired_selection_key.clear();
-    }
-    else
-    {
-      if (!selected_key.empty() && select_key(selected_key))
-        desired_selection_key.clear();
-      selection = m_visible_games.empty() ?
-                      0 :
-                      std::clamp(selection, 0, static_cast<int>(m_visible_games.size()) - 1);
-    }
+    selection = m_visible_games.empty() ?
+                    0 :
+                    std::clamp(selection, 0, static_cast<int>(m_visible_games.size()) - 1);
 
     if (!m_library_scan && (!m_pending_scan_sources.empty() || m_pending_nand_reconciliation))
     {
@@ -17347,52 +17938,17 @@ std::optional<LaunchRequest> Launcher::Run()
       }
       if (touch == TouchKind::Tap)
       {
-        const int footer = FooterHitTest(touch_x, touch_y);
-        if (footer < 0)
-        {
-          const int hit = GridHitTest(
-              touch_x, touch_y,
-              m_visible_games.empty() ? 0 : selection / GridPageSize() * GridPageSize());
-          if (hit >= 0)
-          {
-            pin_first_library_page = false;
-            if (hit == selection)
-              launch = true;
-            else
-              selection = hit;
-          }
-        }
-        else if (footer <= 3)
-        {
-          SDL_Event press{};
-          press.type = SDL_CONTROLLERBUTTONDOWN;
-          press.cbutton.button = footer == 0 ? BUTTON_CONFIRM :
-                                 footer == 1 ? SDL_CONTROLLER_BUTTON_X :
-                                 footer == 2 ? BUTTON_SETTINGS :
-                                               SDL_CONTROLLER_BUTTON_START;
-          SDL_PushEvent(&press);
-        }
-        else if (footer == 4)
-        {
-          SDL_Event press{};
-          press.type = SDL_CONTROLLERBUTTONDOWN;
-          press.cbutton.button = SDL_CONTROLLER_BUTTON_BACK;
-          SDL_PushEvent(&press);
-        }
-        else if (footer == 5)
+        // Footer taps are dispatched by FeedTouch as synthetic controller presses.
+        const int hit = GridHitTest(
+            touch_x, touch_y,
+            m_visible_games.empty() ? 0 : selection / GridPageSize() * GridPageSize());
+        if (hit >= 0)
         {
           pin_first_library_page = false;
-          selection = GridPage(selection, -1);
-        }
-        else if (footer == 6)
-        {
-          pin_first_library_page = false;
-          selection = GridPage(selection, 1);
-        }
-        else if (footer == 7)
-        {
-          if (ConfirmApplicationExit())
-            break;
+          if (hit == selection)
+            launch = true;
+          else
+            selection = hit;
         }
         continue;
       }
@@ -17484,7 +18040,8 @@ std::optional<LaunchRequest> Launcher::Run()
       break;
     PollUpdateNotification();
     RenderGrid(selection);
-    WaitForNextFrame();
+    // Keep repainting while a scan is streaming games in, so the grid fills in front of the user.
+    WaitForNextFrame(m_library_scan != nullptr);
   }
 
   if (m_user_exit_requested)
