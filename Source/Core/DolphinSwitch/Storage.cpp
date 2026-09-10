@@ -1493,7 +1493,8 @@ bool InitializeUsb(std::string* error)
     std::lock_guard lock(s_mount_mutex);
     if (s_usb_initialized)
       return true;
-    usbHsFsSetFileSystemMountFlags(UsbHsFsMountFlags_None);
+    usbHsFsSetFileSystemMountFlags(UsbHsFsMountFlags_ReplayJournal |
+                                   UsbHsFsMountFlags_ShowHiddenFiles);
     const Result result = usbHsFsInitialize(0);
     if (R_FAILED(result))
     {
