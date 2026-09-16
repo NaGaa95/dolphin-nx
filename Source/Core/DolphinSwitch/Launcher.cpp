@@ -1010,6 +1010,9 @@ struct UsbInitializationState
   std::string error;
 };
 
+constexpr SDL_Color STATUS_OK_COLOR{120, 220, 120, 255};
+constexpr SDL_Color STATUS_MISSING_COLOR{235, 125, 115, 255};
+
 struct Row
 {
   std::string label;
@@ -1019,6 +1022,7 @@ struct Row
   bool adjustable = true;
   bool localize_label = true;
   bool localize_value = true;
+  std::optional<SDL_Color> value_color;
 };
 
 struct SettingHelpEntry
@@ -6712,7 +6716,10 @@ int Launcher::RunRows(std::string_view title, std::string_view context,
                                     rows[index].destructive ? SDL_Color{255, 120, 120, 255} :
                                     current                 ? m_value :
                                                               m_text;
-      const SDL_Color value_color = !rows[index].enabled ? m_dim : current ? m_value : m_dim;
+      const SDL_Color value_color = rows[index].value_color ? *rows[index].value_color :
+                                    !rows[index].enabled    ? m_dim :
+                                    current                 ? m_value :
+                                                              m_dim;
       const std::string_view localized_label = rows[index].localize_label ?
                                                    m_localization.Translate(rows[index].label) :
                                                    std::string_view(rows[index].label);
@@ -8398,7 +8405,8 @@ void Launcher::FrameGenerationSettings(bool per_game, Game* game)
                                          Config::Get(Config::GFX_LSFG_PERFORMANCE_MODE)) :
                         std::string(performance ? "On" : "Off"),
              installed && enabled},
-            {"Lossless.dll", installed ? "Installed" : "Missing", false, false, false},
+            {"Lossless.dll", installed ? "Installed" : "Missing", false, false, false, true, true,
+             installed ? STATUS_OK_COLOR : STATUS_MISSING_COLOR},
         };
       },
       [&](int index, int delta) {
