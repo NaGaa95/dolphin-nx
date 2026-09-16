@@ -118,10 +118,6 @@ bool VideoBackend::Initialize(const WindowSystemInfo& wsi)
   u32 vk_api_version = 0;
   VkInstance instance = VulkanContext::CreateVulkanInstance(
       wsi.type, enable_debug_utils, enable_validation_layer, &vk_api_version);
-#ifdef __SWITCH__
-  // Restore NVK_DEBUG after instance creation.
-  LSFG::FinishInstanceCreation();
-#endif
   if (instance == VK_NULL_HANDLE)
   {
     PanicAlertFmt("Failed to create Vulkan instance.");

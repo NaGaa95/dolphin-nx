@@ -8,9 +8,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <mutex>
-#include <string_view>
 #include <vector>
 
 #include "Core/Config/GraphicsSettings.h"
@@ -31,9 +29,6 @@ struct SessionState
   std::atomic_bool enabled{false};
 
   bool initialization_attempted = false;
-  bool environment_modified = false;
-  bool environment_had_value = false;
-  std::string original_environment;
   std::string status = "Disabled in the launcher";
 
   VkSwapchainKHR swapchain = VK_NULL_HANDLE;
@@ -51,25 +46,6 @@ struct SessionState
 
 SessionState s_state;
 
-bool ContainsDebugToken(std::string_view value, std::string_view token)
-{
-  while (!value.empty())
-  {
-    const std::size_t separator = value.find(',');
-    std::string_view item = value.substr(0, separator);
-    while (!item.empty() && item.front() == ' ')
-      item.remove_prefix(1);
-    while (!item.empty() && item.back() == ' ')
-      item.remove_suffix(1);
-    if (item == token)
-      return true;
-    if (separator == std::string_view::npos)
-      break;
-    value.remove_prefix(separator + 1);
-  }
-  return false;
-}
-
 void DestroyRuntimeLocked()
 {
   if (!s_state.runtime)
@@ -77,20 +53,6 @@ void DestroyRuntimeLocked()
 
   lsfg_nx_destroy(s_state.runtime);
   s_state.runtime = nullptr;
-}
-
-void RestoreEnvironmentLocked()
-{
-  if (!s_state.environment_modified)
-    return;
-
-  if (s_state.environment_had_value)
-    setenv("NVK_DEBUG", s_state.original_environment.c_str(), 1);
-  else
-    unsetenv("NVK_DEBUG");
-  s_state.environment_modified = false;
-  s_state.environment_had_value = false;
-  s_state.original_environment.clear();
 }
 
 void DisableSessionLocked(const char* reason)
@@ -168,7 +130,6 @@ void BeginSession()
   std::lock_guard lock{s_state.mutex};
 
   DestroyRuntimeLocked();
-  RestoreEnvironmentLocked();
   s_state.prepared.store(false, std::memory_order_release);
   s_state.available.store(false, std::memory_order_release);
   s_state.enabled.store(false, std::memory_order_release);
@@ -191,41 +152,14 @@ void BeginSession()
     return;
   }
 
-  const char* current = std::getenv("NVK_DEBUG");
-  const std::string_view current_view = current ? std::string_view{current} : std::string_view{};
-  if (!ContainsDebugToken(current_view, "no_cbuf"))
-  {
-    s_state.environment_had_value = current != nullptr;
-    if (current)
-      s_state.original_environment = current;
-    const std::string replacement = current_view.empty() ?
-                                        std::string{"no_cbuf"} :
-                                        std::string{current_view} + ",no_cbuf";
-    if (setenv("NVK_DEBUG", replacement.c_str(), 1) != 0)
-    {
-      s_state.environment_had_value = false;
-      s_state.original_environment.clear();
-      s_state.status = "NVK could not be prepared for LSFG";
-      return;
-    }
-    s_state.environment_modified = true;
-  }
-
   s_state.prepared.store(true, std::memory_order_release);
   s_state.status = "Prepared; enable it from the in-game quick menu";
-}
-
-void FinishInstanceCreation()
-{
-  std::lock_guard lock{s_state.mutex};
-  RestoreEnvironmentLocked();
 }
 
 void EndSession()
 {
   std::lock_guard lock{s_state.mutex};
   DestroyRuntimeLocked();
-  RestoreEnvironmentLocked();
   s_state.enabled.store(false, std::memory_order_release);
   s_state.available.store(false, std::memory_order_release);
   s_state.prepared.store(false, std::memory_order_release);
@@ -246,7 +180,6 @@ void DisableSession(const char* reason)
 {
   std::lock_guard lock{s_state.mutex};
   DisableSessionLocked(reason);
-  RestoreEnvironmentLocked();
 }
 
 bool RegisterSwapChain(VkSwapchainKHR swapchain, VkExtent2D extent,

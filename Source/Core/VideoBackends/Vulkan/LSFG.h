@@ -10,9 +10,7 @@
 
 namespace Vulkan::LSFG
 {
-// NVK reads NVK_DEBUG during instance creation.
 void BeginSession();
-void FinishInstanceCreation();
 void EndSession();
 
 bool IsSessionPrepared();
