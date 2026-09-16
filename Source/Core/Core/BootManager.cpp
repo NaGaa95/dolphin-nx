@@ -84,6 +84,14 @@ bool BootCore(Core::System& system, std::unique_ptr<BootParameters> boot,
   const bool use_glthread = use_opengl && Config::Get(Config::GFX_SWITCH_GLTHREAD);
   setenv("MESA_SWITCH_GLTHREAD", use_glthread ? "1" : "0", 1);
 
+  // Unset VBI skip means Auto: on for GameCube titles.
+  const Config::Location& vi_skip = Config::GFX_HACK_VI_SKIP.GetLocation();
+  if (!system.IsWii() && Config::GetActiveLayerForConfig(vi_skip) == Config::LayerType::Base &&
+      !Config::GetLayer(Config::LayerType::Base)->Exists(vi_skip))
+  {
+    Config::SetCurrent(Config::GFX_HACK_VI_SKIP, true);
+  }
+
 #endif
 
   // Movie settings

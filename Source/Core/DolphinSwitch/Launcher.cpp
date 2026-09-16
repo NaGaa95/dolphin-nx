@@ -9372,8 +9372,17 @@ void Launcher::GraphicsHacksSettings(bool per_game, Game* game)
     const std::string normalized = Lower(*value);
     return normalized == "true" || normalized == "1" || normalized == "yes";
   };
+  const auto vi_skip_auto = [] {
+    return !Config::GetLayer(Config::LayerType::Base)
+                ->Exists(Config::GFX_HACK_VI_SKIP.GetLocation());
+  };
+  const auto global_value = [&](const HackSetting& setting) {
+    if (setting.info == &Config::GFX_HACK_VI_SKIP && vi_skip_auto())
+      return per_game && game && (game->platform == "GameCube" || game->platform == "Triforce");
+    return Config::Get(*setting.info);
+  };
   const auto config_value = [&](const HackSetting& setting) {
-    return parse_bool(get(setting.section, setting.key), Config::Get(*setting.info));
+    return parse_bool(get(setting.section, setting.key), global_value(setting));
   };
   const auto shown_value = [&](const HackSetting& setting) {
     const bool value = config_value(setting);
@@ -9427,12 +9436,21 @@ void Launcher::GraphicsHacksSettings(bool per_game, Game* game)
             enabled = !immediate_xfb && !vi_skip;
           else if (index == 10)
             enabled = g_backend_info.bSupportsBBox;
-          rows.push_back({std::string(setting.label),
-                          per_game ?
-                              PerGameBoolLabel(*game, setting.section, setting.key,
-                                               Config::Get(*setting.info), setting.inverted) :
-                              std::string(shown_value(setting) ? "On" : "Off"),
-                          enabled});
+          std::string value;
+          if (per_game)
+          {
+            value = PerGameBoolLabel(*game, setting.section, setting.key, global_value(setting),
+                                     setting.inverted);
+          }
+          else if (setting.info == &Config::GFX_HACK_VI_SKIP && vi_skip_auto())
+          {
+            value = "Auto (GameCube)";
+          }
+          else
+          {
+            value = shown_value(setting) ? "On" : "Off";
+          }
+          rows.push_back({std::string(setting.label), std::move(value), enabled});
         }
         return rows;
       },
@@ -9498,11 +9516,21 @@ void Launcher::GraphicsHacksSettings(bool per_game, Game* game)
 
         const int setting_index = row < 5 ? row : row - 1;
         const HackSetting& setting = SETTINGS[setting_index];
-        const bool global = Config::Get(*setting.info);
+        const bool global = global_value(setting);
         if (per_game)
         {
           EditPerGameBool(*game, setting.label, setting.section, setting.key, global, delta, "On",
                           "Off", setting.inverted);
+        }
+        else if (setting.info == &Config::GFX_HACK_VI_SKIP)
+        {
+          const int current = vi_skip_auto() ? 0 : (global ? 1 : 2);
+          const int next = (current + (delta < 0 ? 2 : 1)) % 3;
+          if (next == 0)
+            Config::DeleteKey(Config::LayerType::Base, Config::GFX_HACK_VI_SKIP);
+          else
+            Config::SetBase(Config::GFX_HACK_VI_SKIP, next == 1);
+          MarkConfigDirty();
         }
         else
         {
@@ -9528,9 +9556,18 @@ void Launcher::GraphicsHacksSettings(bool per_game, Game* game)
           return false;
         const HackSetting& setting = SETTINGS[setting_index];
         if (per_game)
+        {
           SetGameSetting(*game, setting.section, setting.key, std::nullopt);
+        }
+        else if (setting.info == &Config::GFX_HACK_VI_SKIP)
+        {
+          Config::DeleteKey(Config::LayerType::Base, Config::GFX_HACK_VI_SKIP);
+          MarkConfigDirty();
+        }
         else
+        {
           ResetConfigSetting(*setting.info);
+        }
         return true;
       });
   if (game)

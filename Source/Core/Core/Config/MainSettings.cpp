@@ -234,7 +234,7 @@ const Info<bool> MAIN_ACCURATE_NANS{{System::Main, "Core", "AccurateNaNs"}, fals
 const Info<bool> MAIN_ACCURATE_FMADDS{{System::Main, "Core", "AccurateFmadds"}, true};
 const Info<bool> MAIN_DISABLE_ICACHE{{System::Main, "Core", "DisableICache"}, false};
 const Info<float> MAIN_EMULATION_SPEED{{System::Main, "Core", "EmulationSpeed"}, 1.0f};
-#if defined(ANDROID)
+#if defined(ANDROID) || defined(__SWITCH__)
 // Currently disabled by default on Android for concern of increased power usage while on battery.
 // It is also not yet exposed in the UI on Android.
 constexpr bool DEFAULT_PRECISION_FRAME_TIMING = false;
@@ -348,7 +348,13 @@ const Info<int> MAIN_GDB_PORT{{System::Main, "General", "GDBPort"}, -1};
 const Info<int> MAIN_ISO_PATH_COUNT{{System::Main, "General", "ISOPaths"}, 0};
 const Info<std::string> MAIN_SKYLANDERS_PATH{{System::Main, "General", "SkylandersCollectionPath"},
                                              ""};
-const Info<bool> MAIN_TIME_TRACKING{{System::Main, "General", "EnablePlayTimeTracking"}, true};
+#ifdef __SWITCH__
+constexpr bool DEFAULT_TIME_TRACKING = false;
+#else
+constexpr bool DEFAULT_TIME_TRACKING = true;
+#endif
+const Info<bool> MAIN_TIME_TRACKING{{System::Main, "General", "EnablePlayTimeTracking"},
+                                    DEFAULT_TIME_TRACKING};
 
 static Info<std::string> MakeISOPathConfigInfo(size_t idx)
 {
