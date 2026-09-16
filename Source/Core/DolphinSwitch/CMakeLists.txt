@@ -1,5 +1,5 @@
 set(DOLPHIN_SWITCH_RELEASE_NAME "Dolphin")
-set(DOLPHIN_SWITCH_RELEASE_AUTHOR "Dolphin Emulator Project")
+set(DOLPHIN_SWITCH_RELEASE_AUTHOR "naga")
 set(DOLPHIN_SWITCH_RELEASE_VERSION "1.1.0" CACHE STRING
     "Semantic release version for the standalone Nintendo Switch frontend")
 

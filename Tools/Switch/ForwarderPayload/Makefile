@@ -27,7 +27,7 @@ $(OUT)/hbl.npdm: hbl.json | $(OUT)
 	$(TOOLS)/npdmtool $< $@
 
 $(OUT)/default.nacp: Makefile | $(OUT)
-	$(TOOLS)/nacptool --create Dolphin "Dolphin Emulator Project" $(RELEASE_VERSION) $@
+	$(TOOLS)/nacptool --create Dolphin naga $(RELEASE_VERSION) $@
 
 $(OUT):
 	mkdir -p $@
