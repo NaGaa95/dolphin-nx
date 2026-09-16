@@ -388,6 +388,19 @@ void JitArm64::ResetStack()
   ADD(ARM64Reg::SP, ARM64Reg::X0, 0);
 }
 
+#ifdef __SWITCH__
+void JitArm64::EmitBLRStackLimitCheck(ARM64Reg reg)
+{
+  // Must not set flags: the downcount result and the host carry are live.
+  LDR(IndexType::Unsigned, reg, PPC_REG, PPCSTATE_OFF(blr_stack_limit));
+  SUB(reg, ARM64Reg::SP, reg, ArithOption(reg, ExtendSpecifier::UXTX));
+  FixupBranch within_limit = TBZ(reg, 63);
+  LDR(IndexType::Unsigned, reg, PPC_REG, PPCSTATE_OFF(stored_stack_pointer));
+  ADD(ARM64Reg::SP, reg, 0);
+  SetJumpTarget(within_limit);
+}
+#endif
+
 void JitArm64::IntializeSpeculativeConstants()
 {
   // If the block depends on an input register which looks like a gather pipe or MMIO related
@@ -534,6 +547,9 @@ void JitArm64::WriteExit(u32 destination, bool LK, u32 exit_address_after_return
   const u8* host_address_after_return = nullptr;
   if (LK)
   {
+#ifdef __SWITCH__
+    EmitBLRStackLimitCheck(ARM64Reg::X0);
+#endif
     // Push {ARM_PC (64-bit); PPC_PC (32-bit); feature_flags (32-bit)} on the stack
     ARM64Reg reg_to_push = ARM64Reg::X1;
     const u64 feature_flags = m_ppc_state.feature_flags;
@@ -642,6 +658,9 @@ void JitArm64::WriteExit(Arm64Gen::ARM64Reg dest, bool LK, u32 exit_address_afte
   }
   else
   {
+#ifdef __SWITCH__
+    EmitBLRStackLimitCheck(ARM64Reg::X0);
+#endif
     // Push {ARM_PC (64-bit); PPC_PC (32-bit); feature_flags (32-bit)} on the stack
     ARM64Reg reg_to_push = ARM64Reg::X1;
     const u64 feature_flags = m_ppc_state.feature_flags;
@@ -713,6 +732,13 @@ void JitArm64::FakeLKExit(u32 exit_address_after_return, ARM64Reg exit_address_a
     // function has been called!
     gpr.Lock(ARM64Reg::W30);
   }
+
+#ifdef __SWITCH__
+  {
+    auto limit_reg = gpr.GetScopedReg();
+    EmitBLRStackLimitCheck(EncodeRegTo64(limit_reg));
+  }
+#endif
 
   const u8* host_address_after_return;
   {

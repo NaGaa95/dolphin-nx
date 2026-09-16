@@ -237,14 +237,11 @@ void JitBase::ProtectStack()
   }
 
 #ifdef __SWITCH__
-  m_stack_guard = reinterpret_cast<u8*>(stack_guard_addr);
-  if (!envIsSyscallHinted(0x02) ||
-      R_FAILED(svcSetMemoryPermission(m_stack_guard, GUARD_SIZE, Perm_None)))
-  {
-    m_stack_guard = nullptr;
-    m_enable_blr_optimization = false;
-    return;
-  }
+  // Horizon cannot reprotect thread stacks, so BL pushes check a limit instead.
+  const uintptr_t lowest_limit = stack_base_addr + SAFE_STACK_SIZE;
+  const uintptr_t budget_limit =
+      stack_middle_addr > BLR_STACK_BUDGET ? stack_middle_addr - BLR_STACK_BUDGET : 0;
+  m_ppc_state.blr_stack_limit = reinterpret_cast<u8*>(std::max(lowest_limit, budget_limit));
 #else
   m_stack_guard = reinterpret_cast<u8*>(stack_guard_addr);
   if (!Common::ReadProtectMemory(m_stack_guard, GUARD_SIZE))
@@ -262,12 +259,7 @@ bool JitBase::UnprotectStack()
 #ifndef _WIN32
   if (m_stack_guard)
   {
-#ifdef __SWITCH__
-    if (R_FAILED(svcSetMemoryPermission(m_stack_guard, GUARD_SIZE, Perm_Rw)))
-      return false;
-#else
     Common::UnWriteProtectMemory(m_stack_guard, GUARD_SIZE);
-#endif
     m_stack_guard = nullptr;
   }
 #endif

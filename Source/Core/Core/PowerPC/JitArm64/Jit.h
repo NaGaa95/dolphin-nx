@@ -304,6 +304,9 @@ protected:
   void DoDownCount();
   void Cleanup();
   void ResetStack();
+#ifdef __SWITCH__
+  void EmitBLRStackLimitCheck(Arm64Gen::ARM64Reg reg);
+#endif
 
   void FreeRanges();
   void GenerateAsmAndResetFreeMemoryRanges();

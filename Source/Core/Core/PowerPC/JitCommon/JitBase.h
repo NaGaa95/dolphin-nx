@@ -168,6 +168,10 @@ protected:
   bool m_cleanup_after_stackfault = false;
   u8* m_stack_guard = nullptr;
 
+#ifdef __SWITCH__
+  static constexpr size_t BLR_STACK_BUDGET = 256 * 1024;
+#endif
+
   static const std::array<std::pair<bool JitBase::*, const Config::Info<bool>*>, 25> JIT_SETTINGS;
 
   bool DoesConfigNeedRefresh() const;

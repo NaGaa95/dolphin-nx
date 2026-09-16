@@ -168,6 +168,11 @@ struct PowerPCState
   bool pagetable_update_pending = false;
   bool m_enable_dcache = false;
 
+#ifdef __SWITCH__
+  // BL pushes below this address reset the BLR stack.
+  u8* blr_stack_limit = nullptr;
+#endif
+
 #ifdef _M_X86_64
   // This member exists only for the purpose of an assertion that its offset <= 0x100.
   std::tuple<> above_fits_in_first_0x100;
