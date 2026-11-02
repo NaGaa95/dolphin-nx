@@ -25,6 +25,7 @@
 #include "Common/Config/Config.h"
 #include "Common/FileUtil.h"
 #include "Common/HorizonClocks.h"
+#include "Common/HorizonFastmem.h"
 #include "Common/IniFile.h"
 #include "Common/MsgHandler.h"
 #include "Common/ScopeGuard.h"
@@ -1232,6 +1233,8 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
 
 int main(int argc, char** argv)
 {
+  Common::HorizonFastmem::ReserveArenaAddressSpace();
+
   saltynx_start();
   Common::ScopeGuard saltynx_guard([] { saltynx_stop(); });
   Common::ScopeGuard audio_guard([] { DolphinSwitch::Audio::ShutdownSharedAudio(); });

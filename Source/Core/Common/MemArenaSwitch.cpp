@@ -37,6 +37,9 @@ constexpr unsigned SVC_UNMAP_PROCESS_MEMORY = 0x75;
 constexpr unsigned SVC_MAP_PROCESS_CODE_MEMORY = 0x77;
 constexpr unsigned SVC_UNMAP_PROCESS_CODE_MEMORY = 0x78;
 
+void* s_arena_window = nullptr;
+bool s_arena_window_in_use = false;
+
 struct FastmemSupport
 {
   bool arena = false;
@@ -138,6 +141,18 @@ const FastmemSupport& GetFastmemSupport()
 
 namespace HorizonFastmem
 {
+void ReserveArenaAddressSpace()
+{
+  virtmemLock();
+  if (!s_arena_window)
+  {
+    void* const base = virtmemFindAslr(ARENA_SIZE, 0x200000);
+    if (base && virtmemAddReservation(base, ARENA_SIZE))
+      s_arena_window = base;
+  }
+  virtmemUnlock();
+}
+
 bool IsArenaSupported()
 {
   return GetFastmemSupport().arena;
@@ -285,24 +300,35 @@ u8* MemArena::ReserveMemoryRegion(size_t memory_size)
     return nullptr;
   }
 
-  size_t aligned_size = (memory_size + 0x1FFFFF) & ~size_t{0x1FFFFF};
+  if (m_reserved_region)
+    return memory_size <= m_reserved_region_size ? static_cast<u8*>(m_reserved_region) : nullptr;
+
+  const size_t aligned_size = AlignUp(memory_size, size_t{0x200000});
 
   virtmemLock();
-  m_reserved_region = virtmemFindAslr(aligned_size, 0x200000);
-  if (m_reserved_region == nullptr)
+  if (s_arena_window && !s_arena_window_in_use && aligned_size <= HorizonFastmem::ARENA_SIZE)
   {
-    virtmemUnlock();
-    ERROR_LOG_FMT(MEMMAP, "Switch: virtmemFindAslr failed for {} bytes", aligned_size);
-    return nullptr;
+    m_reserved_region = s_arena_window;
+    s_arena_window_in_use = true;
   }
-
-  m_reservation = virtmemAddReservation(m_reserved_region, aligned_size);
-  if (m_reservation == nullptr)
+  else
   {
-    virtmemUnlock();
-    m_reserved_region = nullptr;
-    ERROR_LOG_FMT(MEMMAP, "Switch: virtmemAddReservation failed");
-    return nullptr;
+    m_reserved_region = virtmemFindAslr(aligned_size, 0x200000);
+    if (m_reserved_region == nullptr)
+    {
+      virtmemUnlock();
+      ERROR_LOG_FMT(MEMMAP, "Switch: virtmemFindAslr failed for {} bytes", aligned_size);
+      return nullptr;
+    }
+
+    m_reservation = virtmemAddReservation(m_reserved_region, aligned_size);
+    if (m_reservation == nullptr)
+    {
+      virtmemUnlock();
+      m_reserved_region = nullptr;
+      ERROR_LOG_FMT(MEMMAP, "Switch: virtmemAddReservation failed");
+      return nullptr;
+    }
   }
 
   m_reserved_region_size = aligned_size;
@@ -316,16 +342,19 @@ u8* MemArena::ReserveMemoryRegion(size_t memory_size)
 
 void MemArena::ReleaseMemoryRegion()
 {
-  if (m_reservation)
-  {
-    virtmemLock();
-    virtmemRemoveReservation(static_cast<VirtmemReservation*>(m_reservation));
-    virtmemUnlock();
-    m_reservation = nullptr;
-  }
+  if (!m_reserved_region && !m_reservation)
+    return;
 
+  virtmemLock();
+  if (m_reserved_region == s_arena_window)
+    s_arena_window_in_use = false;
+  else if (m_reservation)
+    virtmemRemoveReservation(static_cast<VirtmemReservation*>(m_reservation));
+
+  m_reservation = nullptr;
   m_reserved_region = nullptr;
   m_reserved_region_size = 0;
+  virtmemUnlock();
 }
 
 void* MemArena::MapInMemoryRegion(s64 offset, size_t size, void* base, bool writeable)

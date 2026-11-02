@@ -20,6 +20,7 @@
 
 #include "Common/ChunkFile.h"
 #include "Common/CommonTypes.h"
+#include "Common/HorizonFastmem.h"
 #include "Common/Logging/Log.h"
 #include "Common/MemArena.h"
 #include "Common/MsgHandler.h"
@@ -220,11 +221,14 @@ bool MemoryManager::InitFastmemArena()
 
   constexpr size_t ppc_view_size = 0x1'0000'0000;
 #ifdef __SWITCH__
-  constexpr size_t guard_size = 0;
+  constexpr size_t guard_size = Common::HorizonFastmem::ARENA_GUARD_SIZE;
 #else
   constexpr size_t guard_size = 0x8000'0000;
 #endif
   constexpr size_t memory_size = ppc_view_size * 2 + guard_size * 3;
+#ifdef __SWITCH__
+  static_assert(memory_size == Common::HorizonFastmem::ARENA_SIZE);
+#endif
 
   m_fastmem_arena = m_arena.ReserveMemoryRegion(memory_size);
   if (!m_fastmem_arena)
