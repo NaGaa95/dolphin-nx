@@ -28,6 +28,7 @@
 #include "Common/IniFile.h"
 #include "Common/MsgHandler.h"
 #include "Common/ScopeGuard.h"
+#include "Common/SwitchSaltyNX.h"
 #include "Common/StringUtil.h"
 #include "Common/Thread.h"
 #include "Common/WindowSystemInfo.h"
@@ -1231,6 +1232,8 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
 
 int main(int argc, char** argv)
 {
+  saltynx_start();
+  Common::ScopeGuard saltynx_guard([] { saltynx_stop(); });
   Common::ScopeGuard audio_guard([] { DolphinSwitch::Audio::ShutdownSharedAudio(); });
 
   const std::string_view self_path =

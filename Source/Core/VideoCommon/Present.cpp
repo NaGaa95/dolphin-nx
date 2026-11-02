@@ -19,6 +19,7 @@
 #include "VideoCommon/FrameGeneration.h"
 #ifdef __SWITCH__
 #include "DolphinSwitch/ScreenLayout.h"
+#include "Common/SwitchSaltyNX.h"
 #endif
 #ifdef HAS_DEKO3D
 #include "DolphinSwitch/FrameGeneration.h"
@@ -1015,6 +1016,18 @@ void Presenter::PresentFrame(const AbstractTexture* texture,
     }
 
     g_gfx->PresentBackbuffer();
+#ifdef __SWITCH__
+    if (backbuffer_bound && texture && present_info &&
+        present_info->reason != PresentInfo::PresentReason::VideoInterfaceDuplicate)
+    {
+      saltynx_set_resolution(source_rc.GetWidth(), source_rc.GetHeight());
+#ifdef DOLPHIN_SWITCH_DEKO3D_RUNTIME
+      saltynx_frame(1);
+#else
+      saltynx_frame(g_backend_info.api_type == APIType::Vulkan ? 3 : 2);
+#endif
+    }
+#endif
   }
 
   if (m_onscreen_ui)
