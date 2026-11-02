@@ -21,6 +21,7 @@ void BeginSession(std::string game_id, unsigned revision);
 void EndSession();
 void BeginEdit(const std::array<bool, 4>& gba_ports);
 void CancelEdit();
-bool UpdateEditor(std::uint64_t down, std::uint64_t held);
+bool UpdateEditor(std::uint64_t down, std::uint64_t held, float move_x = 0, float move_y = 0,
+                  float size_x = 0, float size_y = 0);
 void DrawEditor();
 }  // namespace DolphinSwitch::ScreenLayout

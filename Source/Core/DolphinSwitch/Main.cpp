@@ -29,8 +29,8 @@
 #include "Common/IniFile.h"
 #include "Common/MsgHandler.h"
 #include "Common/ScopeGuard.h"
-#include "Common/SwitchSaltyNX.h"
 #include "Common/StringUtil.h"
+#include "Common/SwitchSaltyNX.h"
 #include "Common/Thread.h"
 #include "Common/WindowSystemInfo.h"
 #include "Core/AchievementManager.h"
@@ -64,6 +64,7 @@
 #include "DolphinSwitch/GciSync.h"
 #include "DolphinSwitch/Launcher.h"
 #include "DolphinSwitch/RuntimeOverlay.h"
+#include "DolphinSwitch/Skylanders.h"
 #include "DolphinSwitch/SystemLanguage.h"
 #include "DolphinSwitch/Updater.h"
 #include "InputCommon/ControllerEmu/ControlGroup/Attachments.h"
@@ -901,6 +902,8 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
   graphics_environment.Set("MESA_SWITCH_GL_DRIVER", "nvc0");
 
   DolphinSwitch::GciSyncSession gci_sync;
+  std::string skylander_warning;
+  Common::ScopeGuard skylander_guard([] { DolphinSwitch::Skylanders::EndSession(); });
   std::string gci_prepare_error;
   bool deko_handoff = false;
   std::string handoff_error;
@@ -956,7 +959,10 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
       if (s_applet_exit_requested.load(std::memory_order_acquire))
         return false;
     }
-    return gci_sync.Prepare(system, &gci_prepare_error);
+    if (!gci_sync.Prepare(system, &gci_prepare_error))
+      return false;
+    skylander_warning = DolphinSwitch::Skylanders::BeginSession();
+    return true;
   };
   if (!BootManager::BootCore(system, std::move(boot), wsi, prepare_session))
   {
@@ -1005,6 +1011,8 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
                                               resolved_request.revision, runtime_controllers.is_wii,
                                               runtime_controllers.modes);
   Common::ScopeGuard overlay_guard([] { DolphinSwitch::RuntimeOverlay::EndSession(); });
+  if (!skylander_warning.empty())
+    DolphinSwitch::RuntimeOverlay::SetStatus(skylander_warning);
 
   const bool touch_pointer_enabled =
       runtime_controllers.is_wii && Config::Get(Config::MAIN_SWITCH_TOUCHSCREEN_POINTER);
@@ -1055,9 +1063,18 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
     if (host_hid_initialized)
     {
       ciface::Switch::UpdatePadState(&runtime_pad);
+      const auto left = padGetStickPos(&runtime_pad, 0);
+      const auto right = padGetStickPos(&runtime_pad, 1);
+      const auto axis = [](s32 value) {
+        const float normalized = std::clamp(value / 32768.0f, -1.0f, 1.0f);
+        return std::abs(normalized) < 0.18f ?
+                   0.0f :
+                   std::copysign((std::abs(normalized) - 0.18f) / 0.82f, normalized);
+      };
       DolphinSwitch::RuntimeOverlay::UpdateInput(
           padGetButtonsDown(&runtime_pad), padGetButtons(&runtime_pad),
-          (runtime_pad.style_set & HidNpadStyleTag_NpadGc) != 0);
+          (runtime_pad.style_set & HidNpadStyleTag_NpadGc) != 0, axis(left.x), -axis(left.y),
+          axis(right.x), -axis(right.y));
     }
     UpdateWiiTouchPointerState(touch_pointer_installed);
 
@@ -1143,6 +1160,35 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
       case DolphinSwitch::RuntimeOverlay::ActionType::ToggleVBISkip:
         DolphinSwitch::RuntimeOverlay::ToggleVBISkipForSession();
         break;
+      case DolphinSwitch::RuntimeOverlay::ActionType::ToggleSkylandersPortal:
+      {
+        const bool enable = !Config::Get(Config::MAIN_EMULATE_SKYLANDER_PORTAL);
+        const auto error = DolphinSwitch::Skylanders::SetEnabled(enable);
+        DolphinSwitch::RuntimeOverlay::SetStatus(
+            error.empty() ? (enable ? "Skylanders portal enabled" : "Skylanders portal disabled") :
+                            error);
+        break;
+      }
+      case DolphinSwitch::RuntimeOverlay::ActionType::ListSkylanderFigures:
+      {
+        std::string error;
+        auto figures = DolphinSwitch::Skylanders::ListCollection(&error);
+        DolphinSwitch::RuntimeOverlay::SetSkylanderFigures(std::move(figures), std::move(error));
+        break;
+      }
+      case DolphinSwitch::RuntimeOverlay::ActionType::LoadSkylanderFigure:
+      {
+        const auto error = DolphinSwitch::Skylanders::SetFigure(action.value, action.path);
+        DolphinSwitch::RuntimeOverlay::SetStatus(error.empty() ? "Figure placed on portal" : error);
+        break;
+      }
+      case DolphinSwitch::RuntimeOverlay::ActionType::RemoveSkylanderFigure:
+      {
+        const auto error = DolphinSwitch::Skylanders::ClearFigure(action.value);
+        DolphinSwitch::RuntimeOverlay::SetStatus(error.empty() ? "Figure removed from portal" :
+                                                                 error);
+        break;
+      }
       case DolphinSwitch::RuntimeOverlay::ActionType::SetControllerMode:
       {
         const auto mode = static_cast<RuntimeControllerMode>(action.value2);

@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include "DolphinSwitch/Skylanders.h"
+
 namespace DolphinSwitch::RuntimeOverlay
 {
 enum class ControllerMode
@@ -34,6 +36,10 @@ enum class ActionType
   ToggleVBISkip,
   SetControllerMode,
   ResetGBA,
+  ToggleSkylandersPortal,
+  ListSkylanderFigures,
+  LoadSkylanderFigure,
+  RemoveSkylanderFigure,
 };
 
 struct Action
@@ -51,13 +57,15 @@ void BeginSession(std::string game_path, std::string game_id, unsigned revision,
                   std::array<ControllerMode, 4> controller_modes);
 void EndSession();
 
-void UpdateInput(std::uint64_t down, std::uint64_t held, bool gamecube_adapter = false);
+void UpdateInput(std::uint64_t down, std::uint64_t held, bool gamecube_adapter = false,
+                 float move_x = 0, float move_y = 0, float size_x = 0, float size_y = 0);
 std::vector<Action> TakeActions();
 
 bool IsVisible();
 bool IsInputCaptured();
 std::uint64_t GetRenderFrameGeneration();
 
+void SetSkylanderFigures(std::vector<Skylanders::FigureFile> figures, std::string error);
 void SetStatus(std::string message);
 void ShowAlert(std::string caption, std::string message);
 void TrackStateSave(int slot, std::uint64_t previous_timestamp);

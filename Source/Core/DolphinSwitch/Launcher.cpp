@@ -74,6 +74,7 @@
 #include "DolphinSwitch/Forwarder.h"
 #include "DolphinSwitch/FrameGeneration.h"
 #include "DolphinSwitch/Localization.h"
+#include "DolphinSwitch/Skylanders.h"
 #include "DolphinSwitch/Storage.h"
 #include "DolphinSwitch/SystemLanguage.h"
 #include "DolphinSwitch/UiAudio.h"
@@ -2018,6 +2019,7 @@ private:
   void AudioSettings(bool per_game = false, Game* game = nullptr);
   void ConsoleSettings(bool per_game, Game* game = nullptr);
   void WiiSystemSettings();
+  void SkylanderSettings();
   void GameCubeDeviceSettings();
   void GameCubeSlotSettings(int slot);
   void ControllerSettings(bool per_game = false, Game* game = nullptr);
@@ -9752,6 +9754,7 @@ void Launcher::ConsoleSettings(bool per_game, Game* game)
         }
         rows.push_back(
             {"Game Boy Advance link", "BIOS / cartridges / screens", true, false, false});
+        rows.push_back({"Skylanders portal", "Portal and figure collection", true, false, false});
         return rows;
       },
       [&](int index, int delta) {
@@ -9844,6 +9847,10 @@ void Launcher::ConsoleSettings(bool per_game, Game* game)
         {
           GBASettings();
         }
+        else if (index == (per_game ? 6 : 8))
+        {
+          SkylanderSettings();
+        }
         if (!per_game)
           MarkConfigDirty();
         return false;
@@ -9883,6 +9890,95 @@ void Launcher::ConsoleSettings(bool per_game, Game* game)
       });
   if (game)
     game->has_game_config = RegularFileExists(GameIniPath(*game));
+}
+
+void Launcher::SkylanderSettings()
+{
+  if (const auto error = Skylanders::Refresh(); !error.empty())
+    Toast(error, 2500);
+  RunRows(
+      "Skylanders portal", "Choose figures here, or swap them from the in-game menu",
+      [&] {
+        std::vector<Row> rows{
+            {"Emulate Skylanders portal",
+             Config::Get(Config::MAIN_EMULATE_SKYLANDER_PORTAL) ? "On" : "Off"},
+            {"Figure collection", Skylanders::CollectionDirectory(), true, false, false},
+            {"Create figure", "Choose a character, item, vehicle or trap", true, false, false}};
+        const auto slots = Skylanders::GetSlots();
+        for (std::size_t index = 0; index < slots.size(); ++index)
+          rows.push_back(
+              {"Portal slot " + std::to_string(index + 1), slots[index].name, true, false, false});
+        return rows;
+      },
+      [&](int index, int) {
+        std::string error;
+        if (index == 0)
+          error = Skylanders::SetEnabled(!Config::Get(Config::MAIN_EMULATE_SKYLANDER_PORTAL));
+        else if (index == 1)
+        {
+          const auto folder = FileBrowser(Skylanders::CollectionDirectory(), true, false, false);
+          if (!folder.empty())
+          {
+            Config::SetBase(Config::MAIN_SKYLANDERS_PATH, folder);
+            MarkConfigDirty();
+          }
+        }
+        else if (index == 2)
+        {
+          const int game = Dropdown(
+              "Skylanders game",
+              {"Cancel", "Spyro's Adventure", "Giants", "Swap Force", "Trap Team", "SuperChargers"},
+              0);
+          if (game <= 0)
+            return false;
+          std::vector<std::string> choices{"Cancel"};
+          std::vector<const Skylanders::CatalogEntry*> entries;
+          for (const auto& entry : Skylanders::Catalog())
+          {
+            if (entry.game != game - 1)
+              continue;
+            entries.push_back(&entry);
+            choices.push_back(entry.name + " (" + std::to_string(entry.id) + "/" +
+                              std::to_string(entry.variant) + ")");
+          }
+          const int choice = Dropdown("Create Skylander figure", choices, 0, true, false);
+          if (choice <= 0 || choice > static_cast<int>(entries.size()))
+            return false;
+          const auto& entry = *entries[choice - 1];
+          std::string name;
+          if (!PromptText("Figure file name",
+                          SafeProfileName(entry.name) + "_" + std::to_string(entry.id) + "_" +
+                              std::to_string(entry.variant),
+                          &name))
+            return false;
+          const auto path = Skylanders::CollectionDirectory() + SafeProfileName(name) + ".sky";
+          error = Skylanders::CreateFigure(entry.id, entry.variant, path);
+          if (error.empty())
+            Toast("Figure created. Select a portal slot to load it.", 1800);
+        }
+        else
+        {
+          const auto slot = static_cast<std::size_t>(index - 3);
+          if (slot >= Skylanders::SLOT_COUNT)
+            return false;
+          const int action = Dropdown("Portal slot " + std::to_string(slot + 1),
+                                      {"Cancel", "Load figure file", "Remove figure"}, 0);
+          if (action == 1)
+          {
+            static constexpr std::array<std::string_view, 4> extensions = {".sky", ".bin", ".dmp",
+                                                                           ".dump"};
+            const auto path = FileBrowser(Skylanders::CollectionDirectory(), false, true, false,
+                                          extensions, "Choose a Skylanders figure");
+            if (!path.empty())
+              error = Skylanders::SetFigure(slot, path);
+          }
+          else if (action == 2)
+            error = Skylanders::ClearFigure(slot);
+        }
+        if (!error.empty())
+          Toast(error, 3000);
+        return false;
+      });
 }
 
 void Launcher::WiiSystemSettings()

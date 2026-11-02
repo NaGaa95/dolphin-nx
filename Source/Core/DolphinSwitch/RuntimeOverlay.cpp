@@ -60,6 +60,8 @@ enum class Page
   ControllerModes,
   GBA,
   ScreenLayout,
+  Skylanders,
+  SkylanderFigures,
   Alert,
 };
 
@@ -102,7 +104,7 @@ struct StateSaveMonitorRequest
 
 constexpr std::uint64_t MENU_CHORD =
     HidNpadButton_L | HidNpadButton_R | HidNpadButton_Plus;
-constexpr int MAIN_ITEM_COUNT = 13;
+constexpr int MAIN_ITEM_COUNT = 14;
 constexpr int DISC_ITEM_COUNT = 3;
 constexpr int CONTROLLER_ITEM_COUNT = 5;
 constexpr int CONTROLLER_MODE_ITEM_COUNT = 6;
@@ -136,6 +138,10 @@ std::string s_browser_directory;
 std::vector<BrowserEntry> s_browser_entries;
 std::string s_browser_error;
 bool s_browser_scanning = false;
+int s_skylander_slot = 0;
+std::vector<Skylanders::FigureFile> s_skylander_figures;
+std::string s_skylander_error;
+bool s_skylander_scanning = false;
 std::string s_status;
 std::chrono::steady_clock::time_point s_status_until{};
 std::string s_alert_caption;
@@ -316,11 +322,11 @@ void RefreshAchievements()
 
   rc_client_user_game_summary_t summary{};
   rc_client_get_user_game_summary(manager.GetClient(), &summary);
-  s_achievement_summary =
-      std::to_string(summary.num_unlocked_achievements) + "/" +
-      std::to_string(summary.num_core_achievements) + " achievements · " +
-      std::to_string(summary.points_unlocked) + "/" + std::to_string(summary.points_core) +
-      " points · " + (manager.IsHardcoreModeActive() ? "Hardcore" : "Softcore");
+  s_achievement_summary = std::to_string(summary.num_unlocked_achievements) + "/" +
+                          std::to_string(summary.num_core_achievements) + " achievements Ã‚Â· " +
+                          std::to_string(summary.points_unlocked) + "/" +
+                          std::to_string(summary.points_core) + " points Ã‚Â· " +
+                          (manager.IsHardcoreModeActive() ? "Hardcore" : "Softcore");
   const auto presence = manager.GetRichPresence();
   s_achievement_presence = presence.data();
 
@@ -663,6 +669,10 @@ int ItemCount()
     return CONTROLLER_ITEM_COUNT;
   case Page::ControllerModes:
     return CONTROLLER_MODE_ITEM_COUNT;
+  case Page::Skylanders:
+    return static_cast<int>(Skylanders::SLOT_COUNT) + 2;
+  case Page::SkylanderFigures:
+    return static_cast<int>(s_skylander_figures.size()) + 2;
   case Page::GBA:
     return 7;
   case Page::Alert:
@@ -680,7 +690,7 @@ bool ItemAvailable(int index)
     return true;
   if (index == 2 && IsHardcoreActive())
     return false;
-  if (index == 6 && !s_is_wii)
+  if ((index == 6 || index == 13) && !s_is_wii)
     return false;
   return index != 8 || DolphinSwitch::FrameGeneration::IsAvailable();
 }
@@ -703,6 +713,11 @@ void HandleBack()
       SetPage(Page::Disc);
     return;
   }
+  case Page::SkylanderFigures:
+    SetPage(Page::Skylanders);
+    s_selection = s_skylander_slot + 1;
+    return;
+  case Page::Skylanders:
   case Page::Controllers:
   case Page::GBA:
     SetPage(Page::Main);
@@ -787,6 +802,10 @@ void ActivateSelection()
       CloseMenu();
       break;
     case 13:
+      if (s_is_wii)
+        SetPage(Page::Skylanders);
+      break;
+    case 14:
       SetPage(Page::GBA);
       break;
     }
@@ -875,6 +894,30 @@ void ActivateSelection()
       s_selection = s_controller_player;
     }
     break;
+  case Page::Skylanders:
+    if (s_selection == 0)
+      QueueAction({ActionType::ToggleSkylandersPortal});
+    else if (s_selection <= static_cast<int>(Skylanders::SLOT_COUNT))
+    {
+      s_skylander_slot = s_selection - 1;
+      s_skylander_figures.clear();
+      s_skylander_error.clear();
+      s_skylander_scanning = true;
+      SetPage(Page::SkylanderFigures);
+      QueueAction({ActionType::ListSkylanderFigures});
+    }
+    else
+      SetPage(Page::Main);
+    break;
+  case Page::SkylanderFigures:
+    if (s_selection == 0)
+      QueueAction({ActionType::RemoveSkylanderFigure, s_skylander_slot});
+    else if (s_selection <= static_cast<int>(s_skylander_figures.size()))
+      QueueAction({ActionType::LoadSkylanderFigure, s_skylander_slot,
+                   s_skylander_figures[s_selection - 1].path});
+    SetPage(Page::Skylanders);
+    s_selection = s_skylander_slot + 1;
+    break;
   case Page::Alert:
     CloseMenu();
     break;
@@ -952,8 +995,38 @@ void RenderMainPage()
                 10);
   SelectableRow("Reset console", 11);
   SelectableRow("Return to Dolphin launcher", 12);
+  if (s_is_wii)
+    SelectableRow("Skylanders portal                               >", 13);
   if (HasGBA())
-    SelectableRow("Game Boy Advance                                >", 13);
+    SelectableRow("Game Boy Advance                                >", 14);
+}
+
+void RenderSkylandersPage()
+{
+  SelectableRow(std::string("Emulated portal                         ") +
+                    (Config::Get(Config::MAIN_EMULATE_SKYLANDER_PORTAL) ? "On" : "Off"),
+                0);
+  const auto slots = Skylanders::GetSlots();
+  for (std::size_t slot = 0; slot < slots.size(); ++slot)
+    SelectableRow("Slot " + std::to_string(slot + 1) + "  " + Shorten(slots[slot].name, 42),
+                  static_cast<int>(slot + 1));
+  SelectableRow("Back", static_cast<int>(slots.size() + 1));
+}
+
+void RenderSkylanderFigures()
+{
+  ImGui::TextWrapped("Portal slot %d", s_skylander_slot + 1);
+  if (s_skylander_scanning)
+    ImGui::TextUnformatted("Reading figure collection...");
+  else if (!s_skylander_error.empty())
+    ImGui::TextWrapped("%s", s_skylander_error.c_str());
+  else if (s_skylander_figures.empty())
+    ImGui::TextWrapped("No figure files found. Import or create figures in the launcher's "
+                       "Skylanders portal settings.");
+  SelectableRow("Remove current figure", 0);
+  for (std::size_t index = 0; index < s_skylander_figures.size(); ++index)
+    SelectableRow(Shorten(s_skylander_figures[index].name, 58), static_cast<int>(index + 1));
+  SelectableRow("Back", static_cast<int>(s_skylander_figures.size() + 1));
 }
 
 void RenderGBAPage()
@@ -1106,7 +1179,7 @@ void RenderAchievementsPage()
   for (const AchievementEntry& achievement : s_achievements)
   {
     SelectableRow(std::string(achievement.unlocked ? "[Unlocked] " : "[Locked]   ") +
-                      Shorten(achievement.title, 58) + " · " +
+                      Shorten(achievement.title, 58) + " Ã‚Â· " +
                       std::to_string(achievement.points) + " pts",
                   row++);
   }
@@ -1118,7 +1191,7 @@ void RenderAchievementsPage()
     const AchievementEntry& selected = s_achievements[s_selection];
     std::string detail = selected.description;
     if (!selected.unlocked && !selected.progress.empty())
-      detail += (detail.empty() ? "" : " · ") + selected.progress;
+      detail += (detail.empty() ? "" : " Ã‚Â· ") + selected.progress;
     ImGui::TextWrapped("%s", detail.c_str());
   }
   else
@@ -1230,7 +1303,8 @@ void EndSession()
   s_gba_ports.fill(false);
 }
 
-void UpdateInput(std::uint64_t down, std::uint64_t held, bool gamecube_adapter)
+void UpdateInput(std::uint64_t down, std::uint64_t held, bool gamecube_adapter, float move_x,
+                 float move_y, float size_x, float size_y)
 {
   std::lock_guard lock{s_mutex};
   if (!s_initialized)
@@ -1260,7 +1334,7 @@ void UpdateInput(std::uint64_t down, std::uint64_t held, bool gamecube_adapter)
   {
     if (down & HidNpadButton_B)
       SetPage(Page::Main);
-    else if (ScreenLayout::UpdateEditor(down, held))
+    else if (ScreenLayout::UpdateEditor(down, held, move_x, move_y, size_x, size_y))
       SetPage(Page::Main);
     return;
   }
@@ -1316,6 +1390,17 @@ bool IsInputCaptured()
 std::uint64_t GetRenderFrameGeneration()
 {
   return s_render_frame_generation.load(std::memory_order_acquire);
+}
+
+void SetSkylanderFigures(std::vector<Skylanders::FigureFile> figures, std::string error)
+{
+  std::lock_guard lock{s_mutex};
+  if (!s_initialized || s_page != Page::SkylanderFigures)
+    return;
+  s_skylander_figures = std::move(figures);
+  s_skylander_error = std::move(error);
+  s_skylander_scanning = false;
+  s_selection = std::clamp(s_selection, 0, static_cast<int>(s_skylander_figures.size()) + 1);
 }
 
 void SetStatus(std::string message)
@@ -1546,6 +1631,10 @@ void Draw()
     case Page::ControllerModes:
       CenteredText(("Player " + std::to_string(s_controller_player + 1) + " Controller").c_str());
       break;
+    case Page::Skylanders:
+    case Page::SkylanderFigures:
+      CenteredText("Skylanders Portal");
+      break;
     case Page::GBA:
       CenteredText("Game Boy Advance");
       break;
@@ -1564,6 +1653,12 @@ void Draw()
       break;
     case Page::SaveStates:
       RenderStatePage(true);
+      break;
+    case Page::Skylanders:
+      RenderSkylandersPage();
+      break;
+    case Page::SkylanderFigures:
+      RenderSkylanderFigures();
       break;
     case Page::GBA:
       RenderGBAPage();
