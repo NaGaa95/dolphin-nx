@@ -7,6 +7,7 @@
 #include <cstring>
 #include <map>
 #include <memory>
+#include <numeric>
 #include <string>
 
 #include <fcntl.h>
@@ -177,7 +178,7 @@ public:
     const int min = libevdev_get_abs_minimum(m_dev, m_code);
     const int max = libevdev_get_abs_maximum(m_dev, m_code);
 
-    m_base = (max + min) / 2;
+    m_base = std::midpoint(min, max);
     m_range = (upper ? max : min) - m_base;
   }
 
@@ -540,7 +541,7 @@ bool evdevDevice::AddNode(std::string devnode, int fd, libevdev* dev)
     // evdev resolution is specified in "g"s and deg/s.
     // Convert these to m/s/s and rad/s.
     constexpr ControlState accel_scale = MathUtil::GRAVITY_ACCELERATION;
-    constexpr ControlState gyro_scale = MathUtil::TAU / 360;
+    constexpr ControlState gyro_scale = MathUtil::DegreesToRadians(ControlState{1});
 
     add_motion_inputs(ABS_X, accel_scale);
     add_motion_inputs(ABS_RX, gyro_scale);

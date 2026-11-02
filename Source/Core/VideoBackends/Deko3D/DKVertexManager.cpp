@@ -122,7 +122,10 @@ void DKVertexManager::CommitBuffer(u32 num_vertices, u32 vertex_stride, u32 num_
 
   ADDSTAT(g_stats.this_frame.bytes_vertex_streamed, static_cast<int>(vertex_data_size));
   ADDSTAT(g_stats.this_frame.bytes_index_streamed, static_cast<int>(index_data_size));
+}
 
+void DKVertexManager::BindCommittedBuffer(u32 /*vertex_stride*/)
+{
   DKStateTracker::GetInstance()->SetVertexBuffer(m_vertex_stream_buffer->GetGpuAddr(),
                                                  VERTEX_STREAM_BUFFER_SIZE);
   DKStateTracker::GetInstance()->SetIndexBuffer(m_index_stream_buffer->GetGpuAddr(),

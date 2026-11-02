@@ -272,14 +272,7 @@ void JitArm64::FreeRanges()
   // the local rangesets to allow overwriting them with new code.
   for (const auto& [from, to] : blocks.GetRangesToFreeNear())
   {
-    const u8* from_rx = ConvertToExecutable(from);
-    const u8* to_rx = ConvertToExecutable(to);
-    const auto first_fastmem_area = m_fault_to_handler.upper_bound(from_rx);
-    auto last_fastmem_area = first_fastmem_area;
-    const auto end = m_fault_to_handler.end();
-    while (last_fastmem_area != end && last_fastmem_area->first <= to_rx)
-      ++last_fastmem_area;
-    m_fault_to_handler.erase(first_fastmem_area, last_fastmem_area);
+    m_fault_to_handler.erase(ConvertToExecutable(from));
 
     if (from < m_near_code_0.GetCodeEnd())
       m_free_ranges_near_0.insert(from, to);
@@ -1209,6 +1202,13 @@ void JitArm64::Jit(u32 em_address, bool clear_cache_and_retry_on_failure)
       b->far_begin = far_start;
       b->far_end = far_end;
 
+      if (!m_fault_to_handler_temp.empty())
+      {
+        // The copy from temp is intentional, to minimize allocations due to exceeded vector
+        // capacity.
+        m_fault_to_handler.emplace(ConvertToExecutable(near_start), m_fault_to_handler_temp);
+      }
+
       blocks.FinalizeBlock(*b, jo.enableBlocklink, code_block, m_code_buffer);
 
 #ifdef JIT_LOG_GENERATED_CODE
@@ -1322,6 +1322,7 @@ bool JitArm64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
   js.carryFlag = CarryFlag::InPPCState;
   js.numLoadStoreInst = 0;
   js.numFloatingPointInst = 0;
+  m_fault_to_handler_temp.clear();
 
   b->normalEntry = ConvertToExecutable(GetWritableCodePtr());
 

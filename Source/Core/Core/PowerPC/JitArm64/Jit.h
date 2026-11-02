@@ -9,6 +9,7 @@
 #include <memory_resource>
 #endif
 #include <optional>
+#include <vector>
 
 #include "Common/Arm64Emitter.h"
 #include "Common/RangeSizeSet.h"
@@ -196,7 +197,8 @@ public:
 protected:
   struct FastmemArea
   {
-    const u8* fast_access_code;
+    const u8* fast_access_start;
+    const u8* fast_access_end;
     const u8* slow_access_code;
   };
 
@@ -409,13 +411,15 @@ protected:
   void SetFPRFIfNeeded(bool single, Arm64Gen::ARM64Reg reg);
   void Force25BitPrecision(Arm64Gen::ARM64Reg output, Arm64Gen::ARM64Reg input);
 
-  // <Fast path fault location, slow path handler location>
+  // Fastmem areas are grouped by the executable entry point of each block.
 #ifdef __SWITCH__
   std::pmr::unsynchronized_pool_resource m_fault_to_handler_pool;
-  std::pmr::map<const u8*, FastmemArea> m_fault_to_handler{&m_fault_to_handler_pool};
+  std::pmr::map<const u8*, std::vector<FastmemArea>, std::greater<const u8*>>
+      m_fault_to_handler{&m_fault_to_handler_pool};
 #else
-  std::map<const u8*, FastmemArea> m_fault_to_handler{};
+  std::map<const u8*, std::vector<FastmemArea>, std::greater<const u8*>> m_fault_to_handler;
 #endif
+  std::vector<FastmemArea> m_fault_to_handler_temp;
   Arm64GPRCache gpr;
   Arm64FPRCache fpr;
 

@@ -77,7 +77,7 @@ void JitArm64::EmitBackpatchRoutine(u32 flags, MemAccessMode mode, ARM64Reg RS, 
   const bool emit_slow_access = mode != MemAccessMode::AlwaysFastAccess;
 
   bool in_far_code = false;
-  const u8* fast_access_start = GetCodePtr();
+  u8* fast_access_start = GetWritableCodePtr();
   std::optional<FixupBranch> slow_access_fixup;
 
   if (emit_fast_access)
@@ -158,7 +158,7 @@ void JitArm64::EmitBackpatchRoutine(u32 flags, MemAccessMode mode, ARM64Reg RS, 
       ByteswapAfterLoad(this, &m_float_emit, RS, RS, flags, true, false);
     }
   }
-  const u8* fast_access_end = GetCodePtr();
+  u8* fast_access_end = GetWritableCodePtr();
 
   if (emit_slow_access)
   {
@@ -171,9 +171,12 @@ void JitArm64::EmitBackpatchRoutine(u32 flags, MemAccessMode mode, ARM64Reg RS, 
 
       if (jo.fastmem && !emitting_routine)
       {
-        FastmemArea* fastmem_area = &m_fault_to_handler[ConvertToExecutable(fast_access_end)];
-        fastmem_area->fast_access_code = ConvertToExecutable(fast_access_start);
-        fastmem_area->slow_access_code = GetCodePtr();
+        FastmemArea& fastmem_area = m_fault_to_handler_temp.emplace_back();
+        fastmem_area = {
+            .fast_access_start = ConvertToExecutable(fast_access_start),
+            .fast_access_end = ConvertToExecutable(fast_access_end),
+            .slow_access_code = GetCodePtr(),
+        };
       }
     }
 
@@ -340,31 +343,35 @@ void JitArm64::FlushPPCStateBeforeSlowAccess(ARM64Reg temp_gpr, ARM64Reg temp_fp
 bool JitArm64::HandleFastmemFault(SContext* ctx)
 {
   const u8* pc = reinterpret_cast<const u8*>(ctx->CTX_PC);
-  auto slow_handler_iter = m_fault_to_handler.upper_bound(pc);
 
-  // no fastmem area found
-  if (slow_handler_iter == m_fault_to_handler.end())
+  // Find the block
+  auto block_it = m_fault_to_handler.lower_bound(pc);
+  if (block_it == m_fault_to_handler.end())
     return false;
 
-  const u8* const fastmem_area_start = slow_handler_iter->second.fast_access_code;
-  const u8* const fastmem_area_end = slow_handler_iter->first;
-
-  // no overlapping fastmem area found
-  if (pc < fastmem_area_start)
+  auto entry_it = std::ranges::find_if(block_it->second, [pc](const auto& entry) {
+    return pc < entry.fast_access_end && pc >= entry.fast_access_start;
+  });
+  if (entry_it == block_it->second.end())
     return false;
 
+  const u8* const fastmem_area_start = entry_it->fast_access_start;
+  const u8* const fastmem_area_end = entry_it->fast_access_end;
   u8* const rw_start = const_cast<u8*>(ConvertToWritable(fastmem_area_start));
   u8* const rw_end_bound = const_cast<u8*>(ConvertToWritable(fastmem_area_end));
 
   const Common::ScopedJITPageWriteAndNoExecute enable_jit_page_writes;
   ARM64XEmitter emitter(rw_start, rw_end_bound);
 
-  emitter.BL(slow_handler_iter->second.slow_access_code);
+  emitter.BL(entry_it->slow_access_code);
 
   while (emitter.GetCodePtr() < rw_end_bound)
     emitter.NOP();
 
-  m_fault_to_handler.erase(slow_handler_iter);
+  // Delete the entry
+  block_it->second.erase(entry_it);
+  if (block_it->second.empty())
+    m_fault_to_handler.erase(block_it);
 
   u8* const rw_end = const_cast<u8*>(emitter.GetCodePtr());
   emitter.FlushIcacheSection(rw_start, rw_end, const_cast<u8*>(fastmem_area_start),

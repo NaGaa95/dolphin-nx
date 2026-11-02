@@ -66,11 +66,6 @@ void SleepCurrentThread(int ms)
   Sleep(ms);
 }
 
-void SwitchCurrentThread()
-{
-  SwitchToThread();
-}
-
 // Sets the debugger-visible name of the current thread.
 // Uses trick documented in:
 // https://docs.microsoft.com/en-us/visualstudio/debugger/how-to-set-a-thread-name-in-native-code
@@ -190,11 +185,6 @@ bool AdjustCurrentThreadPriority(int offset)
 void SleepCurrentThread(int ms)
 {
   usleep(1000 * ms);
-}
-
-void SwitchCurrentThread()
-{
-  usleep(1000 * 1);
 }
 
 void SetCurrentThreadName(const char* name)
