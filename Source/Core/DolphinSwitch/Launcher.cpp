@@ -51,6 +51,7 @@
 #include "Common/HookableEvent.h"
 #include "Common/HorizonClocks.h"
 #include "Common/IniFile.h"
+#include "Common/Logging/Log.h"
 #include "Common/ScopeGuard.h"
 #include "Core/AchievementManager.h"
 #include "Core/Config/AchievementSettings.h"
@@ -378,8 +379,33 @@ std::string GeneratedControllerProfileName(std::string_view game_key, bool wii, 
          std::to_string(port + 1);
 }
 
+void InstallWiiRemotePresets()
+{
+  const std::string directory = ControllerProfileDirectory(true);
+  if (!File::CreateDirs(directory))
+    return;
+
+  for (const char* filename : {"Switch - Real Wii Remote.ini",
+                               "Switch - Real Wii Remote and Nunchuk.ini"})
+  {
+    const std::string destination = directory + filename;
+    if (File::Exists(destination))
+      continue;
+
+    Common::IniFile profile;
+    if (!profile.Load(File::GetSysDirectory() + "Profiles/Wiimote/" + filename) ||
+        !profile.Save(destination))
+    {
+      WARN_LOG_FMT(CONTROLLERINTERFACE, "Failed to install Wii Remote preset: {}", filename);
+    }
+  }
+}
+
 std::vector<std::string> ListControllerProfiles(bool wii)
 {
+  if (wii)
+    InstallWiiRemotePresets();
+
   std::vector<std::string> profiles;
   const std::string directory = ControllerProfileDirectory(wii);
   DIR* handle = ::opendir(directory.c_str());
