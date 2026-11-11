@@ -414,12 +414,13 @@ protected:
   // Fastmem areas are grouped by the executable entry point of each block.
 #ifdef __SWITCH__
   std::pmr::unsynchronized_pool_resource m_fault_to_handler_pool;
-  std::pmr::map<const u8*, std::vector<FastmemArea>, std::greater<const u8*>>
+  std::pmr::map<const u8*, std::pmr::vector<FastmemArea>, std::greater<const u8*>>
       m_fault_to_handler{&m_fault_to_handler_pool};
+  std::pmr::vector<FastmemArea> m_fault_to_handler_temp;
 #else
   std::map<const u8*, std::vector<FastmemArea>, std::greater<const u8*>> m_fault_to_handler;
-#endif
   std::vector<FastmemArea> m_fault_to_handler_temp;
+#endif
   Arm64GPRCache gpr;
   Arm64FPRCache fpr;
 

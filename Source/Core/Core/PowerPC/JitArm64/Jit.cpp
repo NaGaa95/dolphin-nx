@@ -233,9 +233,10 @@ void JitArm64::ClearCache()
   m_fault_to_handler.clear();
 #ifdef __SWITCH__
   m_fault_to_handler_pool.release();
-#endif
-
+  blocks.Discard();
+#else
   blocks.Clear();
+#endif
   blocks.ClearRangesToFree();
   const Common::ScopedJITPageWriteAndNoExecute enable_jit_page_writes;
   m_far_code_0.ClearCodeSpace();

@@ -135,6 +135,7 @@ public:
   [[nodiscard]] virtual bool Init();
   void Shutdown();
   void Clear();
+  void Discard();
   [[nodiscard]] bool Reset();
 
   // Code Cache

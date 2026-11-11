@@ -107,6 +107,24 @@ void JitBaseBlockCache::Clear()
     m_entry_points_arena.Clear();
 }
 
+// Drops all blocks without patching code; only valid when the code space is wiped right after.
+void JitBaseBlockCache::Discard()
+{
+  m_jit.js.fifoWriteAddresses.Clear();
+  m_jit.js.pairedQuantizeAddresses.Clear();
+  m_jit.js.noSpeculativeConstantsAddresses.Clear();
+  block_map.clear();
+  links_to.clear();
+  block_range_map.clear();
+
+  valid_block.Clear();
+
+  if (m_entry_points_ptr)
+    m_entry_points_arena.Clear();
+  else
+    m_fast_block_map_fallback.fill(nullptr);
+}
+
 bool JitBaseBlockCache::Reset()
 {
   Shutdown();

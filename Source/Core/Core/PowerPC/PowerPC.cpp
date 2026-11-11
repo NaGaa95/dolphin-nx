@@ -110,6 +110,10 @@ void PowerPCManager::DoState(PointerWrap& p)
   auto& mmu = m_system.GetMMU();
   if (p.IsReadMode())
   {
+#ifdef __SWITCH__
+    // Clear first so the BAT updates below don't destroy every block one by one.
+    m_system.GetJitInterface().DoState(p);
+#endif
     mmu.DoState(p, old_sr != m_ppc_state.sr);
 
     if (!m_ppc_state.m_enable_dcache)
@@ -132,7 +136,9 @@ void PowerPCManager::DoState(PointerWrap& p)
   // SystemTimers::DecrementerSet();
   // SystemTimers::TimeBaseSet();
 
+#ifndef __SWITCH__
   m_system.GetJitInterface().DoState(p);
+#endif
 }
 
 void PowerPCManager::ResetRegisters()
