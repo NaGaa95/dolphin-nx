@@ -18,6 +18,7 @@
 #include <span>
 #include <tuple>
 
+#include "Common/Align.h"
 #include "Common/ChunkFile.h"
 #include "Common/CommonTypes.h"
 #include "Common/HorizonFastmem.h"
@@ -141,6 +142,9 @@ void MemoryManager::Init()
     if (!fake_vmem && (region.flags & PhysicalMemoryRegion::FAKE_VMEM))
       continue;
 
+#ifdef __SWITCH__
+    mem_size = Common::AlignUp(mem_size, 0x200000);
+#endif
     region.shm_position = mem_size;
     region.active = true;
     mem_size += region.size;

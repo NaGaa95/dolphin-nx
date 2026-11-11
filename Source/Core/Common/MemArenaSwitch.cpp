@@ -40,6 +40,16 @@ constexpr unsigned SVC_UNMAP_PROCESS_CODE_MEMORY = 0x78;
 void* s_arena_window = nullptr;
 bool s_arena_window_in_use = false;
 
+constexpr size_t LARGE_PAGE_SIZE = 0x200000;
+
+// Caller holds virtmemLock; 2 MiB alignment lets Horizon map guest memory with large pages.
+void* FindLargePageAligned(void* (*find)(size_t, size_t), size_t size, size_t guard_size)
+{
+  if (void* const found = find(size + LARGE_PAGE_SIZE, guard_size))
+    return reinterpret_cast<void*>(AlignUp(reinterpret_cast<uintptr_t>(found), LARGE_PAGE_SIZE));
+  return find(size, guard_size);
+}
+
 struct FastmemSupport
 {
   bool arena = false;
@@ -146,7 +156,7 @@ void ReserveArenaAddressSpace()
   virtmemLock();
   if (!s_arena_window)
   {
-    void* const base = virtmemFindAslr(ARENA_SIZE, 0x200000);
+    void* const base = FindLargePageAligned(virtmemFindAslr, ARENA_SIZE, 0x200000);
     if (base && virtmemAddReservation(base, ARENA_SIZE))
       s_arena_window = base;
   }
@@ -197,7 +207,7 @@ void MemArena::GrabSHMSegment(size_t size, std::string_view base_name)
 
   virtmemLock();
 
-  m_rw_mirror = virtmemFindCodeMemory(aligned_size, 0x200000);
+  m_rw_mirror = FindLargePageAligned(virtmemFindCodeMemory, aligned_size, 0x200000);
   if (m_rw_mirror == nullptr)
   {
     virtmemUnlock();
@@ -313,7 +323,7 @@ u8* MemArena::ReserveMemoryRegion(size_t memory_size)
   }
   else
   {
-    m_reserved_region = virtmemFindAslr(aligned_size, 0x200000);
+    m_reserved_region = FindLargePageAligned(virtmemFindAslr, aligned_size, 0x200000);
     if (m_reserved_region == nullptr)
     {
       virtmemUnlock();
