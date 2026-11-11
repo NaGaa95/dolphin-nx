@@ -283,6 +283,10 @@ public:
 
   virtual void SetNandRedirects(std::vector<NandRedirect> nand_redirects) = 0;
 
+#ifdef __SWITCH__
+  virtual void FlushStaleWrites() {}
+#endif
+
 protected:
   void DoStateWriteOrMeasure(PointerWrap& p, const std::string& directory_path);
   void DoStateRead(PointerWrap& p, const std::string& directory_path);

@@ -6,10 +6,14 @@
 #include <array>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "Common/CommonTypes.h"
+#ifdef __SWITCH__
+#include "Common/FileUtil.h"
+#endif
 #include "Common/IOFile.h"
 #include "Core/IOS/FS/FileSystem.h"
 
@@ -59,6 +63,10 @@ public:
 
   void SetNandRedirects(std::vector<NandRedirect> nand_redirects) override;
 
+#ifdef __SWITCH__
+  void FlushStaleWrites() override;
+#endif
+
 private:
   struct FstEntry
   {
@@ -80,18 +88,6 @@ private:
     std::string wii_path;
     std::shared_ptr<File::IOFile> host_file;
     u32 file_offset = 0;
-#ifdef __SWITCH__
-    enum class Operation
-    {
-      None,
-      Read,
-      Write,
-    };
-
-    u32 file_size = 0;
-    u32 host_file_offset = 0;
-    Operation last_operation = Operation::None;
-#endif
   };
   Handle* AssignFreeHandle();
   Handle* GetHandleFromFd(Fd fd);
@@ -104,6 +100,10 @@ private:
   };
   HostFilename BuildFilename(const std::string& wii_path) const;
   std::shared_ptr<File::IOFile> OpenHostFile(const std::string& host_path);
+  u64 GetHostFileSize(const Handle& handle) const;
+  u64 GetHostFileSize(const std::string& host_path) const;
+  std::optional<u32> ReadHostFile(const Handle& handle, u8* ptr, u32 count);
+  bool WriteHostFile(const Handle& handle, const u8* ptr, u32 count);
 
   ResultCode CreateFileOrDirectory(Uid uid, Gid gid, const std::string& path,
                                    FileAttribute attribute, Modes modes, bool is_file);
@@ -113,7 +113,9 @@ private:
   std::string GetFstFilePath() const;
   void ResetFst();
   void LoadFst();
+  // On Switch this only marks the FST dirty.
   void SaveFst();
+  void FlushFst();
   /// Get the FST entry for a file (or directory).
   /// Automatically creates fallback entries for parents if they do not exist.
   /// Returns nullptr if the path is invalid or the file does not exist.
@@ -129,6 +131,31 @@ private:
   /// filesystem root manually.
   FstEntry m_root_entry{};
   std::string m_root_path;
+#ifdef __SWITCH__
+  bool m_fst_dirty = false;
+  u64 m_last_fst_write_ms = 0;
+
+  // Small NAND writes are kept in memory until flushed.
+  struct HostFileCache
+  {
+    // Size as seen by the guest, including pending writes.
+    u64 size = 0;
+    u64 host_size = 0;
+    u64 position = 0;
+    bool position_valid = false;
+    std::map<u64, std::vector<u8>> pending;
+    u64 pending_bytes = 0;
+    u64 dirty_since_ms = 0;
+    bool flush_failed = false;
+  };
+  HostFileCache* FindHostFileCache(const Handle& handle);
+  void BufferHostWrite(File::IOFile& file, HostFileCache& cache, u64 offset, const u8* ptr,
+                       u32 count);
+  void FlushHostFile(File::IOFile& file, HostFileCache& cache);
+  void FillOpenFileSizes(File::FSTEntry* dir) const;
+
+  std::map<File::IOFile*, HostFileCache> m_host_file_caches;
+#endif
   std::map<std::string, std::weak_ptr<File::IOFile>> m_open_files;
   std::array<Handle, 16> m_handles{};
 

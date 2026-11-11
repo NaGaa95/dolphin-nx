@@ -21,6 +21,9 @@
 #include "Common/NandPaths.h"
 #include "Common/StringUtil.h"
 #include "Common/Swap.h"
+#ifdef __SWITCH__
+#include "Common/Timer.h"
+#endif
 #include "Core/IOS/ES/ES.h"
 #include "Core/IOS/IOS.h"
 #include "Core/Movie.h"
@@ -150,7 +153,15 @@ HostFileSystem::HostFileSystem(std::string root_path, std::vector<NandRedirect> 
   LoadFst();
 }
 
-HostFileSystem::~HostFileSystem() = default;
+HostFileSystem::~HostFileSystem()
+{
+#ifdef __SWITCH__
+  for (auto& [file, cache] : m_host_file_caches)
+    FlushHostFile(*file, cache);
+  if (m_fst_dirty)
+    FlushFst();
+#endif
+}
 
 std::string HostFileSystem::GetFstFilePath() const
 {
@@ -205,6 +216,18 @@ void HostFileSystem::LoadFst()
 
 void HostFileSystem::SaveFst()
 {
+#ifdef __SWITCH__
+  // Coalesce bursts of FST writes into one.
+  constexpr u64 FST_WRITE_COALESCE_MS = 5000;
+  m_fst_dirty = true;
+  if (Common::Timer::NowMs() - m_last_fst_write_ms < FST_WRITE_COALESCE_MS)
+    return;
+#endif
+  FlushFst();
+}
+
+void HostFileSystem::FlushFst()
+{
   std::vector<SerializedFstEntry> to_write;
   auto collect_entries = [&to_write](const auto& collect, const FstEntry& entry) -> void {
     SerializedFstEntry& serialized = to_write.emplace_back();
@@ -229,6 +252,10 @@ void HostFileSystem::SaveFst()
   }
   if (!File::Rename(temp_path, dest_path))
     PanicAlertFmt("IOS_FS: Failed to rename temporary FST file");
+#ifdef __SWITCH__
+  m_fst_dirty = false;
+  m_last_fst_write_ms = Common::Timer::NowMs();
+#endif
 }
 
 HostFileSystem::FstEntry* HostFileSystem::GetFstEntryForPath(const std::string& path)
@@ -352,14 +379,7 @@ void HostFileSystem::DoState(PointerWrap& p)
     p.Do(handle.wii_path);
     p.Do(handle.file_offset);
     if (handle.opened)
-    {
       handle.host_file = OpenHostFile(BuildFilename(handle.wii_path).host_path);
-#ifdef __SWITCH__
-      handle.file_size = static_cast<u32>(handle.host_file->GetSize());
-      handle.host_file_offset = static_cast<u32>(handle.host_file->Tell());
-      handle.last_operation = Handle::Operation::None;
-#endif
-    }
   }
 }
 
@@ -374,6 +394,13 @@ ResultCode HostFileSystem::Format(Uid uid)
     return ResultCode::UnknownError;
   ResetFst();
   SaveFst();
+#ifdef __SWITCH__
+  for (auto& [file, cache] : m_host_file_caches)
+  {
+    cache.pending.clear();
+    cache.pending_bytes = 0;
+  }
+#endif
   // Reset and close all handles.
   m_handles = {};
   return ResultCode::Success;
@@ -656,15 +683,7 @@ Result<Metadata> HostFileSystem::GetMetadata(Uid uid, Gid gid, const std::string
     return std::unexpected{ResultCode::NotFound};
 
   Metadata metadata = entry->data;
-#ifdef __SWITCH__
-  const auto open_handle = std::ranges::find_if(m_handles, [&](const Handle& handle) {
-    return handle.opened && handle.wii_path == path;
-  });
-  metadata.size = open_handle != m_handles.end() ? open_handle->file_size :
-                                                  File::GetSize(BuildFilename(path).host_path);
-#else
-  metadata.size = File::GetSize(BuildFilename(path).host_path);
-#endif
+  metadata.size = GetHostFileSize(BuildFilename(path).host_path);
   return metadata;
 }
 
@@ -683,15 +702,7 @@ ResultCode HostFileSystem::SetMetadata(Uid caller_uid, const std::string& path, 
   if (caller_uid != 0 && uid != entry->data.uid)
     return ResultCode::AccessDenied;
 
-#ifdef __SWITCH__
-  const auto open_handle = std::ranges::find_if(m_handles, [&](const Handle& handle) {
-    return handle.opened && handle.wii_path == path;
-  });
-  const bool is_empty = open_handle != m_handles.end() ? open_handle->file_size == 0 :
-                                                        File::GetSize(BuildFilename(path).host_path) == 0;
-#else
-  const bool is_empty = File::GetSize(BuildFilename(path).host_path) == 0;
-#endif
+  const bool is_empty = GetHostFileSize(BuildFilename(path).host_path) == 0;
   if (entry->data.uid != uid && entry->data.is_file && !is_empty)
     return ResultCode::FileNotEmpty;
 
@@ -720,6 +731,19 @@ static u64 ComputeUsedClusters(const File::FSTEntry& parent_entry)
   }
   return clusters;
 }
+
+#ifdef __SWITCH__
+void HostFileSystem::FillOpenFileSizes(File::FSTEntry* dir) const
+{
+  for (File::FSTEntry& entry : dir->children)
+  {
+    if (entry.isDirectory)
+      FillOpenFileSizes(&entry);
+    else if (m_open_files.contains(entry.physicalName))
+      entry.size = GetHostFileSize(entry.physicalName);
+  }
+}
+#endif
 
 Result<NandStats> HostFileSystem::GetNandStats()
 {
@@ -767,6 +791,9 @@ HostFileSystem::GetExtendedDirectoryStats(const std::string& wii_path)
   if (info.IsDirectory())
   {
     File::FSTEntry parent_dir = File::ScanDirectoryTree(path, true);
+#ifdef __SWITCH__
+    FillOpenFileSizes(&parent_dir);
+#endif
     FixupDirectoryEntries(&parent_dir, wii_path == "/");
 
     // add one for the folder itself

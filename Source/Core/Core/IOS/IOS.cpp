@@ -857,6 +857,10 @@ void EmulationKernel::UpdateDevices()
       entry.second->Update();
     }
   }
+#ifdef __SWITCH__
+  if (m_fs)
+    m_fs->FlushStaleWrites();
+#endif
 }
 
 void EmulationKernel::UpdateWantDeterminism(const bool new_want_determinism)
