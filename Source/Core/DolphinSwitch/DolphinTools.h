@@ -111,6 +111,15 @@ std::vector<InstalledTitle> ListInstalledWiiTitles();
 Result InstallWAD(const std::string& wad_path, std::string* error = nullptr);
 Result UninstallWiiTitle(u64 title_id, std::string* error = nullptr);
 
+// Returns an empty string when no Wii Menu is installed.
+std::string GetSystemMenuDescription();
+// Returns false to cancel after the current title.
+using SystemUpdateProgress = std::function<bool(std::size_t processed, std::size_t total)>;
+Result OnlineSystemUpdate(const std::string& region, const SystemUpdateProgress& progress,
+                          std::string* message);
+Result DiscSystemUpdate(const std::string& image_path, const SystemUpdateProgress& progress,
+                        std::string* message);
+
 struct NANDStatus
 {
   bool bad = false;

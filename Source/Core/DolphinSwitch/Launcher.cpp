@@ -54,6 +54,7 @@
 #include "Common/Logging/Log.h"
 #include "Common/ScopeGuard.h"
 #include "Core/AchievementManager.h"
+#include "Core/CommonTitles.h"
 #include "Core/Config/AchievementSettings.h"
 #include "Core/Config/GraphicsSettings.h"
 #include "Core/Config/MainSettings.h"
@@ -12548,14 +12549,50 @@ void Launcher::InstallWAD()
 
 void Launcher::InstalledContentManager()
 {
+  constexpr int FIRST_TITLE_ROW = 4;
   std::vector<Tools::InstalledTitle> titles;
-  const auto scan = [&] { titles = Tools::ListInstalledWiiTitles(); };
+  std::string system_menu;
+  const auto scan = [&] {
+    titles = Tools::ListInstalledWiiTitles();
+    system_menu = Tools::GetSystemMenuDescription();
+  };
   RunBusyTask("Installed Wii content", "Scanning emulated NAND", scan);
   const auto reload = [&] { RunBusyTask("Installed Wii content", "Refreshing titles", scan); };
+  const auto run_update = [&](std::string_view detail,
+                              const std::function<Tools::Result(
+                                  const Tools::SystemUpdateProgress&, std::string*)>& update) {
+    std::atomic_bool cancel{false};
+    std::atomic<float> progress{0.0f};
+    std::string message;
+    Tools::Result result = Tools::Result::IoError;
+    RunBusyTask(
+        "Wii system update", detail,
+        [&] {
+          result = update(
+              [&](std::size_t processed, std::size_t total) {
+                progress.store(total ? static_cast<float>(processed) / total : 0.0f,
+                               std::memory_order_relaxed);
+                return !cancel.load(std::memory_order_acquire);
+              },
+              &message);
+        },
+        &cancel, &progress);
+    m_library_refresh_requested = true;
+    RenderMessage(result == Tools::Result::Success ? "System update complete" :
+                                                     "System update failed",
+                  std::array<std::string, 1>{message.empty() ? Tools::ResultMessage(result) :
+                                                               message});
+    reload();
+  };
   RunRows(
       "Installed Wii content", "WAD channels and NAND titles",
       [&] {
-        std::vector<Row> rows{{"Install WAD", "Add channel to emulated NAND", true, false, false}};
+        std::vector<Row> rows{
+            {"Start the Wii Menu", system_menu.empty() ? "Not installed" : system_menu,
+             !system_menu.empty(), false, false, true, system_menu.empty()},
+            {"Online system update", "Download from Nintendo's servers", true, false, false},
+            {"Disc system update", "Use a Wii disc image", true, false, false},
+            {"Install WAD", "Add channel to emulated NAND", true, false, false}};
         for (const auto& title : titles)
           rows.push_back({title.name, title.system_title ? "System title" : "Installed channel",
                           true, false, false, false, true});
@@ -12564,11 +12601,62 @@ void Launcher::InstalledContentManager()
       [&](int index, int) {
         if (index == 0)
         {
+          const auto menu = std::ranges::find(titles, Titles::SYSTEM_MENU,
+                                              &Tools::InstalledTitle::title_id);
+          if (menu == titles.end())
+            return false;
+          m_pending_launch = LaunchRequest{{}, menu->game_id, menu->revision, menu->title_id};
+          return true;
+        }
+        if (index == 1)
+        {
+          static constexpr std::array<std::pair<std::string_view, std::string_view>, 5> regions = {
+              {{"Installed Wii Menu region", ""},
+               {"Europe", "EUR"},
+               {"Japan", "JPN"},
+               {"Korea", "KOR"},
+               {"United States", "USA"}}};
+          std::vector<std::string> labels;
+          for (std::size_t i = system_menu.empty() ? 1 : 0; i < regions.size(); ++i)
+            labels.emplace_back(regions[i].first);
+          const int choice = Dropdown("Console region", labels, 0);
+          if (choice < 0)
+            return false;
+          const std::string region{regions[choice + (system_menu.empty() ? 1 : 0)].second};
+          if (!Confirm("Update the emulated Wii online?",
+                       std::array<std::string, 2>{
+                           std::string(m_localization.Translate(
+                               "Downloads and installs the latest Wii system software.")),
+                           std::string(m_localization.Translate("This can take a while."))}))
+            return false;
+          run_update("Downloading system titles",
+                     [&](const Tools::SystemUpdateProgress& progress, std::string* message) {
+                       return Tools::OnlineSystemUpdate(region, progress, message);
+                     });
+          return false;
+        }
+        if (index == 2)
+        {
+          static constexpr std::array<std::string_view, 7> extensions = {
+              ".iso", ".wbfs", ".rvz", ".wia", ".gcz", ".ciso", ".nfs"};
+          const std::string path =
+              FileBrowser({}, false, true, false, extensions, "Select a Wii disc image");
+          if (path.empty() || !Confirm("Update the emulated Wii from this disc?",
+                                       std::array<std::string, 1>{FileName(path)}))
+            return false;
+          run_update(FileName(path),
+                     [&](const Tools::SystemUpdateProgress& progress, std::string* message) {
+                       return Tools::DiscSystemUpdate(path, progress, message);
+                     });
+          return false;
+        }
+        if (index == 3)
+        {
           InstallWAD();
           reload();
           return false;
         }
-        const int title_index = index - 1;
+        const int title_index = index - FIRST_TITLE_ROW;
         if (title_index < 0 || title_index >= static_cast<int>(titles.size()))
           return false;
         const Tools::InstalledTitle title = titles[title_index];

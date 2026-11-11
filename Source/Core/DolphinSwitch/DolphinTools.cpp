@@ -24,6 +24,7 @@
 #include "Common/NandPaths.h"
 #include "Common/ScopeGuard.h"
 #include "Core/ActionReplay.h"
+#include "Core/CommonTitles.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/ConfigManager.h"
 #include "Core/GeckoCodeConfig.h"
@@ -766,6 +767,80 @@ Result InstallWAD(const std::string& wad_path, std::string* error)
     return Result::InvalidData;
   }
   return Result::Success;
+}
+
+std::string GetSystemMenuDescription()
+{
+  IOS::HLE::Kernel ios;
+  const IOS::ES::TMDReader tmd = ios.GetESCore().FindInstalledTMD(Titles::SYSTEM_MENU);
+  if (!tmd.IsValid())
+    return {};
+  return fmt::format("{} {}", tmd.IsvWii() ? "vWii Menu" : "Wii Menu",
+                     DiscIO::GetSysMenuVersionString(tmd.GetTitleVersion(), tmd.IsvWii()));
+}
+
+namespace
+{
+Result FinishSystemUpdate(WiiUtils::UpdateResult result, std::string* message)
+{
+  using WiiUtils::UpdateResult;
+  switch (result)
+  {
+  case UpdateResult::Succeeded:
+  case UpdateResult::AlreadyUpToDate:
+    DiscIO::NANDImporter().ExtractCertificates();
+    SetError(message, result == UpdateResult::Succeeded ?
+                          "The emulated Wii has been updated." :
+                          "The emulated Wii is already up to date.");
+    return Result::Success;
+  case UpdateResult::Cancelled:
+    SetError(message, "The update was cancelled. Finish it to avoid mixed system versions.");
+    return Result::Cancelled;
+  case UpdateResult::ServerFailed:
+    SetError(message, "Could not download the update list. Check the internet connection.");
+    return Result::IoError;
+  case UpdateResult::DownloadFailed:
+    SetError(message, "Could not download the update files. Atmosphere's default emuMMC DNS "
+                      "blocks Nintendo servers; use a Wii disc update or a BootMii NAND instead.");
+    return Result::IoError;
+  case UpdateResult::ImportFailed:
+    SetError(message, "Could not install an update title to the emulated NAND.");
+    return Result::IoError;
+  case UpdateResult::RegionMismatch:
+    SetError(message, "The disc region does not match the installed Wii Menu.");
+    return Result::Unsupported;
+  case UpdateResult::MissingUpdatePartition:
+  case UpdateResult::DiscReadFailed:
+    SetError(message, "This disc does not contain usable update data.");
+    return Result::InvalidData;
+  default:
+    SetError(message, "The system update failed.");
+    return Result::IoError;
+  }
+}
+
+WiiUtils::UpdateCallback MakeUpdateCallback(const SystemUpdateProgress& progress)
+{
+  return [&progress](std::size_t processed, std::size_t total, u64) {
+    return !progress || progress(processed, total);
+  };
+}
+}  // namespace
+
+Result OnlineSystemUpdate(const std::string& region, const SystemUpdateProgress& progress,
+                          std::string* message)
+{
+  return FinishSystemUpdate(WiiUtils::DoOnlineUpdate(MakeUpdateCallback(progress), region),
+                            message);
+}
+
+Result DiscSystemUpdate(const std::string& image_path, const SystemUpdateProgress& progress,
+                        std::string* message)
+{
+  if (!File::IsFile(image_path))
+    return Result::NotFound;
+  return FinishSystemUpdate(WiiUtils::DoDiscUpdate(MakeUpdateCallback(progress), image_path),
+                            message);
 }
 
 Result UninstallWiiTitle(u64 title_id, std::string* error)
