@@ -30,6 +30,7 @@
 
 #ifdef __SWITCH__
 #include <dirent.h>
+#include <switch.h>
 #endif
 
 #ifdef _WIN32
@@ -125,6 +126,22 @@ FileInfo::FileInfo(const char* path)
     if (error)
       m_size = 0;
     m_exists = fs::exists(m_status);
+#ifdef __SWITCH__
+    // libnx stat() opens the file for reading, which Horizon refuses while it is open for writing.
+    if (!m_exists)
+    {
+      FsFileSystem* device;
+      char horizon_path[FS_MAX_PATH];
+      FsDirEntryType type;
+      if (fsdevTranslatePath(path, &device, horizon_path) != -1 &&
+          R_SUCCEEDED(fsFsGetEntryType(device, horizon_path, &type)))
+      {
+        m_status.type(type == FsDirEntryType_Dir ? fs::file_type::directory :
+                                                   fs::file_type::regular);
+        m_exists = true;
+      }
+    }
+#endif
   }
 }
 
@@ -647,6 +664,14 @@ bool DeleteDirRecursively(const std::string& directory)
 #ifdef __SWITCH__
   if (HasDevicePathPrefix(directory))
   {
+    FsFileSystem* device;
+    char horizon_path[FS_MAX_PATH];
+    if (fsdevTranslatePath(directory.c_str(), &device, horizon_path) != -1 &&
+        R_SUCCEEDED(fsFsDeleteDirectoryRecursively(device, horizon_path)))
+    {
+      return true;
+    }
+
     DIR* const handle = ::opendir(directory.c_str());
     if (!handle)
     {
