@@ -700,7 +700,7 @@ bool ItemAvailable(int index)
     return true;
   if (index == 2 && IsHardcoreActive())
     return false;
-  if ((index == 6 || index == 13) && !s_is_wii)
+  if ((index == 6 || index == 11) && !s_is_wii)
     return false;
   return index != 8 || DolphinSwitch::FrameGeneration::IsAvailable();
 }
@@ -804,16 +804,16 @@ void ActivateSelection()
       QueueAction({ActionType::ToggleVBISkip});
       break;
     case 11:
+      if (s_is_wii)
+        SetPage(Page::Skylanders);
+      break;
+    case 12:
       QueueAction({ActionType::Reset});
       CloseMenu();
       break;
-    case 12:
+    case 13:
       QueueAction({ActionType::StopToLauncher});
       CloseMenu();
-      break;
-    case 13:
-      if (s_is_wii)
-        SetPage(Page::Skylanders);
       break;
     case 14:
       SetPage(Page::GBA);
@@ -1011,10 +1011,10 @@ void RenderMainPage()
   SelectableRow(std::string("VBI Skip                         <  ") +
                     (s_vbi_skip ? "Enabled" : "Disabled") + "  >",
                 10);
-  SelectableRow("Reset console", 11);
-  SelectableRow("Return to Dolphin launcher", 12);
   if (s_is_wii)
-    SelectableRow("Skylanders portal                               >", 13);
+    SelectableRow("Skylanders portal                               >", 11);
+  SelectableRow("Reset console", 12);
+  SelectableRow("Return to Dolphin launcher", 13);
   if (HasGBA())
     SelectableRow("Game Boy Advance                                >", 14);
 }

@@ -1614,6 +1614,8 @@ static constexpr SettingHelpEntry SETTING_HELP[] = {
     {"Show custom settings badges", "Library layout",
      "Shows or hides the square badge on games that have per-game settings. The settings "
      "themselves are not changed."},
+    {"Show Wii Menu", "Library layout",
+     "Shows a Wii Menu entry in the game list when the Wii Menu is installed."},
     {"UI animations", "Launcher appearance",
      "Enables launcher transitions, animated highlights and moving theme elements."},
     {"Sound effects", "Launcher audio",
@@ -5519,11 +5521,12 @@ void Launcher::StartGameScan(std::vector<std::string> sources, bool replace)
   const std::size_t first_page_size = static_cast<std::size_t>(std::max(1, GridPageSize()));
   m_library_scan = state;
   m_library_refresh_requested = false;
+  const bool show_wii_menu = m_store.GetBool("Library/ShowWiiMenu", true);
   m_library_scan_thread = std::thread(
       [this, state, sources = std::move(sources), usb_roots = std::move(usb_roots),
        smb_roots = std::move(smb_roots), known_fingerprints = std::move(known_fingerprints),
        unaffected_wad_titles = std::move(unaffected_wad_titles),
-       priority_paths = std::move(priority_paths), first_page_size] {
+       priority_paths = std::move(priority_paths), first_page_size, show_wii_menu] {
         const auto canonical_path = [&](std::string_view input) {
           const std::string path = NormalizePath(std::string(input));
           for (const auto& [id, root] : usb_roots)
@@ -5687,16 +5690,24 @@ void Launcher::StartGameScan(std::vector<std::string> sources, bool replace)
           {
             if (state->cancel.load(std::memory_order_acquire))
               break;
-            if (!title.bootable || title.system_title || source_wad_titles.contains(title.title_id))
+            const bool wii_menu = title.title_id == Titles::SYSTEM_MENU;
+            // System channels and hidden titles come with a system update, not from the user.
+            const u32 title_type = static_cast<u32>(title.title_id >> 32);
+            if (wii_menu ? !show_wii_menu :
+                           (!title.bootable || title.system_title || title_type == 0x00010002 ||
+                            title_type == 0x00010008 ||
+                            source_wad_titles.contains(title.title_id)))
+            {
               continue;
+            }
             Game game;
             game.title_id = title.title_id;
-            game.title = title.name;
+            game.title = wii_menu ? std::string("Wii Menu") : title.name;
             game.game_id = title.game_id;
             game.game_tdb_id = title.game_tdb_id;
             game.revision = title.revision;
             game.region = title.region;
-            game.platform = "WiiWare / VC";
+            game.platform = wii_menu ? "Wii" : "WiiWare / VC";
             game.installed_nand = true;
             char key[32];
             std::snprintf(key, sizeof(key), "nand-%016llx",
@@ -14331,7 +14342,7 @@ void Launcher::AppearanceSettings()
 {
   static constexpr std::array<std::string_view, 2> THEMES = {"Wii", "Classic"};
   static constexpr std::array<std::string_view, 2> THEME_VALUES = {"wii", "classic"};
-  constexpr int option_count = 11;
+  constexpr int option_count = 12;
   constexpr int update_row = option_count;
   constexpr int selection_count = option_count + 1;
   const int row_height = SettingsRowHeight();
@@ -14354,6 +14365,7 @@ void Launcher::AppearanceSettings()
         Row{"Show game titles", m_show_titles ? "On" : "Off"},
         Row{"Show region flags", m_show_region_flags ? "On" : "Off"},
         Row{"Show custom settings badges", m_show_custom_settings_badges ? "On" : "Off"},
+        Row{"Show Wii Menu", m_store.GetBool("Library/ShowWiiMenu", true) ? "On" : "Off"},
         Row{"UI animations", m_animations ? "On" : "Off"},
         Row{"Sound effects", m_store.GetBool("Launcher/Sounds", true) ? "On" : "Off"},
         Row{"Check updates at boot",
@@ -14431,20 +14443,25 @@ void Launcher::AppearanceSettings()
     }
     else if (index == 7)
     {
-      m_store.SetBool("Launcher/Animations", !m_animations);
+      m_store.SetBool("Library/ShowWiiMenu", !m_store.GetBool("Library/ShowWiiMenu", true));
+      m_library_refresh_requested = true;
     }
     else if (index == 8)
+    {
+      m_store.SetBool("Launcher/Animations", !m_animations);
+    }
+    else if (index == 9)
     {
       const bool enabled = !m_store.GetBool("Launcher/Sounds", true);
       m_store.SetBool("Launcher/Sounds", enabled);
       SetUiAudioEnabled(enabled);
     }
-    else if (index == 9)
+    else if (index == 10)
     {
       m_store.SetBool("Launcher/CheckUpdatesAtBoot",
                       !m_store.GetBool("Launcher/CheckUpdatesAtBoot", true));
     }
-    else if (index == 10)
+    else if (index == 11)
     {
       std::string api_key = m_store.Get("Network/SteamGridDBKey");
       if (PromptText("SteamGridDB API key", api_key, &api_key, true, true,
@@ -14496,16 +14513,20 @@ void Launcher::AppearanceSettings()
       m_store.SetBool("Launcher/ShowCustomSettingsBadges", true);
       break;
     case 7:
-      m_store.SetBool("Launcher/Animations", true);
+      m_store.SetBool("Library/ShowWiiMenu", true);
+      m_library_refresh_requested = true;
       break;
     case 8:
+      m_store.SetBool("Launcher/Animations", true);
+      break;
+    case 9:
       m_store.SetBool("Launcher/Sounds", true);
       SetUiAudioEnabled(true);
       break;
-    case 9:
+    case 10:
       m_store.SetBool("Launcher/CheckUpdatesAtBoot", true);
       break;
-    case 10:
+    case 11:
       m_store.Set("Network/SteamGridDBKey", "");
       break;
     default:
@@ -16656,7 +16677,7 @@ bool Launcher::EjectUsbLocation(std::string_view stable_id)
 
 void Launcher::LibrarySettings()
 {
-  constexpr int row_count = 7;
+  constexpr int row_count = 6;
   const int row_height = SettingsRowHeight();
   const int start_y = SettingsListY() + 40;
   auto& saved = m_row_positions["Library & storage\n"];
@@ -16673,10 +16694,8 @@ void Launcher::LibrarySettings()
       DownloadCovers();
     else if (selection == 4)
       SaveDataSettings();
-    else if (selection == 5)
-      InstalledContentManager();
     else
-      InstallWAD();
+      InstalledContentManager();
     installed_count = Tools::ListInstalledWiiTitles().size();
     BeginScreenFx();
   };
@@ -16765,16 +16784,15 @@ void Launcher::LibrarySettings()
         std::to_string(installed_count) + " " +
         std::string(m_localization.Translate(installed_count == 1 ? "title" : "titles"));
     const std::array<std::string_view, row_count> labels = {
-        "Game folders", "File manager",      "SMB network shares", "Download covers",
-        "Save data",    "Installed content", "Install WAD"};
+        "Game folders", "File manager",     "SMB network shares", "Download covers",
+        "Save data",    "Installed content"};
     const std::array<std::string, row_count> values = {
         folder_value,
         std::string(m_localization.Translate("SD / USB / SMB")),
         smb_value,
         std::string(m_localization.Translate("SteamGridDB batch")),
         save_value,
-        installed_value,
-        std::string(m_localization.Translate("Select package or file"))};
+        installed_value};
     for (int row = 0; row < row_count; ++row)
     {
       const bool current = row == selection;
@@ -17844,7 +17862,8 @@ void Launcher::DrawGameMenu(Game* game, int selection)
     const bool submenu = index == 1 || index == 4 || index == 5 || index == 6;
     std::string_view label = GAME_MENU_ITEMS[index];
     if (index == GAME_MENU_COUNT - 1 && game->installed_nand)
-      label = "Uninstall WAD (keep save)";
+      label = game->title_id == Titles::SYSTEM_MENU ? "Hide from game list" :
+                                                      "Uninstall WAD (keep save)";
     const SDL_Color color = index == GAME_MENU_COUNT - 1 ? SDL_Color{238, 135, 135, 255} :
                             current                      ? m_value :
                                                            m_text;
@@ -18000,7 +18019,16 @@ void Launcher::PerGameMenu(Game* game, bool* launch, bool* rescan)
       }
       else
       {
-        if (game->installed_nand)
+        if (game->installed_nand && game->title_id == Titles::SYSTEM_MENU)
+        {
+          m_store.SetBool("Library/ShowWiiMenu", false);
+          m_store_dirty = true;
+          m_library_refresh_requested = true;
+          *rescan = true;
+          Toast("Wii Menu hidden from the game list", 900);
+          return;
+        }
+        else if (game->installed_nand)
         {
           if (Confirm("Uninstall Wii title?",
                       std::array<std::string, 3>{
