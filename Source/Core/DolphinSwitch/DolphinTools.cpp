@@ -800,8 +800,8 @@ Result FinishSystemUpdate(WiiUtils::UpdateResult result, std::string* message)
     SetError(message, "Could not download the update list. Check the internet connection.");
     return Result::IoError;
   case UpdateResult::DownloadFailed:
-    SetError(message, "Could not download the update files. Atmosphere's default emuMMC DNS "
-                      "blocks Nintendo servers; use a Wii disc update or a BootMii NAND instead.");
+    SetError(message, "Could not download the update files. Check the internet connection, or "
+                      "use a Wii disc update or a BootMii NAND instead.");
     return Result::IoError;
   case UpdateResult::ImportFailed:
     SetError(message, "Could not install an update title to the emulated NAND.");

@@ -45,6 +45,10 @@ public:
 
   void SetCookies(const std::string& cookies);
   void UseIPv4();
+#ifdef __SWITCH__
+  // Hosts the system resolver blocks are resolved through public DNS servers instead.
+  void ResolveBlockedHostsPublicly();
+#endif
   void FollowRedirects(long max = 1);
   s32 GetLastResponseCode() const;
   std::string EscapeComponent(const std::string& string);

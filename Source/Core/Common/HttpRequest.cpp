@@ -6,6 +6,23 @@
 #include <chrono>
 #include <cstddef>
 #include <mutex>
+#ifdef __SWITCH__
+#include <array>
+#include <ctime>
+#include <optional>
+#include <span>
+#include <unordered_set>
+#include <vector>
+
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <unistd.h>
+
+#include <fmt/format.h>
+#endif
 
 #include <curl/curl.h>
 
@@ -30,6 +47,9 @@ public:
   std::string GetHeaderValue(std::string_view name) const;
   void SetCookies(const std::string& cookies);
   void UseIPv4();
+#ifdef __SWITCH__
+  void ResolveBlockedHostsPublicly();
+#endif
   void FollowRedirects(long max);
   s32 GetLastResponseCode();
   Response Fetch(const std::string& url, Method method, const Headers& headers, const u8* payload,
@@ -41,12 +61,146 @@ public:
   std::string EscapeComponent(const std::string& string);
 
 private:
+#ifdef __SWITCH__
+  void ResolveBlockedHost(const std::string& url);
+#endif
+
   static inline std::once_flag s_curl_was_initialized;
   ProgressCallback m_callback;
   Headers m_response_headers;
   std::unique_ptr<CURL, decltype(&curl_easy_cleanup)> m_curl{nullptr, curl_easy_cleanup};
   std::string m_error_string;
+#ifdef __SWITCH__
+  bool m_resolve_blocked_hosts = false;
+  std::unordered_set<std::string> m_checked_hosts;
+  std::unique_ptr<curl_slist, decltype(&curl_slist_free_all)> m_resolve{nullptr,
+                                                                         curl_slist_free_all};
+#endif
 };
+
+#ifdef __SWITCH__
+namespace
+{
+// Atmosphere's DNS redirect answers blocked hosts with a loopback or null address.
+bool IsBlockedBySystemResolver(const char* host)
+{
+  addrinfo hints{};
+  hints.ai_family = AF_INET;
+  hints.ai_socktype = SOCK_STREAM;
+  addrinfo* result = nullptr;
+  if (getaddrinfo(host, nullptr, &hints, &result) != 0)
+    return true;
+  Common::ScopeGuard result_guard{[result] { freeaddrinfo(result); }};
+
+  for (const addrinfo* entry = result; entry; entry = entry->ai_next)
+  {
+    const u32 address = ntohl(reinterpret_cast<const sockaddr_in*>(entry->ai_addr)->sin_addr.s_addr);
+    if (address != 0 && (address >> 24) != 127)
+      return false;
+  }
+  return true;
+}
+
+bool SkipDnsName(std::span<const u8> packet, size_t* offset)
+{
+  while (*offset < packet.size())
+  {
+    const u8 length = packet[*offset];
+    if ((length & 0xC0) == 0xC0)
+    {
+      *offset += 2;
+      return *offset <= packet.size();
+    }
+    *offset += 1 + length;
+    if (length == 0)
+      return true;
+  }
+  return false;
+}
+
+// Sends a plain A query to a public resolver, which the system resolver redirect never sees.
+std::optional<std::string> QueryDnsServer(const char* server, const std::string& host)
+{
+  static u16 s_query_id = static_cast<u16>(std::time(nullptr));
+  const u16 id = ++s_query_id;
+  std::vector<u8> query = {static_cast<u8>(id >> 8), static_cast<u8>(id), 0x01, 0x00, 0, 1, 0, 0,
+                           0, 0, 0, 0};
+  for (const std::string& label : SplitString(host, '.'))
+  {
+    if (label.empty() || label.size() > 63)
+      return std::nullopt;
+    query.push_back(static_cast<u8>(label.size()));
+    query.insert(query.end(), label.begin(), label.end());
+  }
+  query.insert(query.end(), {0, 0, 1, 0, 1});
+
+  const int socket_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+  if (socket_fd < 0)
+    return std::nullopt;
+  Common::ScopeGuard socket_guard{[socket_fd] { close(socket_fd); }};
+  timeval timeout{3, 0};
+  setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
+  sockaddr_in server_address{};
+  server_address.sin_family = AF_INET;
+  server_address.sin_port = htons(53);
+  if (inet_pton(AF_INET, server, &server_address.sin_addr) != 1 ||
+      sendto(socket_fd, query.data(), query.size(), 0,
+             reinterpret_cast<const sockaddr*>(&server_address),
+             sizeof(server_address)) != static_cast<ssize_t>(query.size()))
+  {
+    return std::nullopt;
+  }
+
+  std::array<u8, 512> buffer{};
+  const ssize_t received = recv(socket_fd, buffer.data(), buffer.size(), 0);
+  if (received < 12)
+    return std::nullopt;
+  const std::span<const u8> response(buffer.data(), static_cast<size_t>(received));
+  const bool is_reply = (response[2] & 0x80) != 0;
+  if (response[0] != query[0] || response[1] != query[1] || !is_reply || (response[3] & 0x0F) != 0)
+    return std::nullopt;
+
+  const u16 question_count = static_cast<u16>((response[4] << 8) | response[5]);
+  const u16 answer_count = static_cast<u16>((response[6] << 8) | response[7]);
+  size_t offset = 12;
+  for (u16 i = 0; i < question_count; ++i)
+  {
+    if (!SkipDnsName(response, &offset))
+      return std::nullopt;
+    offset += 4;
+  }
+  for (u16 i = 0; i < answer_count; ++i)
+  {
+    if (!SkipDnsName(response, &offset) || offset + 10 > response.size())
+      return std::nullopt;
+    const u16 type = static_cast<u16>((response[offset] << 8) | response[offset + 1]);
+    const u16 record_class = static_cast<u16>((response[offset + 2] << 8) | response[offset + 3]);
+    const u16 length = static_cast<u16>((response[offset + 8] << 8) | response[offset + 9]);
+    offset += 10;
+    if (offset + length > response.size())
+      return std::nullopt;
+    if (type == 1 && record_class == 1 && length == 4)
+    {
+      return fmt::format("{}.{}.{}.{}", response[offset], response[offset + 1],
+                         response[offset + 2], response[offset + 3]);
+    }
+    offset += length;
+  }
+  return std::nullopt;
+}
+
+std::optional<std::string> QueryPublicDns(const std::string& host)
+{
+  for (const char* server : {"1.1.1.1", "8.8.8.8"})
+  {
+    if (std::optional<std::string> address = QueryDnsServer(server, host))
+      return address;
+  }
+  return std::nullopt;
+}
+}  // namespace
+#endif
 
 HttpRequest::HttpRequest(std::chrono::milliseconds timeout_ms, ProgressCallback callback)
     : m_impl(std::make_unique<Impl>(timeout_ms, std::move(callback)))
@@ -69,6 +223,13 @@ void HttpRequest::UseIPv4()
 {
   m_impl->UseIPv4();
 }
+
+#ifdef __SWITCH__
+void HttpRequest::ResolveBlockedHostsPublicly()
+{
+  m_impl->ResolveBlockedHostsPublicly();
+}
+#endif
 
 void HttpRequest::FollowRedirects(long max)
 {
@@ -171,6 +332,51 @@ void HttpRequest::Impl::UseIPv4()
   curl_easy_setopt(m_curl.get(), CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
 }
 
+#ifdef __SWITCH__
+void HttpRequest::Impl::ResolveBlockedHostsPublicly()
+{
+  m_resolve_blocked_hosts = true;
+}
+
+void HttpRequest::Impl::ResolveBlockedHost(const std::string& url)
+{
+  CURLU* const parsed = curl_url();
+  if (!parsed)
+    return;
+  Common::ScopeGuard parsed_guard{[parsed] { curl_url_cleanup(parsed); }};
+  char* host = nullptr;
+  char* port = nullptr;
+  if (curl_url_set(parsed, CURLUPART_URL, url.c_str(), 0) != CURLUE_OK ||
+      curl_url_get(parsed, CURLUPART_HOST, &host, 0) != CURLUE_OK)
+  {
+    return;
+  }
+  Common::ScopeGuard host_guard{[host] { curl_free(host); }};
+  if (curl_url_get(parsed, CURLUPART_PORT, &port, CURLU_DEFAULT_PORT) != CURLUE_OK)
+    return;
+  Common::ScopeGuard port_guard{[port] { curl_free(port); }};
+
+  const std::string key = fmt::format("{}:{}", host, port);
+  if (!m_checked_hosts.insert(key).second || !IsBlockedBySystemResolver(host))
+    return;
+
+  const std::optional<std::string> address = QueryPublicDns(host);
+  if (!address)
+  {
+    ERROR_LOG_FMT(COMMON, "Failed to resolve {} through public DNS", host);
+    return;
+  }
+
+  curl_slist* const list =
+      curl_slist_append(m_resolve.get(), fmt::format("{}:{}", key, *address).c_str());
+  if (!list)
+    return;
+  (void)m_resolve.release();
+  m_resolve.reset(list);
+  curl_easy_setopt(m_curl.get(), CURLOPT_RESOLVE, m_resolve.get());
+}
+#endif
+
 HttpRequest::Response HttpRequest::PostMultiform(const std::string& url,
                                                  std::span<Multiform> multiform,
                                                  const Headers& headers, AllowedReturnCodes codes)
@@ -233,6 +439,10 @@ HttpRequest::Response HttpRequest::Impl::Fetch(const std::string& url, Method me
                                                std::span<Multiform> multiform)
 {
   m_response_headers.clear();
+#ifdef __SWITCH__
+  if (m_resolve_blocked_hosts)
+    ResolveBlockedHost(url);
+#endif
   curl_easy_setopt(m_curl.get(), CURLOPT_POST, method == Method::POST);
   curl_easy_setopt(m_curl.get(), CURLOPT_URL, url.c_str());
   if (method == Method::POST && multiform.empty())

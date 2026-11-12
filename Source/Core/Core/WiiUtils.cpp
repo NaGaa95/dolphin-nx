@@ -368,6 +368,10 @@ private:
 OnlineSystemUpdater::OnlineSystemUpdater(UpdateCallback update_callback, std::string region)
     : m_update_callback(std::move(update_callback)), m_requested_region(std::move(region))
 {
+#ifdef __SWITCH__
+  // Atmosphere's default emuMMC DNS redirect blocks the Nintendo CDN that serves the update.
+  m_http.ResolveBlockedHostsPublicly();
+#endif
 }
 
 OnlineSystemUpdater::Response
