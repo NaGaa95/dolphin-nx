@@ -1003,6 +1003,14 @@ Common::Vec3 Wiimote::GetTotalAngularVelocity() const
 
 Common::Matrix44 Wiimote::GetTotalTransformation() const
 {
+#ifdef __SWITCH__
+  // The touchscreen pointer replaces the gyro pointer while the screen is touched.
+  if (m_input_override_function &&
+      m_input_override_function(IR_GROUP, ControllerEmu::ReshapableInput::X_INPUT_OVERRIDE, 0.0))
+  {
+    return GetTransformation();
+  }
+#endif
   return GetTransformation(Common::Matrix33::FromQuaternion(
       m_imu_cursor_state.rotation *
       Common::Quaternion::RotateX(m_imu_cursor_state.recentered_pitch)));

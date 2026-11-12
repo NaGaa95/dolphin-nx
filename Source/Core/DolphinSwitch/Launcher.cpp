@@ -315,6 +315,20 @@ bool WriteControllerValue(const ControllerTarget& target, std::string_view key,
   return saved;
 }
 
+bool WriteControllerValues(const ControllerTarget& target,
+                           std::span<const std::pair<std::string, std::string>> values)
+{
+  Common::IniFile ini;
+  ini.Load(target.path);
+  Common::IniFile::Section* section = ini.GetOrCreateSection(target.section);
+  for (const auto& [key, value] : values)
+    section->Set(key, value);
+  const bool saved = ini.Save(target.path);
+  if (saved)
+    InvalidateControllerValueCache(target.path);
+  return saved;
+}
+
 bool ResetControllerTarget(const ControllerTarget& target)
 {
   Common::IniFile ini;
@@ -1495,6 +1509,10 @@ static constexpr SettingHelpEntry SETTING_HELP[] = {
      "Forces the emulated Wii Remote to be treated as upright."},
     {"Attach MotionPlus", "Motion input",
      "Attaches the emulated Wii MotionPlus gyroscope used by games that require or support it."},
+    {"Motion controls", "Motion input",
+     "Sensors uses the Switch accelerometer and gyroscope as Wii Remote motion. Off ignores "
+     "console movement so the touchscreen or right stick can point; map Tilt and Swing in Control "
+     "mapping for games that need motion."},
     {"Gyro pointer", "Motion input",
      "Uses Switch gyroscope motion to control the emulated Wii infrared pointer."},
     {"Touchscreen Wii pointer", "Pointer input",
@@ -10519,6 +10537,19 @@ std::vector<InputBinding> Launcher::GetControllerBindings(bool wii, std::string_
              {{"Shake Z", "Shake/Z", "`R3`"}},
          }})
       add(label, key, expression);
+    for (const auto& [label, key] : std::array<std::array<const char*, 2>, 10>{{
+             {{"Tilt Forward", "Tilt/Forward"}},
+             {{"Tilt Backward", "Tilt/Backward"}},
+             {{"Tilt Left", "Tilt/Left"}},
+             {{"Tilt Right", "Tilt/Right"}},
+             {{"Swing Up", "Swing/Up"}},
+             {{"Swing Down", "Swing/Down"}},
+             {{"Swing Left", "Swing/Left"}},
+             {{"Swing Right", "Swing/Right"}},
+             {{"Swing Forward", "Swing/Forward"}},
+             {{"Swing Backward", "Swing/Backward"}},
+         }})
+      add(label, key, "");
     for (const auto& [label, key, expression] : std::array<std::array<const char*, 3>, 12>{{
              {{"Accelerometer Up", "IMUAccelerometer/Up", "`Accel Up`"}},
              {{"Accelerometer Down", "IMUAccelerometer/Down", "`Accel Down`"}},
@@ -10548,6 +10579,14 @@ std::vector<InputBinding> Launcher::GetControllerBindings(bool wii, std::string_
     add("Nunchuk Shake X", "Nunchuk/Shake/X", "`R3`");
     add("Nunchuk Shake Y", "Nunchuk/Shake/Y", "`R3`");
     add("Nunchuk Shake Z", "Nunchuk/Shake/Z", "`R3`");
+    add("Nunchuk Tilt Forward", "Nunchuk/Tilt/Forward", "");
+    add("Nunchuk Tilt Backward", "Nunchuk/Tilt/Backward", "");
+    add("Nunchuk Tilt Left", "Nunchuk/Tilt/Left", "");
+    add("Nunchuk Tilt Right", "Nunchuk/Tilt/Right", "");
+    add("Nunchuk Swing Up", "Nunchuk/Swing/Up", "");
+    add("Nunchuk Swing Down", "Nunchuk/Swing/Down", "");
+    add("Nunchuk Swing Left", "Nunchuk/Swing/Left", "");
+    add("Nunchuk Swing Right", "Nunchuk/Swing/Right", "");
     add("Nunchuk Accel Up", "Nunchuk/IMUAccelerometer/Up", "`Nunchuk Accel Up`");
     add("Nunchuk Accel Down", "Nunchuk/IMUAccelerometer/Down", "`Nunchuk Accel Down`");
     add("Nunchuk Accel Left", "Nunchuk/IMUAccelerometer/Left", "`Nunchuk Accel Left`");
@@ -10950,6 +10989,18 @@ void Launcher::ControllerMappingSettings(bool wii, int port, bool per_game, Game
           "Reverses the Upright Wii Remote setting only while the mapped button is held. Release "
           "it to restore the previous orientation.";
     }
+    else if (binding.key.starts_with("Tilt/") || binding.key.starts_with("Nunchuk/Tilt/"))
+    {
+      kind = "Simulated motion";
+      description = "Tilts the emulated controller while the mapped input is held, for games that "
+                    "steer or balance by tilting. Useful when Motion controls are off.";
+    }
+    else if (binding.key.starts_with("Swing/") || binding.key.starts_with("Nunchuk/Swing/"))
+    {
+      kind = "Simulated motion";
+      description = "Swings the emulated controller in this direction while the mapped input is "
+                    "held. Useful when Motion controls are off.";
+    }
     ShowInfoCard(title, binding.label, kind, description, current,
                  per_game ? "Per-game setting" : "Global setting");
     BeginScreenFx();
@@ -11179,12 +11230,47 @@ void Launcher::WiiMotionSettings(int port, bool per_game, Game* game)
     // Some Boolean settings contain input expressions.
     return !value.empty();
   };
+  // The first 12 entries are the Wii Remote's own sensors.
+  static constexpr std::array<std::pair<std::string_view, std::string_view>, 18> sensor_bindings = {{
+      {"IMUAccelerometer/Up", "`Accel Up`"},
+      {"IMUAccelerometer/Down", "`Accel Down`"},
+      {"IMUAccelerometer/Left", "`Accel Left`"},
+      {"IMUAccelerometer/Right", "`Accel Right`"},
+      {"IMUAccelerometer/Forward", "`Accel Forward`"},
+      {"IMUAccelerometer/Backward", "`Accel Backward`"},
+      {"IMUGyroscope/Pitch Up", "`Gyro Pitch Up`"},
+      {"IMUGyroscope/Pitch Down", "`Gyro Pitch Down`"},
+      {"IMUGyroscope/Roll Left", "`Gyro Roll Left`"},
+      {"IMUGyroscope/Roll Right", "`Gyro Roll Right`"},
+      {"IMUGyroscope/Yaw Left", "`Gyro Yaw Left`"},
+      {"IMUGyroscope/Yaw Right", "`Gyro Yaw Right`"},
+      {"Nunchuk/IMUAccelerometer/Up", "`Nunchuk Accel Up`"},
+      {"Nunchuk/IMUAccelerometer/Down", "`Nunchuk Accel Down`"},
+      {"Nunchuk/IMUAccelerometer/Left", "`Nunchuk Accel Left`"},
+      {"Nunchuk/IMUAccelerometer/Right", "`Nunchuk Accel Right`"},
+      {"Nunchuk/IMUAccelerometer/Forward", "`Nunchuk Accel Forward`"},
+      {"Nunchuk/IMUAccelerometer/Backward", "`Nunchuk Accel Backward`"},
+  }};
+  const auto sensors_enabled = [&] {
+    return std::any_of(sensor_bindings.begin(), sensor_bindings.begin() + 12,
+                       [&](const auto& binding) {
+                         return !Trim(read(binding.first, binding.second)).empty();
+                       });
+  };
+  const auto set_sensors = [&](bool enabled) {
+    std::vector<std::pair<std::string, std::string>> values;
+    for (const auto& [key, expression] : sensor_bindings)
+      values.emplace_back(key, enabled ? expression : std::string_view{});
+    values.emplace_back("IMUIR/Enabled", enabled ? "True" : "False");
+    return WriteControllerValues(GetControllerTarget(true, port, per_game, game, true), values);
+  };
   RunRows(
       "Wii motion & pointer", "Wii Remote " + std::to_string(port + 1),
       [&] {
         const int total_yaw = std::clamp(read_int("IMUIR/Total Yaw", 70), 10, 180);
         const int sensitivity = std::clamp(7000 / total_yaw, 40, 200);
         return std::vector<Row>{
+            {"Motion controls", sensors_enabled() ? "Sensors" : "Off"},
             {"Sideways Wii Remote", read_bool("Options/Sideways Wiimote", false) ? "On" : "Off"},
             {"Upright Wii Remote", read_bool("Options/Upright Wiimote", false) ? "On" : "Off"},
             {"Attach MotionPlus", read_bool("Extension/Attach MotionPlus", true) ? "On" : "Off"},
@@ -11205,6 +11291,12 @@ void Launcher::WiiMotionSettings(int port, bool per_game, Game* game)
         };
       },
       [&](int index, int delta) {
+        if (index == 0)
+        {
+          set_sensors(!sensors_enabled());
+          return false;
+        }
+        --index;
         const ControllerTarget target = GetControllerTarget(true, port, per_game, game, true);
         if (index <= 3)
         {
@@ -11289,6 +11381,9 @@ void Launcher::WiiMotionSettings(int port, bool per_game, Game* game)
                                                                   "IMUIR/Recenter"};
         static constexpr std::array<std::string_view, 13> defaults = {
             "False", "False", "True", "True", "70", "2", "3", "1", "0", "True", "25", "20", "`R3`"};
+        if (index == 0)
+          return set_sensors(true);
+        --index;
         if (index < 0 || index >= static_cast<int>(keys.size()))
           return false;
         const ControllerTarget target = GetControllerTarget(true, port, per_game, game, true);
