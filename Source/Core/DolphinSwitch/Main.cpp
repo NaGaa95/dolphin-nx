@@ -1484,6 +1484,13 @@ int main(int argc, char** argv)
 {
   Common::HorizonFastmem::ReserveArenaAddressSpace();
 
+  // Closing from HOME must run the normal shutdown, which saves the NAND and SYSCONF.
+  const bool exit_locked = R_SUCCEEDED(appletLockExit());
+  Common::ScopeGuard exit_lock_guard([exit_locked] {
+    if (exit_locked)
+      (void)appletUnlockExit();
+  });
+
   saltynx_start();
   Common::ScopeGuard saltynx_guard([] { saltynx_stop(); });
   Common::ScopeGuard audio_guard([] { DolphinSwitch::Audio::ShutdownSharedAudio(); });
