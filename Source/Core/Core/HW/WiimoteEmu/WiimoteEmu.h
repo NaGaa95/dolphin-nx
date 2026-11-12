@@ -123,6 +123,9 @@ public:
   static constexpr const char* ACCELEROMETER_GROUP = "IMUAccelerometer";
   static constexpr const char* GYROSCOPE_GROUP = "IMUGyroscope";
   static constexpr const char* IR_GROUP = "IR";
+#ifdef __SWITCH__
+  static constexpr const char* GYRO_BYPASS_OVERRIDE = "SwitchGyroBypass";
+#endif
   static constexpr const char* IR_PASSTHROUGH_GROUP = "IRPassthrough";
 
   static constexpr const char* A_BUTTON = "A";

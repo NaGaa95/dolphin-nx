@@ -40,6 +40,7 @@ enum class ActionType
   ListSkylanderFigures,
   LoadSkylanderFigure,
   RemoveSkylanderFigure,
+  CalibrateTouchPointer,
 };
 
 struct Action
@@ -67,6 +68,11 @@ std::uint64_t GetRenderFrameGeneration();
 
 void SetSkylanderFigures(std::vector<Skylanders::FigureFile> figures, std::string error);
 void SetStatus(std::string message);
+// Shows a short message over the running game while the menu is closed.
+void ShowBanner(std::string message);
+// Draws a calibration target at a position normalized to the game image, over the running game.
+void SetTouchCalibration(bool active, float target_x = 0, float target_y = 0,
+                         std::string instructions = {});
 void ShowAlert(std::string caption, std::string message);
 void TrackStateSave(int slot, std::uint64_t previous_timestamp);
 void TrackStateLoad(int slot);

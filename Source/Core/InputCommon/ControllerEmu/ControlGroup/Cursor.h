@@ -41,6 +41,10 @@ public:
   ControlState GetVerticalOffset() const;
 
   void SetRelativeInput(bool enabled);
+#ifdef __SWITCH__
+  // The last stick-driven position, before auto-hide.
+  StateData GetLastState() const { return m_prev_result; }
+#endif
 
 private:
   Cursor::StateData UpdateState(Cursor::ReshapeData input);

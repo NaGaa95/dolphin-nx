@@ -417,6 +417,49 @@ void InstallWiiRemotePresets()
   }
 }
 
+// Builds before 1.2.2 saved a 60x45 degree IR camera, which shrinks stick and touch pointing.
+void RemoveLegacyWiimoteCameraFov()
+{
+  std::vector<std::string> paths = {ControllerConfigPath(true)};
+  const std::string directory = ControllerProfileDirectory(true);
+  for (const File::FSTEntry& entry : File::ScanDirectoryTree(directory, false).children)
+  {
+    if (!entry.isDirectory && Lower(entry.virtualName).ends_with(".ini"))
+      paths.push_back(entry.physicalName);
+  }
+
+  for (const std::string& path : paths)
+  {
+    Common::IniFile ini;
+    if (!ini.Load(path))
+      continue;
+    std::vector<std::string> section_names;
+    for (const Common::IniFile::Section& section : ini.GetSections())
+      section_names.push_back(section.GetName());
+
+    bool changed = false;
+    for (const std::string& name : section_names)
+    {
+      Common::IniFile::Section* section = ini.GetSection(name);
+      std::string horizontal;
+      std::string vertical;
+      if (!section || !section->Get("IMUIR/Horizontal FOV", &horizontal) ||
+          !section->Get("IMUIR/Vertical FOV", &vertical) ||
+          std::strtod(horizontal.c_str(), nullptr) != 60.0 ||
+          std::strtod(vertical.c_str(), nullptr) != 45.0)
+      {
+        continue;
+      }
+      section->Delete("IMUIR/Horizontal FOV");
+      section->Delete("IMUIR/Vertical FOV");
+      changed = true;
+    }
+    if (changed)
+      ini.Save(path);
+  }
+  ClearControllerValueCache();
+}
+
 std::vector<std::string> ListControllerProfiles(bool wii)
 {
   if (wii)
@@ -1518,6 +1561,9 @@ static constexpr SettingHelpEntry SETTING_HELP[] = {
     {"Touchscreen Wii pointer", "Pointer input",
      "Uses the Switch touchscreen as an absolute Wii Remote pointer in handheld mode. Touches "
      "outside the rendered game area are ignored."},
+    {"Touchscreen tap presses A", "Pointer input",
+     "Lifting your finger from the touchscreen presses the Wii Remote A button where you "
+     "touched."},
     {"Pointer sensitivity", "Motion input",
      "Sets how far the on-screen pointer moves for a given controller rotation."},
     {"Gyro dead zone", "Motion input",
@@ -12010,6 +12056,15 @@ void Launcher::ControllerSettings(bool per_game, Game* game)
                       (Config::Get(Config::MAIN_SWITCH_TOUCHSCREEN_POINTER) ? "On" : "Off")) :
                  "Wii games only",
              wii_game});
+        rows.push_back(
+            {"Touchscreen tap presses A",
+             wii_game ?
+                 (per_game ?
+                      PerGameBoolLabel(*game, "Core", "SwitchTouchscreenClick",
+                                       Config::Get(Config::MAIN_SWITCH_TOUCHSCREEN_CLICK)) :
+                      (Config::Get(Config::MAIN_SWITCH_TOUCHSCREEN_CLICK) ? "On" : "Off")) :
+                 "Wii games only",
+             wii_game});
         return rows;
       },
       [&](int index, int delta) {
@@ -12119,6 +12174,23 @@ void Launcher::ControllerSettings(bool per_game, Game* game)
             MarkConfigDirty();
           }
         }
+        else if (index == 9)
+        {
+          if (per_game)
+          {
+            if (game && game->platform.starts_with("Wii"))
+            {
+              EditPerGameBool(*game, "Touchscreen tap presses A", "Core", "SwitchTouchscreenClick",
+                              Config::Get(Config::MAIN_SWITCH_TOUCHSCREEN_CLICK), delta);
+            }
+          }
+          else
+          {
+            Config::SetBase(Config::MAIN_SWITCH_TOUCHSCREEN_CLICK,
+                            !Config::Get(Config::MAIN_SWITCH_TOUCHSCREEN_CLICK));
+            MarkConfigDirty();
+          }
+        }
         return false;
       },
       false,
@@ -12148,6 +12220,14 @@ void Launcher::ControllerSettings(bool per_game, Game* game)
             SetGameSetting(*game, "Core", "SwitchTouchscreenPointer", std::nullopt);
           else
             ResetConfigSetting(Config::MAIN_SWITCH_TOUCHSCREEN_POINTER);
+          return true;
+        }
+        if (index == 9)
+        {
+          if (per_game)
+            SetGameSetting(*game, "Core", "SwitchTouchscreenClick", std::nullopt);
+          else
+            ResetConfigSetting(Config::MAIN_SWITCH_TOUCHSCREEN_CLICK);
           return true;
         }
         return false;
@@ -18190,6 +18270,12 @@ std::optional<LaunchRequest> Launcher::Run()
       SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Dolphin Launcher",
                                "The full SDL launcher could not be initialized.", m_window);
     return std::nullopt;
+  }
+  if (!m_store.GetBool("Launcher/WiimoteFovMigrated", false))
+  {
+    RemoveLegacyWiimoteCameraFov();
+    m_store.SetBool("Launcher/WiimoteFovMigrated", true);
+    m_store_dirty = true;
   }
   ScanGames();
   BeginScreenFx();

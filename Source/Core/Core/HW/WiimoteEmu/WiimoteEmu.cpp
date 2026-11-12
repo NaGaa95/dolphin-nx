@@ -747,8 +747,6 @@ void Wiimote::LoadDefaults(const ControllerInterface& ciface)
   m_imu_ir->SetControlExpression(0, "`R3`");
   m_imu_ir->SetTotalYawDegrees(70);
   m_imu_ir->SetAccelWeightPercent(1);
-  m_fov_x_setting.SetValue(60);
-  m_fov_y_setting.SetValue(45);
 #else
 // Buttons
 #if defined HAVE_X11 && HAVE_X11
@@ -1004,9 +1002,11 @@ Common::Vec3 Wiimote::GetTotalAngularVelocity() const
 Common::Matrix44 Wiimote::GetTotalTransformation() const
 {
 #ifdef __SWITCH__
-  // The touchscreen pointer replaces the gyro pointer while the screen is touched.
+  // The touchscreen pointer and its calibration replace the gyro pointer.
   if (m_input_override_function &&
-      m_input_override_function(IR_GROUP, ControllerEmu::ReshapableInput::X_INPUT_OVERRIDE, 0.0))
+      (m_input_override_function(IR_GROUP, ControllerEmu::ReshapableInput::X_INPUT_OVERRIDE,
+                                 0.0) ||
+       m_input_override_function(IR_GROUP, GYRO_BYPASS_OVERRIDE, 0.0)))
   {
     return GetTransformation();
   }

@@ -69,6 +69,7 @@
 #include "DolphinSwitch/Updater.h"
 #include "InputCommon/ControllerEmu/ControlGroup/Attachments.h"
 #include "InputCommon/ControllerEmu/ControlGroup/ControlGroup.h"
+#include "InputCommon/ControllerEmu/ControlGroup/Cursor.h"
 #include "InputCommon/ControllerEmu/ControllerEmu.h"
 #include "InputCommon/ControllerEmu/StickGate.h"
 #include "InputCommon/ControllerInterface/ControllerInterface.h"
@@ -496,32 +497,57 @@ void ResetWiiTouchPointerState()
   s_wii_touch_pointer_state.store(0, std::memory_order_release);
 }
 
-void UpdateWiiTouchPointerState(bool enabled)
+constexpr std::uint64_t TOUCH_POINTER_ACTIVE = 1ULL << 63;
+constexpr std::uint64_t TOUCH_POINTER_CLICK = 1ULL << 62;
+constexpr std::uint64_t TOUCH_POINTER_CALIBRATING = 1ULL << 61;
+
+// Maps a touch on the game image to the IR cursor: cursor = scale * touch + offset, per axis.
+struct TouchMapping
+{
+  double scale_x = 1.0;
+  double offset_x = 0.0;
+  double scale_y = 1.0;
+  double offset_y = 0.0;
+};
+
+std::string TouchCalibrationPath()
+{
+  return File::GetUserPath(D_CONFIG_IDX) + "SwitchTouchCalibration.ini";
+}
+
+TouchMapping LoadTouchMapping(const std::string& game_id)
+{
+  TouchMapping mapping;
+  Common::IniFile ini;
+  std::string value;
+  if (game_id.empty() || !ini.Load(TouchCalibrationPath()) ||
+      !ini.GetOrCreateSection("Games")->Get(game_id, &value))
+  {
+    return mapping;
+  }
+  TouchMapping calibrated;
+  if (std::sscanf(value.c_str(), "%lf %lf %lf %lf", &calibrated.scale_x, &calibrated.offset_x,
+                  &calibrated.scale_y, &calibrated.offset_y) == 4)
+  {
+    mapping = calibrated;
+  }
+  return mapping;
+}
+
+// Returns the packed pointer position for the current touch, if it lands on the game image.
+std::optional<std::uint64_t> GetWiiTouchPointerPosition(const TouchMapping& mapping)
 {
   constexpr double touchscreen_width = 1280.0;
   constexpr double touchscreen_height = 720.0;
-  constexpr std::uint64_t pressed_bit = 1ULL << 63;
-
-  if (!enabled || Host_UIBlocksControllerState() || !g_presenter)
-  {
-    ResetWiiTouchPointerState();
-    return;
-  }
 
   const ciface::Switch::TouchscreenState touch = ciface::Switch::GetTouchscreenState();
   if (!touch.pressed)
-  {
-    ResetWiiTouchPointerState();
-    return;
-  }
+    return std::nullopt;
 
   const int backbuffer_width = g_presenter->GetBackbufferWidth();
   const int backbuffer_height = g_presenter->GetBackbufferHeight();
   if (backbuffer_width <= 1 || backbuffer_height <= 1)
-  {
-    ResetWiiTouchPointerState();
-    return;
-  }
+    return std::nullopt;
 
   MathUtil::Rectangle<int> viewport = g_presenter->GetTargetRectangle();
   if (viewport.GetWidth() <= 1 || viewport.GetHeight() <= 1)
@@ -539,20 +565,173 @@ void UpdateWiiTouchPointerState(bool enabled)
   if (x_in_backbuffer < left || x_in_backbuffer >= right || y_in_backbuffer < top ||
       y_in_backbuffer >= bottom)
   {
+    return std::nullopt;
+  }
+
+  const double touch_x = (x_in_backbuffer - left) / std::max(1, right - left - 1) * 2.0 - 1.0;
+  const double touch_y = 1.0 - (y_in_backbuffer - top) / std::max(1, bottom - top - 1) * 2.0;
+  const double x = std::clamp(mapping.scale_x * touch_x + mapping.offset_x, -1.0, 1.0);
+  const double y = std::clamp(mapping.scale_y * touch_y + mapping.offset_y, -1.0, 1.0);
+  const auto quantize = [](double value) {
+    return static_cast<std::uint16_t>(std::lround((value + 1.0) * 32767.5));
+  };
+  return quantize(x) | (static_cast<std::uint64_t>(quantize(y)) << 16);
+}
+
+// Calibration targets on the game image, from its top-left corner.
+constexpr std::array<std::array<float, 2>, 2> TOUCH_CALIBRATION_TARGETS = {
+    {{0.25f, 0.25f}, {0.75f, 0.75f}}};
+
+struct TouchCalibration
+{
+  int step = -1;
+  bool touching = false;
+  std::array<std::array<double, 2>, 2> cursors{};
+};
+TouchCalibration s_touch_calibration;
+
+void ShowTouchCalibrationStep()
+{
+  const auto& target = TOUCH_CALIBRATION_TARGETS[s_touch_calibration.step];
+  DolphinSwitch::RuntimeOverlay::SetTouchCalibration(
+      true, target[0], target[1],
+      fmt::format("Move the game's pointer onto the target with the right stick, then tap the "
+                  "screen ({}/2)",
+                  s_touch_calibration.step + 1));
+}
+
+void StartTouchCalibration()
+{
+  s_touch_calibration = {};
+  s_touch_calibration.step = 0;
+  ShowTouchCalibrationStep();
+}
+
+void StopTouchCalibration()
+{
+  s_touch_calibration.step = -1;
+  DolphinSwitch::RuntimeOverlay::SetTouchCalibration(false);
+  ResetWiiTouchPointerState();
+}
+
+// Returns true while calibrating. Each tap records where the right stick put the game's pointer.
+bool UpdateTouchCalibration(const std::string& game_id, TouchMapping* mapping)
+{
+  if (s_touch_calibration.step < 0)
+    return false;
+  if (DolphinSwitch::RuntimeOverlay::IsVisible())
+  {
+    StopTouchCalibration();
+    return false;
+  }
+
+  s_wii_touch_pointer_state.store(TOUCH_POINTER_CALIBRATING, std::memory_order_release);
+  if (ciface::Switch::GetTouchscreenState().pressed)
+  {
+    s_touch_calibration.touching = true;
+    return true;
+  }
+  if (!s_touch_calibration.touching)
+    return true;
+  s_touch_calibration.touching = false;
+
+  WiimoteEmu::Wiimote* const wiimote = GetEmulatedWiimote(0);
+  if (!wiimote)
+  {
+    StopTouchCalibration();
+    return false;
+  }
+  {
+    const auto state_lock = ControllerEmu::EmulatedController::GetStateLock();
+    const auto* ir = static_cast<const ControllerEmu::Cursor*>(
+        wiimote->GetWiimoteGroup(WiimoteEmu::WiimoteGroup::Point));
+    const ControllerEmu::Cursor::StateData cursor = ir->GetLastState();
+    s_touch_calibration.cursors[s_touch_calibration.step] = {cursor.x, cursor.y};
+  }
+
+  if (++s_touch_calibration.step < static_cast<int>(TOUCH_CALIBRATION_TARGETS.size()))
+  {
+    ShowTouchCalibrationStep();
+    return true;
+  }
+
+  // The targets sit at touch (-0.5, 0.5) and (0.5, -0.5).
+  const auto& first = s_touch_calibration.cursors[0];
+  const auto& second = s_touch_calibration.cursors[1];
+  TouchMapping calibrated;
+  calibrated.scale_x = second[0] - first[0];
+  calibrated.offset_x = first[0] + 0.5 * calibrated.scale_x;
+  calibrated.scale_y = first[1] - second[1];
+  calibrated.offset_y = first[1] - 0.5 * calibrated.scale_y;
+  StopTouchCalibration();
+
+  const auto plausible = [](double scale) { return scale >= 0.2 && scale <= 5.0; };
+  if (!plausible(calibrated.scale_x) || !plausible(calibrated.scale_y))
+  {
+    DolphinSwitch::RuntimeOverlay::ShowBanner(
+        "Touch calibration failed: move the pointer onto each target before tapping");
+    return false;
+  }
+
+  *mapping = calibrated;
+  Common::IniFile ini;
+  ini.Load(TouchCalibrationPath());
+  ini.GetOrCreateSection("Games")->Set(
+      game_id, fmt::format("{:.5f} {:.5f} {:.5f} {:.5f}", calibrated.scale_x, calibrated.offset_x,
+                           calibrated.scale_y, calibrated.offset_y));
+  const bool saved = !game_id.empty() && ini.Save(TouchCalibrationPath());
+  DolphinSwitch::RuntimeOverlay::ShowBanner(saved ? "Touch pointer calibrated for this game" :
+                                                    "Touch pointer calibrated for this session");
+  return false;
+}
+
+void UpdateWiiTouchPointerState(bool enabled, bool click_enabled, const TouchMapping& mapping)
+{
+  using Clock = std::chrono::steady_clock;
+  // On release the pointer stays put, then A is pressed once the game's cursor has settled.
+  constexpr auto CLICK_START = std::chrono::milliseconds(50);
+  constexpr auto CLICK_END = std::chrono::milliseconds(150);
+
+  static bool s_touching = false;
+  static std::optional<Clock::time_point> s_released;
+  static std::uint64_t s_last_position = 0;
+
+  if (!enabled || Host_UIBlocksControllerState() || !g_presenter)
+  {
+    s_touching = false;
+    s_released.reset();
     ResetWiiTouchPointerState();
     return;
   }
 
-  const double x =
-      std::clamp((x_in_backbuffer - left) / std::max(1, right - left - 1) * 2.0 - 1.0, -1.0, 1.0);
-  const double y =
-      std::clamp(1.0 - (y_in_backbuffer - top) / std::max(1, bottom - top - 1) * 2.0, -1.0, 1.0);
-  const auto quantize = [](double value) {
-    return static_cast<std::uint16_t>(std::lround((value + 1.0) * 32767.5));
-  };
-  const std::uint64_t packed =
-      pressed_bit | quantize(x) | (static_cast<std::uint64_t>(quantize(y)) << 16);
-  s_wii_touch_pointer_state.store(packed, std::memory_order_release);
+  const Clock::time_point now = Clock::now();
+  if (const std::optional<std::uint64_t> position = GetWiiTouchPointerPosition(mapping))
+  {
+    s_touching = true;
+    s_released.reset();
+    s_last_position = *position;
+    s_wii_touch_pointer_state.store(TOUCH_POINTER_ACTIVE | *position, std::memory_order_release);
+    return;
+  }
+
+  if (s_touching)
+  {
+    s_touching = false;
+    if (click_enabled)
+      s_released = now;
+  }
+
+  if (s_released && now - *s_released < CLICK_END)
+  {
+    const bool click = now - *s_released >= CLICK_START;
+    s_wii_touch_pointer_state.store(TOUCH_POINTER_ACTIVE | s_last_position |
+                                        (click ? TOUCH_POINTER_CLICK : 0),
+                                    std::memory_order_release);
+    return;
+  }
+
+  s_released.reset();
+  ResetWiiTouchPointerState();
 }
 
 bool InstallWiiTouchPointerOverride()
@@ -564,13 +743,27 @@ bool InstallWiiTouchPointerOverride()
   const auto state_lock = ControllerEmu::EmulatedController::GetStateLock();
   wiimote->SetInputOverrideFunction([](std::string_view group_name, std::string_view control_name,
                                        ControlState) -> std::optional<ControlState> {
-    constexpr std::uint64_t pressed_bit = 1ULL << 63;
     const std::uint64_t packed = s_wii_touch_pointer_state.load(std::memory_order_acquire);
-    if ((packed & pressed_bit) == 0 || Host_UIBlocksControllerState() ||
-        group_name != WiimoteEmu::Wiimote::IR_GROUP)
+    if ((packed & TOUCH_POINTER_CALIBRATING) != 0)
     {
+      if (group_name == WiimoteEmu::Wiimote::IR_GROUP &&
+          control_name == WiimoteEmu::Wiimote::GYRO_BYPASS_OVERRIDE)
+      {
+        return 1.0;
+      }
       return std::nullopt;
     }
+    if ((packed & TOUCH_POINTER_ACTIVE) == 0 || Host_UIBlocksControllerState())
+      return std::nullopt;
+
+    if (group_name == WiimoteEmu::Wiimote::BUTTONS_GROUP)
+    {
+      if (control_name == WiimoteEmu::Wiimote::A_BUTTON && (packed & TOUCH_POINTER_CLICK) != 0)
+        return 1.0;
+      return std::nullopt;
+    }
+    if (group_name != WiimoteEmu::Wiimote::IR_GROUP)
+      return std::nullopt;
 
     const auto decode = [](std::uint16_t value) {
       return static_cast<ControlState>(value) / 32767.5 - 1.0;
@@ -1017,6 +1210,9 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
   const bool touch_pointer_enabled =
       runtime_controllers.is_wii && Config::Get(Config::MAIN_SWITCH_TOUCHSCREEN_POINTER);
   const bool touch_pointer_installed = touch_pointer_enabled && InstallWiiTouchPointerOverride();
+  const bool touch_click_enabled = Config::Get(Config::MAIN_SWITCH_TOUCHSCREEN_CLICK);
+  s_touch_calibration = {};
+  TouchMapping touch_mapping = LoadTouchMapping(resolved_request.game_id);
   Common::ScopeGuard touch_pointer_guard([touch_pointer_installed] {
     if (touch_pointer_installed)
       RemoveWiiTouchPointerOverride();
@@ -1076,7 +1272,8 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
           (runtime_pad.style_set & HidNpadStyleTag_NpadGc) != 0, axis(left.x), -axis(left.y),
           axis(right.x), -axis(right.y));
     }
-    UpdateWiiTouchPointerState(touch_pointer_installed);
+    if (!UpdateTouchCalibration(resolved_request.game_id, &touch_mapping))
+      UpdateWiiTouchPointerState(touch_pointer_installed, touch_click_enabled, touch_mapping);
 
     const bool overlay_visible = DolphinSwitch::RuntimeOverlay::IsVisible();
     if (overlay_visible && !previous_overlay_visible &&
@@ -1156,6 +1353,12 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
         break;
       case DolphinSwitch::RuntimeOverlay::ActionType::ToggleFPS:
         DolphinSwitch::RuntimeOverlay::ToggleFPSForSession();
+        break;
+      case DolphinSwitch::RuntimeOverlay::ActionType::CalibrateTouchPointer:
+        if (touch_pointer_installed)
+          StartTouchCalibration();
+        else
+          DolphinSwitch::RuntimeOverlay::ShowBanner("Turn on the touchscreen Wii pointer first");
         break;
       case DolphinSwitch::RuntimeOverlay::ActionType::ToggleVBISkip:
         DolphinSwitch::RuntimeOverlay::ToggleVBISkipForSession();

@@ -42,6 +42,7 @@
 #include "DolphinSwitch/ScreenLayout.h"
 #include "InputCommon/ControllerInterface/Switch/Switch.h"
 #include "VideoCommon/OnScreenUI.h"
+#include "VideoCommon/Present.h"
 
 namespace DolphinSwitch::RuntimeOverlay
 {
@@ -106,7 +107,8 @@ constexpr std::uint64_t MENU_CHORD =
     HidNpadButton_L | HidNpadButton_R | HidNpadButton_Plus;
 constexpr int MAIN_ITEM_COUNT = 14;
 constexpr int DISC_ITEM_COUNT = 3;
-constexpr int CONTROLLER_ITEM_COUNT = 5;
+constexpr int CONTROLLER_ITEM_COUNT = 6;
+constexpr int CONTROLLER_CALIBRATE_ITEM = 4;
 constexpr int CONTROLLER_MODE_ITEM_COUNT = 6;
 
 std::mutex s_mutex;
@@ -144,6 +146,12 @@ std::string s_skylander_error;
 bool s_skylander_scanning = false;
 std::string s_status;
 std::chrono::steady_clock::time_point s_status_until{};
+bool s_calibration_active = false;
+float s_calibration_x = 0.0f;
+float s_calibration_y = 0.0f;
+std::string s_calibration_text;
+std::string s_banner;
+std::chrono::steady_clock::time_point s_banner_until{};
 std::string s_alert_caption;
 std::string s_alert_message;
 int s_pending_load_slot = 0;
@@ -686,6 +694,8 @@ bool ItemAvailable(int index)
 {
   if (s_page == Page::GBA && index >= 2 && index < 6)
     return s_gba_ports[index - 2];
+  if (s_page == Page::Controllers && index == CONTROLLER_CALIBRATE_ITEM)
+    return s_is_wii;
   if (s_page != Page::Main)
     return true;
   if (index == 2 && IsHardcoreActive())
@@ -870,6 +880,14 @@ void ActivateSelection()
     if (s_selection == CONTROLLER_ITEM_COUNT - 1)
     {
       SetPage(Page::Main);
+    }
+    else if (s_selection == CONTROLLER_CALIBRATE_ITEM)
+    {
+      if (s_is_wii)
+      {
+        QueueAction({ActionType::CalibrateTouchPointer});
+        CloseMenu();
+      }
     }
     else
     {
@@ -1058,6 +1076,11 @@ void RenderControllersPage()
                       std::string(ControllerModeName(s_controller_modes[player])) + "  >",
                   player, 58.0f);
   }
+  if (!s_is_wii)
+    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(120, 145, 158, 255));
+  SelectableRow("Calibrate touch pointer", CONTROLLER_CALIBRATE_ITEM, 58.0f);
+  if (!s_is_wii)
+    ImGui::PopStyleColor();
   SelectableRow("Back", CONTROLLER_ITEM_COUNT - 1, 58.0f);
   ImGui::Separator();
   CenteredText("Changes apply only to the current game session");
@@ -1410,6 +1433,22 @@ void SetStatus(std::string message)
   s_status_until = std::chrono::steady_clock::now() + std::chrono::seconds(3);
 }
 
+void ShowBanner(std::string message)
+{
+  std::lock_guard lock{s_mutex};
+  s_banner = std::move(message);
+  s_banner_until = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+}
+
+void SetTouchCalibration(bool active, float target_x, float target_y, std::string instructions)
+{
+  std::lock_guard lock{s_mutex};
+  s_calibration_active = active;
+  s_calibration_x = target_x;
+  s_calibration_y = target_y;
+  s_calibration_text = std::move(instructions);
+}
+
 void ShowAlert(std::string caption, std::string message)
 {
   std::lock_guard lock{s_mutex};
@@ -1557,13 +1596,73 @@ void SetControllerModeResult(int player, ControllerMode mode, bool success)
   s_status_until = std::chrono::steady_clock::now() + std::chrono::seconds(3);
 }
 
+void DrawBanner(const std::string& text)
+{
+  const ImGuiIO& io = ImGui::GetIO();
+  const float scale = std::clamp(io.DisplaySize.y / 1080.0f, 0.72f, 1.0f);
+  const float font_size = 26.0f * scale;
+  const ImVec2 text_size = ImGui::GetFont()->CalcTextSizeA(font_size, FLT_MAX, 0.0f, text.c_str());
+  const ImVec2 text_pos{(io.DisplaySize.x - text_size.x) * 0.5f, 24.0f * scale};
+  const float padding = 14.0f * scale;
+  ImDrawList* const draw = ImGui::GetForegroundDrawList();
+  draw->AddRectFilled({text_pos.x - padding, text_pos.y - padding},
+                      {text_pos.x + text_size.x + padding, text_pos.y + text_size.y + padding},
+                      IM_COL32(7, 28, 44, 230), 12.0f * scale);
+  draw->AddText(ImGui::GetFont(), font_size, text_pos, IM_COL32(255, 255, 255, 255), text.c_str());
+}
+
+void DrawGameplayBanner()
+{
+  std::lock_guard lock{s_mutex};
+  if (s_calibration_active || s_banner.empty() ||
+      std::chrono::steady_clock::now() >= s_banner_until)
+  {
+    return;
+  }
+  DrawBanner(s_banner);
+}
+
+void DrawTouchCalibration()
+{
+  std::lock_guard lock{s_mutex};
+  if (!s_calibration_active || !g_presenter)
+    return;
+
+  const MathUtil::Rectangle<int> rect = g_presenter->GetTargetRectangle();
+  const float left = static_cast<float>(std::min(rect.left, rect.right));
+  const float top = static_cast<float>(std::min(rect.top, rect.bottom));
+  const float width = static_cast<float>(std::abs(rect.right - rect.left));
+  const float height = static_cast<float>(std::abs(rect.bottom - rect.top));
+  if (width <= 1.0f || height <= 1.0f)
+    return;
+
+  const ImGuiIO& io = ImGui::GetIO();
+  const float scale = std::clamp(io.DisplaySize.y / 1080.0f, 0.72f, 1.0f);
+  const ImVec2 center{left + s_calibration_x * width, top + s_calibration_y * height};
+  const float radius = 26.0f * scale;
+  ImDrawList* const draw = ImGui::GetForegroundDrawList();
+  constexpr ImU32 shadow = IM_COL32(0, 0, 0, 200);
+  constexpr ImU32 color = IM_COL32(255, 70, 70, 255);
+  draw->AddCircle(center, radius, shadow, 48, 7.0f * scale);
+  draw->AddCircle(center, radius, color, 48, 3.0f * scale);
+  draw->AddLine({center.x - radius * 1.8f, center.y}, {center.x + radius * 1.8f, center.y}, color,
+                3.0f * scale);
+  draw->AddLine({center.x, center.y - radius * 1.8f}, {center.x, center.y + radius * 1.8f}, color,
+                3.0f * scale);
+  DrawBanner(s_calibration_text);
+}
+
 void Draw()
 {
   GBAOverlay::Draw();
   // Advance once per final-present frame so pause waits for a clean game frame.
   s_render_frame_generation.fetch_add(1, std::memory_order_acq_rel);
   if (!s_visible.load(std::memory_order_acquire))
+  {
+    DrawTouchCalibration();
+    DrawGameplayBanner();
     return;
+  }
   std::lock_guard lock{s_mutex};
   if (!s_initialized || !s_visible.load(std::memory_order_relaxed))
     return;
