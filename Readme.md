@@ -8,6 +8,12 @@ of the GNU General Public License, version 2 or later (GPLv2+).
 
 Please read the [FAQ](https://dolphin-emu.org/docs/faq/) before using Dolphin.
 
+## Nintendo Switch and Switch 2
+
+This fork runs Dolphin on the Nintendo Switch (homebrew) and the Nintendo Switch 2 (kaiHEN homebrew). Each release carries both builds: `dolphin.nro` for the Switch and `dolphin-nx2.nro` for the Switch 2, to put in `sdmc:/switch/dolphin/`. Each build updates itself from later releases and only installs the file made for its own console.
+
+On the Switch 2, Dolphin renders with Vulkan, OpenGL or Drako3D, runs at 120 Hz in handheld mode, and outputs up to 4K at 60 Hz when docked, or 1440p at 120 Hz with frame generation.
+
 ## System Requirements
 
 ### Desktop
