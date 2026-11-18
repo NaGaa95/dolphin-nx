@@ -17,15 +17,23 @@
 #include "Common/IOFile.h"
 #include "Common/IniFile.h"
 #include "DolphinSwitch/Updater.h"
+#include "DolphinSwitch/Deko3DName.h"
 
 namespace DolphinSwitch::EmbeddedRuntime
 {
 namespace
 {
+#ifdef __SWITCH2__
+constexpr char SOURCE[] = "romfs:/runtime/dolphin-drako3d.nro";
+constexpr char SOURCE_ID[] = "romfs:/runtime/dolphin-drako3d.sha256";
+constexpr char DESTINATION[] = "sdmc:/switch/dolphin/.emu/dolphin-drako3d.nro";
+constexpr char CACHE_STAMP[] = "sdmc:/switch/dolphin/.emu/dolphin-drako3d.ini";
+#else
 constexpr char SOURCE[] = "romfs:/runtime/dolphin-deko3d.nro";
 constexpr char SOURCE_ID[] = "romfs:/runtime/dolphin-deko3d.sha256";
 constexpr char DESTINATION[] = "sdmc:/switch/dolphin/.emu/dolphin-deko3d.nro";
 constexpr char CACHE_STAMP[] = "sdmc:/switch/dolphin/.emu/dolphin-deko3d.ini";
+#endif
 constexpr char HANDOFF[] = "sdmc:/switch/dolphin/.emu/launch.ini";
 constexpr char RETURN_FILE[] = "sdmc:/switch/dolphin/.emu/return.ini";
 std::string Encode(std::string_view value)
@@ -184,7 +192,8 @@ bool ExtractRuntime(std::string* error, const ExtractProgress& progress)
   const std::string id = ReadRuntimeId();
   if (!ValidNro(source) || id.empty())
   {
-    *error = "The embedded Deko3D runtime is missing or invalid. Reinstall dolphin.nro.";
+    *error = "The embedded " DEKO3D_DISPLAY_NAME
+             " runtime is missing or invalid. Reinstall " DEKO3D_LAUNCHER_NRO ".";
     return false;
   }
   {
@@ -231,13 +240,14 @@ bool ExtractRuntime(std::string* error, const ExtractProgress& progress)
   if (!success || !File::Rename(temporary, DESTINATION))
   {
     File::Delete(temporary);
-    *error = "Could not extract the Deko3D runtime. Check the SD card's free space.";
+    *error = "Could not extract the " DEKO3D_DISPLAY_NAME
+             " runtime. Check the SD card's free space.";
     return false;
   }
   File::IOFile cached(DESTINATION, "rb");
   if (!SaveCacheStamp(cached, id))
   {
-    *error = "Could not save the Deko3D runtime cache information to the SD card.";
+    *error = "Could not save the " DEKO3D_DISPLAY_NAME " runtime cache information to the SD card.";
     return false;
   }
   return true;
@@ -256,7 +266,7 @@ bool Launch(const std::string& launcher_path, const LaunchRequest& game, std::st
 {
   if (!envHasNextLoad())
   {
-    *error = "The homebrew loader does not support launching the Deko3D runtime.";
+    *error = "The homebrew loader does not support launching the " DEKO3D_DISPLAY_NAME " runtime.";
     return false;
   }
   if (!ExtractRuntime(error, progress))
@@ -275,7 +285,7 @@ bool Launch(const std::string& launcher_path, const LaunchRequest& game, std::st
     section->Set("NandTitle", fmt::format("0x{:016x}", *game.nand_title));
   if (!SaveAtomic(ini, HANDOFF))
   {
-    *error = "Could not save the Deko3D launch request to the SD card.";
+    *error = "Could not save the " DEKO3D_DISPLAY_NAME " launch request to the SD card.";
     return false;
   }
   const std::string arguments = std::string(DESTINATION) + " " + std::string(LAUNCH_ARGUMENT);
@@ -283,7 +293,8 @@ bool Launch(const std::string& launcher_path, const LaunchRequest& game, std::st
   if (R_FAILED(result))
   {
     File::Delete(HANDOFF);
-    *error = fmt::format("The homebrew loader rejected the Deko3D runtime ({:08x}).", result);
+    *error = fmt::format("The homebrew loader rejected the " DEKO3D_DISPLAY_NAME " runtime ({:08x}).",
+                         result);
     return false;
   }
   return true;

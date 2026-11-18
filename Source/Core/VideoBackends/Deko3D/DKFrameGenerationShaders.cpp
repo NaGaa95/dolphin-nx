@@ -134,7 +134,13 @@ std::string GetDllPath()
 
 std::string GetCacheDirectory(bool performance)
 {
+#ifdef __SWITCH2__
+  // (uam2rt's Ampere code, apart from the Switch's: one SD card can serve both consoles)
+  return GetDirectory() +
+         (performance ? "Cache-nx2" DIR_SEP "Performance" : "Cache-nx2" DIR_SEP "Quality");
+#else
   return GetDirectory() + (performance ? "Cache" DIR_SEP "Performance" : "Cache" DIR_SEP "Quality");
+#endif
 }
 
 ShaderStatus GetShaderStatus()

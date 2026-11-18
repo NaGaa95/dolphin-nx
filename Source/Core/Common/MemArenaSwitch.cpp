@@ -59,6 +59,11 @@ struct FastmemSupport
 FastmemSupport DetectFastmemSupport()
 {
   FastmemSupport support;
+#ifdef __SWITCH2__
+  // kaiHEN gives homebrew none of the arena's syscalls (0x73-0x75, 0x77, 0x78), and a syscall outside the
+  // process's mask ends the process instead of failing: no probing. Guest memory uses direct views (no fastmem).
+  return support;
+#endif
   constexpr std::array arena_syscalls = {
       SVC_SET_PROCESS_MEMORY_PERMISSION, SVC_MAP_PROCESS_MEMORY,
       SVC_UNMAP_PROCESS_MEMORY,          SVC_MAP_PROCESS_CODE_MEMORY,
@@ -475,6 +480,12 @@ void* LazyMemoryRegion::Create(size_t size)
 
   if (size == 0)
     return nullptr;
+
+#ifdef __SWITCH2__
+  // Switch 2 (kaiHEN): CPU faults never reach the program, and every first touch of a page here needs one. The JIT's
+  // large entry map uses its small fallback map.
+  return nullptr;
+#endif
 
   const size_t aligned_size = (size + 0xFFF) & ~0xFFF;
 

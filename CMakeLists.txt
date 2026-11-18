@@ -122,6 +122,9 @@ option(ENABLE_CCACHE "Enables CCache compiler cache" OFF)
 option(DOLPHIN_SWITCH "Build the standalone Nintendo Switch libnx frontend" OFF)
 option(DOLPHIN_SWITCH_DEKO3D_RUNTIME "Build the embedded Deko3D game runtime" OFF)
 option(DOLPHIN_SWITCH_BUNDLE_DEKO3D "Embed the Deko3D runtime in dolphin.nro" ON)
+# Nintendo Switch 2 (CMake/Toolchain-Switch2.cmake): libounce, drako3d with uam2rt (the run-time shader compiler) in
+# the embedded native runtime, kaiHEN's JIT, and the Switch 2 Mesa SDK for Vulkan and OpenGL.
+option(DOLPHIN_SWITCH2 "Build the Switch frontend for the Switch 2 (libounce)" OFF)
 
 # Maintainers: if you consider blanket disabling this for your users, please
 # consider the following points:
@@ -153,6 +156,14 @@ endif()
 
 if(DOLPHIN_SWITCH)
   message(STATUS "Building the standalone Nintendo Switch libnx frontend")
+  if(DOLPHIN_SWITCH2)
+    if(NOT NINTENDO_SWITCH2)
+      message(FATAL_ERROR "DOLPHIN_SWITCH2 needs CMake/Toolchain-Switch2.cmake")
+    endif()
+    message(STATUS "Targeting the Nintendo Switch 2 (libounce, drako3d, uam2rt, kaiHEN JIT)")
+    # The bundled optimization profile was trained on the Switch 1 build.
+    set(DOLPHIN_SWITCH_PGO OFF CACHE BOOL "" FORCE)
+  endif()
   include(SwitchPGO)
 
   set(DOLPHIN_SWITCH_MESA_SDK_ROOT "" CACHE PATH
@@ -207,6 +218,19 @@ if(DOLPHIN_SWITCH)
     MBEDTLS_NO_PLATFORM_ENTROPY
     MBEDTLS_USER_CONFIG_FILE="DolphinSwitch/MbedTLSConfig.h"
   )
+  if(DOLPHIN_SWITCH2)
+    add_compile_definitions(DOLPHIN_SWITCH2)
+    # The Switch 2 Mesa SDK's libEGL.a and libvulkan.a are linker scripts that name the archives beside them; the
+    # Switch portlibs that only use the C library (zstd, expat, zlib...) come after.
+    link_directories(BEFORE "${DOLPHIN_SWITCH_MESA_SDK_ROOT}/lib")
+    link_directories("${DEVKITPRO}/portlibs/switch/lib")
+    # Common/nx2_platform.c: SDL 2 activates the keyboard and the mouse, and libounce would end the program if HID
+    # refused either; touch coordinates are set to 1280x720; the exit cleanup tracks every pthread; usb:hs lookups are
+    # refused.
+    add_link_options("-Wl,--wrap=hidInitializeKeyboard" "-Wl,--wrap=hidInitializeMouse"
+                     "-Wl,--wrap=hidInitializeTouchScreen" "-Wl,--wrap=__syscall_thread_create"
+                     "-Wl,--wrap=smGetServiceWrapper")
+  endif()
 endif()
 
 if(APPLE)
@@ -725,7 +749,11 @@ endif()
 
 if(ENABLE_DEKO3D)
   include(Deko3D)
-  include(Uam)
+  if(DOLPHIN_SWITCH2)
+    include(Uam2)
+  else()
+    include(Uam)
+  endif()
   add_subdirectory(Externals/lsfg)
 endif()
 

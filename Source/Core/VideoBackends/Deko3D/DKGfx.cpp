@@ -10,6 +10,7 @@
 #include "Common/Logging/Log.h"
 #include "Common/MsgHandler.h"
 #include "Core/Host.h"
+#include "DolphinSwitch/Deko3DName.h"
 
 #include "VideoBackends/Deko3D/DKCommandBufferManager.h"
 #include "VideoBackends/Deko3D/DKContext.h"
@@ -316,7 +317,7 @@ bool DKGfx::BindBackbuffer(const ClearColor& clear_color)
       m_swap_chain = DKSwapChain::Create(surface);
       if (!m_swap_chain)
       {
-        PanicAlertFmt("Failed to create the Deko3D display surface.");
+        PanicAlertFmt("Failed to create the " DEKO3D_DISPLAY_NAME " display surface.");
         Host_Message(HostMessageID::WMUserStop);
         return false;
       }
@@ -330,7 +331,7 @@ bool DKGfx::BindBackbuffer(const ClearColor& clear_color)
     if (!m_swap_chain->Recreate())
     {
       m_swap_chain.reset();
-      PanicAlertFmt("Failed to resize the Deko3D display surface.");
+      PanicAlertFmt("Failed to resize the " DEKO3D_DISPLAY_NAME " display surface.");
       Host_Message(HostMessageID::WMUserStop);
       return false;
     }

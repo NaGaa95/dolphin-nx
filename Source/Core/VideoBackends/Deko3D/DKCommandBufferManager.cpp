@@ -196,6 +196,11 @@ bool DKCommandBufferManager::CreateCommandBuffers()
 DkCmdBuf DKCommandBufferManager::GetCurrentInitCommandBuffer()
 {
   CmdBufferResources& resources = m_command_buffers[m_current_cmd_buffer];
+#ifdef __SWITCH2__
+  // (its uploads run on the copy engine: they must not overwrite what earlier work still reads)
+  if (!resources.init_cmdbuf_used)
+    dkCmdBufBarrier(resources.init.cmdbuf, DkBarrier_Full, 0);
+#endif
   resources.init_cmdbuf_used = true;
   return resources.init.cmdbuf;
 }
@@ -227,7 +232,13 @@ void DKCommandBufferManager::SubmitCommandBuffer(bool wait_for_completion,
   dk::Queue queue = g_dk_context->GetGraphicsQueue();
 
   if (resources.init_cmdbuf_used)
+  {
+#ifdef __SWITCH2__
+    // The uploads run on the copy engine, which the Switch 2's Ampere runs alongside graphics.
+    dkCmdBufBarrier(resources.init.cmdbuf, DkBarrier_Full, DkInvalidateFlags_Image);
+#endif
     queue.submitCommands(resources.init.cmdbuf.finishList());
+  }
 
   WriteEndTimestamp(m_current_cmd_buffer);
   queue.submitCommands(resources.draw.cmdbuf.finishList());

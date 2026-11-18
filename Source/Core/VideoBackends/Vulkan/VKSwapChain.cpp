@@ -23,6 +23,9 @@
 #ifdef __SWITCH__
 #include <switch.h>
 #endif
+#ifdef __SWITCH2__
+#include "Common/nx2_platform.h"
+#endif
 
 #if defined(VK_USE_PLATFORM_XLIB_KHR)
 #include <X11/Xlib.h>
@@ -504,6 +507,11 @@ bool SwapChain::CreateSwapChain()
   m_height = size.height;
   m_layers = image_layers;
 
+#ifdef __SWITCH2__
+  // (Mesa's WSI set the window's swap interval, which withdraws the 120 Hz request)
+  (void)nx2DisplayApply(m_present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? 0 : 1);
+#endif
+
   return true;
 }
 
@@ -634,10 +642,15 @@ bool SwapChain::RecreateSwapChain()
                                                                     m_wsi.render_window);
     if (window)
     {
+#ifdef __SWITCH2__
+      // (libounce sizes the default window per mode)
+      (void)nx2DisplayUpdate();
+#else
       const bool docked = appletGetOperationMode() == AppletOperationMode_Console;
       const u32 width = docked ? 1920 : 1280;
       const u32 height = docked ? 1080 : 720;
       (void)nwindowSetDimensions(window, width, height);
+#endif
     }
   }
 #endif

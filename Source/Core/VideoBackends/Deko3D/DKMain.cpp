@@ -5,6 +5,9 @@
 #include "VideoBackends/Deko3D/VideoBackend.h"
 
 #include "Common/MsgHandler.h"
+#ifdef __SWITCH2__
+#include "Common/nx2_platform.h"
+#endif
 #include "DolphinSwitch/FrameGeneration.h"
 
 #include "VideoBackends/Deko3D/DKBoundingBox.h"
@@ -26,6 +29,14 @@ namespace Deko3D
 bool VideoBackend::Initialize(const WindowSystemInfo& wsi)
 {
   DolphinSwitch::FrameGeneration::BeginDekoSession();
+#ifdef __SWITCH2__
+  // (whatever Mesa or the framebuffer console, the LSFG loading screen, held)
+  if (!nx2GpuReleaseForDrako3d())
+  {
+    PanicAlertFmt("Failed to release the display layer for the deko3d device.");
+    return false;
+  }
+#endif
   g_dk_context = DKContext::Create();
   if (!g_dk_context)
   {

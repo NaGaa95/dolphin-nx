@@ -10,8 +10,8 @@ add_executable(dolphin-switch
   DolphinTools.h
   EmbeddedRuntime.cpp
   EmbeddedRuntime.h
+  Deko3DName.h
   ExceptionStack.c
-  Forwarder.cpp
   Forwarder.h
   ForwarderStructs.h
   FrameGeneration.cpp
@@ -42,10 +42,17 @@ add_executable(dolphin-switch
   Updater.h
 )
 
+# HOME menu shortcuts need ns/ncm/spl, which kaiHEN does not provide: the Switch 2 build refuses them.
+if(DOLPHIN_SWITCH2)
+  target_sources(dolphin-switch PRIVATE ForwarderSwitch2.cpp)
+else()
+  target_sources(dolphin-switch PRIVATE Forwarder.cpp)
+endif()
+
 set_source_files_properties(ExceptionStack.c PROPERTIES COMPILE_OPTIONS "-fno-lto")
 
 target_include_directories(dolphin-switch PRIVATE
-  "${DEVKITPRO}/libnx/include"
+  "${NX_ROOT}/include"
   "${DEVKITPRO}/portlibs/switch/include"
   "${CMAKE_SOURCE_DIR}/Externals/lsfg/include"
 )
@@ -74,24 +81,39 @@ target_link_libraries(dolphin-switch PRIVATE
   Switch::Expat
   OpenGL::EGL
   smb2
-  libusbhsfs
   turbojpeg
   zstd::zstd
   ZLIB::ZLIB
 )
+if(DOLPHIN_SWITCH2)
+  # kaiHEN's JIT provider: libounce's jit* functions reference it weakly.
+  target_link_libraries(dolphin-switch PRIVATE kaihen)
+else()
+  target_link_libraries(dolphin-switch PRIVATE libusbhsfs)
+endif()
 
 target_link_options(dolphin-switch PRIVATE
   -Wl,--gc-sections
   -Wl,--build-id=none
 )
 
-if(DOLPHIN_SWITCH_DEKO3D_RUNTIME)
+# The Switch 2 build is dolphin-nx2.nro, with the drako3d runtime (dolphin-drako3d.nro) in its RomFS.
+if(DOLPHIN_SWITCH2 AND DOLPHIN_SWITCH_DEKO3D_RUNTIME)
+  set(_switch_nro_name dolphin-drako3d)
+elseif(DOLPHIN_SWITCH2)
+  set(_switch_nro_name dolphin-nx2)
+elseif(DOLPHIN_SWITCH_DEKO3D_RUNTIME)
   set(_switch_nro_name dolphin-deko3d)
 else()
   set(_switch_nro_name dolphin)
 endif()
 set_target_properties(dolphin-switch PROPERTIES OUTPUT_NAME "${_switch_nro_name}")
 
+if(DOLPHIN_SWITCH2)
+  # No HOME Menu forwarder on the Switch 2: kaiHEN starts homebrew only from its loader.
+  add_custom_target(dolphin_forwarder_payload)
+  set(_forwarder_assets)
+else()
 set(_forwarder_source "${CMAKE_SOURCE_DIR}/Tools/Switch/ForwarderPayload")
 set(_forwarder_output "${CMAKE_SOURCE_DIR}/Data/Sys/fwd")
 set(_forwarder_elf "${CMAKE_CURRENT_BINARY_DIR}/forwarder_hbl.elf")
@@ -129,6 +151,7 @@ add_custom_command(
   VERBATIM
 )
 add_custom_target(dolphin_forwarder_payload DEPENDS ${_forwarder_assets})
+endif()
 
 find_program(DOLPHIN_SWITCH_MSGFMT_EXECUTABLE NAMES msgfmt REQUIRED)
 set(_switch_translation_output "${CMAKE_SOURCE_DIR}/Data/Sys/i18n")
@@ -165,7 +188,17 @@ if(NOT DOLPHIN_SWITCH_DEKO3D_RUNTIME AND DOLPHIN_SWITCH_BUNDLE_DEKO3D)
   include(ExternalProject)
   set(DOLPHIN_SWITCH_RUNTIME_JOBS 4 CACHE STRING "Parallel jobs for the embedded runtime")
   set(_runtime_build "${CMAKE_BINARY_DIR}/deko3d-runtime")
-  set(_runtime_nro "${_runtime_build}/Binaries/dolphin-deko3d.nro")
+  if(DOLPHIN_SWITCH2)
+    set(_runtime_name dolphin-drako3d)
+    set(_runtime_toolchain "${CMAKE_SOURCE_DIR}/CMake/Toolchain-Switch2.cmake")
+    set(_runtime_platform_args)
+  else()
+    set(_runtime_name dolphin-deko3d)
+    set(_runtime_toolchain "${CMAKE_SOURCE_DIR}/CMake/Toolchain-Switch.cmake")
+    set(_runtime_platform_args
+      "-DFETCHCONTENT_SOURCE_DIR_SWITCH_LIBUSBHSFS=${switch_libusbhsfs_SOURCE_DIR}")
+  endif()
+  set(_runtime_nro "${_runtime_build}/Binaries/${_runtime_name}.nro")
   ExternalProject_Add(dolphin_deko3d_runtime
     SOURCE_DIR "${CMAKE_SOURCE_DIR}"
     BINARY_DIR "${_runtime_build}"
@@ -173,7 +206,7 @@ if(NOT DOLPHIN_SWITCH_DEKO3D_RUNTIME AND DOLPHIN_SWITCH_BUNDLE_DEKO3D)
     UPDATE_COMMAND ""
     CMAKE_GENERATOR "${CMAKE_GENERATOR}"
     CMAKE_ARGS
-      "-DCMAKE_TOOLCHAIN_FILE=${CMAKE_SOURCE_DIR}/CMake/Toolchain-Switch.cmake"
+      "-DCMAKE_TOOLCHAIN_FILE=${_runtime_toolchain}"
       "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
       "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
       "-DDOLPHIN_SWITCH_DEKO3D_RUNTIME=ON"
@@ -184,7 +217,7 @@ if(NOT DOLPHIN_SWITCH_DEKO3D_RUNTIME AND DOLPHIN_SWITCH_BUNDLE_DEKO3D)
       "-DDOLPHIN_SWITCH_RELEASE_VERSION=${DOLPHIN_SWITCH_RELEASE_VERSION}"
       "-DENABLE_LTO=${ENABLE_LTO}"
       "-DFETCHCONTENT_SOURCE_DIR_SWITCH_LIBSMB2=${switch_libsmb2_SOURCE_DIR}"
-      "-DFETCHCONTENT_SOURCE_DIR_SWITCH_LIBUSBHSFS=${switch_libusbhsfs_SOURCE_DIR}"
+      ${_runtime_platform_args}
     BUILD_COMMAND "${CMAKE_COMMAND}" --build "${_runtime_build}"
                   --target dolphin_nro --parallel "${DOLPHIN_SWITCH_RUNTIME_JOBS}"
     BUILD_ALWAYS ON
@@ -203,9 +236,9 @@ file(WRITE "${RUNTIME_ID}" "${runtime_digest}\n")
     COMMAND "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/Data/Sys" "${_switch_romfs}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${_switch_romfs}/runtime"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_runtime_nro}"
-            "${_switch_romfs}/runtime/dolphin-deko3d.nro"
+            "${_switch_romfs}/runtime/${_runtime_name}.nro"
     COMMAND "${CMAKE_COMMAND}" "-DRUNTIME_NRO=${_runtime_nro}"
-            "-DRUNTIME_ID=${_switch_romfs}/runtime/dolphin-deko3d.sha256"
+            "-DRUNTIME_ID=${_switch_romfs}/runtime/${_runtime_name}.sha256"
             -P "${_runtime_id_script}"
     DEPENDS dolphin_deko3d_runtime dolphin_forwarder_payload dolphin_switch_translations
     VERBATIM

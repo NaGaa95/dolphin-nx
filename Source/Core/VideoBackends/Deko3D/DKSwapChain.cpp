@@ -10,6 +10,9 @@
 
 #include "Common/Align.h"
 #include "Common/Logging/Log.h"
+#ifdef __SWITCH2__
+#include "Common/nx2_platform.h"
+#endif
 
 #include "VideoBackends/Deko3D/DKContext.h"
 #include "VideoBackends/Deko3D/DKMemoryTracker.h"
@@ -53,8 +56,15 @@ bool DKSwapChain::Initialize()
   }
 
   dk::ImageLayout layout;
+#ifdef __SWITCH2__
+  // VI2 presents uncompressed images.
+  constexpr u32 SWAPCHAIN_FLAGS = DkImageFlags_UsageRender | DkImageFlags_UsagePresent;
+#else
+  constexpr u32 SWAPCHAIN_FLAGS =
+      DkImageFlags_UsageRender | DkImageFlags_UsagePresent | DkImageFlags_HwCompression;
+#endif
   dk::ImageLayoutMaker{device}
-      .setFlags(DkImageFlags_UsageRender | DkImageFlags_UsagePresent | DkImageFlags_HwCompression)
+      .setFlags(SWAPCHAIN_FLAGS)
       .setFormat(FORMAT)
       .setDimensions(m_width, m_height)
       .initialize(layout);
@@ -134,11 +144,20 @@ void DKSwapChain::Present(int slot)
 void DKSwapChain::SetVSync(bool enabled)
 {
   const u32 interval = enabled ? 1 : 0;
+#ifdef __SWITCH2__
+  // (drako3d presents at the window's interval; its setSwapInterval would withdraw the 120 Hz request)
+  if (m_swapchain)
+  {
+    (void)nx2DisplayApply(static_cast<int>(interval));
+    m_swap_interval = interval;
+  }
+#else
   if (m_swapchain && m_swap_interval != interval)
   {
     m_swapchain.setSwapInterval(interval);
     m_swap_interval = interval;
   }
+#endif
 }
 
 bool DKSwapChain::Recreate()

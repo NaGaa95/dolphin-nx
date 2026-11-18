@@ -174,6 +174,10 @@ add_library(common
 
 if(DOLPHIN_SWITCH)
   target_sources(common PRIVATE SwitchSaltyNX.cpp SwitchSaltyNX.h)
+  if(DOLPHIN_SWITCH2)
+    # Switch 2 platform helpers (nx2_platform.h).
+    target_sources(common PRIVATE nx2_platform.c nx2_platform.h)
+  endif()
   get_target_property(_common_sources common SOURCES)
   list(REMOVE_ITEM _common_sources
     DynamicLibrary.cpp
@@ -192,7 +196,8 @@ endif()
 
 add_dependencies(common dolphin_scmrev)
 
-if(NOT MSVC AND _M_ARM_64)
+if(NOT MSVC AND _M_ARM_64 AND NOT DOLPHIN_SWITCH2)
+  # (the Switch 2's -mcpu=cortex-a78c+crypto already has the crypto extension; -march would conflict with it)
   set_source_files_properties(
     Crypto/AES.cpp
     Crypto/SHA1.cpp

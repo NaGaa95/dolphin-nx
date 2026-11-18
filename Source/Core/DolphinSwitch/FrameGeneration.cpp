@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "DolphinSwitch/FrameGeneration.h"
+#include "DolphinSwitch/Deko3DName.h"
 
 #include <atomic>
 #include <mutex>
@@ -42,8 +43,14 @@ bool AreDekoShadersPrepared()
 {
   for (const char* mode : {"Performance", "Quality"})
   {
+#ifdef __SWITCH2__
+    // (DKFrameGenerationShaders.cpp)
+    File::IOFile manifest(std::string("sdmc:/switch/dolphin/lsfg/Cache-nx2/") + mode + "/manifest.bin",
+                          "rb");
+#else
     File::IOFile manifest(std::string("sdmc:/switch/dolphin/lsfg/Cache/") + mode + "/manifest.bin",
                           "rb");
+#endif
     lsfg::cache::ManifestHeader header{};
     if (!manifest || !manifest.ReadBytes(&header, sizeof(header)) ||
         !lsfg::succeeded(lsfg::cache::validate(header)) ||
@@ -116,7 +123,7 @@ std::string GetStatus()
   if (Config::Get(Config::MAIN_GFX_BACKEND) == "Vulkan")
     return Vulkan::LSFG::GetStatus();
 #endif
-  return "Frame generation requires Vulkan or Deko3D";
+  return "Frame generation requires Vulkan or " DEKO3D_DISPLAY_NAME;
 }
 
 void BeginDekoSession()
@@ -130,7 +137,7 @@ void BeginDekoSession()
   s_status = available                              ? "Available; currently Off" :
              !Config::Get(Config::GFX_LSFG_ENABLED) ? "Disabled in the launcher" :
              !IsDllInstalled()                      ? "Lossless.dll is missing" :
-                                                      "Deko3D LSFG shaders could not be loaded";
+                                                      DEKO3D_DISPLAY_NAME " LSFG shaders could not be loaded";
 }
 
 void EndDekoSession()

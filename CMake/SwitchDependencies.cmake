@@ -80,100 +80,102 @@ FetchContent_MakeAvailable(switch_libsmb2)
 target_compile_options(smb2 PRIVATE -UNEED_READV -UNEED_WRITEV)
 target_compile_definitions(smb2 PRIVATE AES128_ECB_encrypt=smb2_AES128_ECB_encrypt)
 
-# Enable NTFS on its own: USBHSFS_GPL would also pull in EXT2/3/4.
-set(USBHSFS_GPL OFF CACHE BOOL "" FORCE)
-set(USBHSFS_NTFS ON CACHE BOOL "" FORCE)
-set(USBHSFS_EXT4 OFF CACHE BOOL "" FORCE)
-set(USBHSFS_SXOS_DISABLE ON CACHE BOOL "" FORCE)
-set(USBHSFS_EXAMPLES OFF CACHE BOOL "" FORCE)
+# USB drives (libusbhsfs): Switch only. On the Switch 2, kaiHEN's usb:hs never answers and every later
+# program's services then hang until a reboot (DolphinSwitch/Storage.cpp has no USB drives there).
+if(NOT DOLPHIN_SWITCH2)
+  # Enable NTFS on its own: USBHSFS_GPL would also pull in EXT2/3/4.
+  set(USBHSFS_GPL OFF CACHE BOOL "" FORCE)
+  set(USBHSFS_NTFS ON CACHE BOOL "" FORCE)
+  set(USBHSFS_EXT4 OFF CACHE BOOL "" FORCE)
+  set(USBHSFS_SXOS_DISABLE ON CACHE BOOL "" FORCE)
+  set(USBHSFS_EXAMPLES OFF CACHE BOOL "" FORCE)
 
-find_library(ntfs_3g_lib ntfs-3g)
-find_path(ntfs_3g_inc ntfs-3g/volume.h)
-if(NOT ntfs_3g_lib OR NOT ntfs_3g_inc)
-  message(FATAL_ERROR
-    "Switch NTFS support requires switch-ntfs-3g. Install it with "
-    "'dkp-pacman -S switch-ntfs-3g' (or 'pacman -S switch-ntfs-3g' in devkitPro MSYS2).")
-endif()
+  find_library(ntfs_3g_lib ntfs-3g)
+  find_path(ntfs_3g_inc ntfs-3g/volume.h)
+  if(NOT ntfs_3g_lib OR NOT ntfs_3g_inc)
+    message(FATAL_ERROR
+      "Switch NTFS support requires switch-ntfs-3g. Install it with "
+      "'dkp-pacman -S switch-ntfs-3g' (or 'pacman -S switch-ntfs-3g' in devkitPro MSYS2).")
+  endif()
 
-set(_switch_libusbhsfs_pinned_revision 625269b7725a6e2a3f2724e8d45b602c1b20ead5)
-FetchContent_Declare(switch_libusbhsfs
-  GIT_REPOSITORY https://github.com/ITotalJustice/libusbhsfs.git
-  GIT_TAG ${_switch_libusbhsfs_pinned_revision}
-)
-FetchContent_MakeAvailable(switch_libusbhsfs)
+  set(_switch_libusbhsfs_pinned_revision 625269b7725a6e2a3f2724e8d45b602c1b20ead5)
+  FetchContent_Declare(switch_libusbhsfs
+    GIT_REPOSITORY https://github.com/ITotalJustice/libusbhsfs.git
+    GIT_TAG ${_switch_libusbhsfs_pinned_revision}
+  )
+  FetchContent_MakeAvailable(switch_libusbhsfs)
 
-# Keep the UASP work reproducible while libusbhsfs remains a pinned FetchContent
-# dependency. These small patches connect transport hooks, preserve BOT fallback
-# and keep local mounts clean after a failed transport reset; the implementation
-# stays tracked here under libusbhsfs' ISC license.
-find_package(Git REQUIRED)
-execute_process(
-  COMMAND "${GIT_EXECUTABLE}"
-          -c "safe.directory=${switch_libusbhsfs_SOURCE_DIR}"
-          rev-parse HEAD
-  WORKING_DIRECTORY "${switch_libusbhsfs_SOURCE_DIR}"
-  RESULT_VARIABLE _switch_libusbhsfs_revision_result
-  OUTPUT_VARIABLE _switch_libusbhsfs_revision
-  OUTPUT_STRIP_TRAILING_WHITESPACE
-  ERROR_QUIET
-)
-if(NOT _switch_libusbhsfs_revision_result EQUAL 0 OR
-   NOT "${_switch_libusbhsfs_revision}" STREQUAL "${_switch_libusbhsfs_pinned_revision}")
-  message(FATAL_ERROR
-    "libusbhsfs source is not the pinned ${_switch_libusbhsfs_pinned_revision} revision")
-endif()
-
-set(_switch_libusbhsfs_patches
-  "${CMAKE_SOURCE_DIR}/Tools/Switch/libusbhsfs/0001-add-uasp-transport-hooks.patch"
-  "${CMAKE_SOURCE_DIR}/Tools/Switch/libusbhsfs/0002-fallback-to-bot-interface.patch"
-  "${CMAKE_SOURCE_DIR}/Tools/Switch/libusbhsfs/0003-cleanup-after-uasp-reset.patch"
-)
-foreach(_switch_libusbhsfs_patch IN LISTS _switch_libusbhsfs_patches)
+  # libusbhsfs is pinned; these patches (ISC, as libusbhsfs) add UASP: transport hooks, the BOT
+  # fallback and clean mounts after a failed reset.
+  find_package(Git REQUIRED)
   execute_process(
     COMMAND "${GIT_EXECUTABLE}"
             -c "safe.directory=${switch_libusbhsfs_SOURCE_DIR}"
-            apply --ignore-space-change --check "${_switch_libusbhsfs_patch}"
+            rev-parse HEAD
     WORKING_DIRECTORY "${switch_libusbhsfs_SOURCE_DIR}"
-    RESULT_VARIABLE _switch_libusbhsfs_patch_check
-    OUTPUT_QUIET ERROR_QUIET
+    RESULT_VARIABLE _switch_libusbhsfs_revision_result
+    OUTPUT_VARIABLE _switch_libusbhsfs_revision
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
   )
-  if(_switch_libusbhsfs_patch_check EQUAL 0)
+  if(NOT _switch_libusbhsfs_revision_result EQUAL 0 OR
+     NOT "${_switch_libusbhsfs_revision}" STREQUAL "${_switch_libusbhsfs_pinned_revision}")
+    message(FATAL_ERROR
+      "libusbhsfs source is not the pinned ${_switch_libusbhsfs_pinned_revision} revision")
+  endif()
+
+  set(_switch_libusbhsfs_patches
+    "${CMAKE_SOURCE_DIR}/Tools/Switch/libusbhsfs/0001-add-uasp-transport-hooks.patch"
+    "${CMAKE_SOURCE_DIR}/Tools/Switch/libusbhsfs/0002-fallback-to-bot-interface.patch"
+    "${CMAKE_SOURCE_DIR}/Tools/Switch/libusbhsfs/0003-cleanup-after-uasp-reset.patch"
+  )
+  foreach(_switch_libusbhsfs_patch IN LISTS _switch_libusbhsfs_patches)
     execute_process(
       COMMAND "${GIT_EXECUTABLE}"
               -c "safe.directory=${switch_libusbhsfs_SOURCE_DIR}"
-              apply --ignore-space-change "${_switch_libusbhsfs_patch}"
+              apply --ignore-space-change --check "${_switch_libusbhsfs_patch}"
       WORKING_DIRECTORY "${switch_libusbhsfs_SOURCE_DIR}"
-      RESULT_VARIABLE _switch_libusbhsfs_patch_result
-    )
-    if(NOT _switch_libusbhsfs_patch_result EQUAL 0)
-      message(FATAL_ERROR "Failed to apply ${_switch_libusbhsfs_patch}")
-    endif()
-  else()
-    execute_process(
-      COMMAND "${GIT_EXECUTABLE}"
-              -c "safe.directory=${switch_libusbhsfs_SOURCE_DIR}"
-              apply --ignore-space-change --reverse --check "${_switch_libusbhsfs_patch}"
-      WORKING_DIRECTORY "${switch_libusbhsfs_SOURCE_DIR}"
-      RESULT_VARIABLE _switch_libusbhsfs_patch_reverse_check
+      RESULT_VARIABLE _switch_libusbhsfs_patch_check
       OUTPUT_QUIET ERROR_QUIET
     )
-    if(NOT _switch_libusbhsfs_patch_reverse_check EQUAL 0)
-      message(FATAL_ERROR
-        "The pinned libusbhsfs source does not match ${_switch_libusbhsfs_patch}")
+    if(_switch_libusbhsfs_patch_check EQUAL 0)
+      execute_process(
+        COMMAND "${GIT_EXECUTABLE}"
+                -c "safe.directory=${switch_libusbhsfs_SOURCE_DIR}"
+                apply --ignore-space-change "${_switch_libusbhsfs_patch}"
+        WORKING_DIRECTORY "${switch_libusbhsfs_SOURCE_DIR}"
+        RESULT_VARIABLE _switch_libusbhsfs_patch_result
+      )
+      if(NOT _switch_libusbhsfs_patch_result EQUAL 0)
+        message(FATAL_ERROR "Failed to apply ${_switch_libusbhsfs_patch}")
+      endif()
+    else()
+      execute_process(
+        COMMAND "${GIT_EXECUTABLE}"
+                -c "safe.directory=${switch_libusbhsfs_SOURCE_DIR}"
+                apply --ignore-space-change --reverse --check "${_switch_libusbhsfs_patch}"
+        WORKING_DIRECTORY "${switch_libusbhsfs_SOURCE_DIR}"
+        RESULT_VARIABLE _switch_libusbhsfs_patch_reverse_check
+        OUTPUT_QUIET ERROR_QUIET
+      )
+      if(NOT _switch_libusbhsfs_patch_reverse_check EQUAL 0)
+        message(FATAL_ERROR
+          "The pinned libusbhsfs source does not match ${_switch_libusbhsfs_patch}")
+      endif()
     endif()
-  endif()
-endforeach()
+  endforeach()
 
-target_sources(libusbhsfs PRIVATE
-  "${CMAKE_SOURCE_DIR}/Tools/Switch/libusbhsfs/usbhsfs_uasp.c"
-  "${CMAKE_SOURCE_DIR}/Tools/Switch/libusbhsfs/usbhsfs_uasp.h"
-)
-target_include_directories(libusbhsfs PRIVATE
-  "${CMAKE_SOURCE_DIR}/Tools/Switch/libusbhsfs"
-  "${switch_libusbhsfs_SOURCE_DIR}/source"
-)
-# Avoid libusbhsfs' get_fattime symbol colliding with Dolphin's FatFs copy.
-target_compile_definitions(libusbhsfs PRIVATE get_fattime=usbhsfs_get_fattime)
+  target_sources(libusbhsfs PRIVATE
+    "${CMAKE_SOURCE_DIR}/Tools/Switch/libusbhsfs/usbhsfs_uasp.c"
+    "${CMAKE_SOURCE_DIR}/Tools/Switch/libusbhsfs/usbhsfs_uasp.h"
+  )
+  target_include_directories(libusbhsfs PRIVATE
+    "${CMAKE_SOURCE_DIR}/Tools/Switch/libusbhsfs"
+    "${switch_libusbhsfs_SOURCE_DIR}/source"
+  )
+  # Avoid libusbhsfs' get_fattime symbol colliding with Dolphin's FatFs copy.
+  target_compile_definitions(libusbhsfs PRIVATE get_fattime=usbhsfs_get_fattime)
+endif()
 
 add_library(SwitchNVK UNKNOWN IMPORTED GLOBAL)
 set_target_properties(SwitchNVK PROPERTIES

@@ -27,6 +27,11 @@
 #ifdef __APPLE__
 #include <libkern/OSCacheControl.h>
 #endif
+#ifdef __SWITCH2__
+#include "Common/nx2_platform.h"
+// (<switch.h>'s BIT() macro would replace ARM64FloatEmitter::BIT)
+#undef BIT
+#endif
 
 namespace Arm64Gen
 {
@@ -74,6 +79,7 @@ std::optional<u8> FPImm8FromFloat(float value)
   return imm8;
 }
 
+#ifndef __SWITCH2__
 size_t s_arm64_icache_line_size = 0xffff;
 size_t s_arm64_dcache_line_size = 0xffff;
 
@@ -90,6 +96,7 @@ void GetArm64CacheLineSizes(size_t& isize, size_t& dsize)
   isize = s_arm64_icache_line_size;
   dsize = s_arm64_dcache_line_size;
 }
+#endif
 }  // Anonymous namespace
 
 void ARM64XEmitter::SetCodePtrUnsafe(u8* ptr, u8* end, bool write_failed)
@@ -156,6 +163,9 @@ void ARM64XEmitter::FlushIcacheSection(u8* start, u8* end)
   sys_cache_control(kCacheFunctionPrepareForExecution, start, end - start);
 #elif defined(WIN32)
   FlushInstructionCache(GetCurrentProcess(), start, end - start);
+#elif defined(__SWITCH2__)
+  // kaiHEN: a range of a JIT's staging copy (or of its code) is published to the code through RO.
+  nx2JitPublishAny(start, static_cast<size_t>(end - start));
 #else
   // Don't rely on GCC's __clear_cache implementation, as it caches
   // icache/dcache cache line sizes, that can vary between cores on
@@ -201,6 +211,11 @@ void ARM64XEmitter::FlushIcacheSection(u8* dcache_start, u8* dcache_end, u8* ica
   sys_cache_control(kCacheFunctionPrepareForExecution, icache_start, icache_end - icache_start);
 #elif defined(WIN32)
   FlushInstructionCache(GetCurrentProcess(), icache_start, icache_end - icache_start);
+#elif defined(__SWITCH2__)
+  // kaiHEN: RW is a staging copy, published to RX through RO (inside a write scope the ranges go out together).
+  (void)icache_start;
+  (void)icache_end;
+  nx2JitPublish(dcache_start, static_cast<size_t>(dcache_end - dcache_start));
 #else
   size_t isize, dsize;
   GetArm64CacheLineSizes(isize, dsize);

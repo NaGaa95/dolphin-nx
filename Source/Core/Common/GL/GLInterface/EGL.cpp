@@ -11,6 +11,9 @@
 #include <EGL/eglmesaext.h>
 #include <switch.h>
 #endif
+#ifdef __SWITCH2__
+#include "Common/nx2_platform.h"
+#endif
 
 #include "Common/Logging/Log.h"
 
@@ -50,6 +53,11 @@ void GLContextEGL::Swap()
 void GLContextEGL::SwapInterval(int interval)
 {
   eglSwapInterval(m_egl_display, interval);
+#ifdef __SWITCH2__
+  // (eglSwapInterval withdraws the 120 Hz request)
+  if (m_egl_surface != EGL_NO_SURFACE)
+    (void)nx2DisplayApply(interval);
+#endif
 }
 
 void* GLContextEGL::GetFuncAddress(const std::string& name)
@@ -326,6 +334,10 @@ bool GLContextEGL::CreateWindowSurface()
       INFO_LOG_FMT(VIDEO, "Error: eglCreateWindowSurface failed");
       return false;
     }
+#ifdef __SWITCH2__
+    // (the surface's swap interval withdraws the 120 Hz request)
+    (void)nx2DisplayReapply();
+#endif
 
     // Get dimensions from the surface.
     EGLint surface_width = 1, surface_height = 1;
@@ -377,7 +389,8 @@ void GLContextEGL::Update()
   if (m_egl_surface == EGL_NO_SURFACE)
     return;
 
-#ifdef __SWITCH__
+#if defined(__SWITCH__) && !defined(__SWITCH2__)
+  // (Switch 2: libounce sizes the default window per mode, and Mesa's swapchain follows it at the next swap)
   const bool docked = appletGetOperationMode() == AppletOperationMode_Console;
   const EGLint target_width = docked ? 1920 : 1280;
   const EGLint target_height = docked ? 1080 : 720;

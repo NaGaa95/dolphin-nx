@@ -16,6 +16,10 @@
 
 #include <malloc.h>
 #include <switch.h>
+#ifdef __SWITCH2__
+// kaiHEN: a Jit's RW address is a staging copy; code runs only once published (nx2_platform).
+#include "Common/nx2_platform.h"
+#endif
 
 namespace
 {
@@ -62,7 +66,13 @@ ExecutableMemory AllocateExecutableMemory(size_t size)
 #elif defined(__SWITCH__)
   Jit jit{};
   Result result = jitCreate(&jit, size);
+#ifdef __SWITCH2__
+  // kaiHEN keeps separate RW staging and RX views whatever type it reports, and the RX view is mapped from the start:
+  // each write is published (FlushIcacheSection), so the whole-buffer jitTransitionToExecutable is not used.
+  if (R_FAILED(result))
+#else
   if (R_FAILED(result) || jit.type != JitType_CodeMemory)
+#endif
   {
     if (R_SUCCEEDED(result))
       jitClose(&jit);
@@ -70,6 +80,7 @@ ExecutableMemory AllocateExecutableMemory(size_t size)
     return {};
   }
 
+#ifndef __SWITCH2__
   result = jitTransitionToExecutable(&jit);
   if (R_FAILED(result))
   {
@@ -77,6 +88,7 @@ ExecutableMemory AllocateExecutableMemory(size_t size)
     PanicAlertFmt("Failed to make Switch JIT memory executable: 0x{:08x}", result);
     return {};
   }
+#endif
 
   ptr = jitGetRwAddr(&jit);
   rx_ptr = jitGetRxAddr(&jit);
@@ -89,7 +101,13 @@ ExecutableMemory AllocateExecutableMemory(size_t size)
 
   {
     std::lock_guard lock{s_switch_jit_mutex};
-    s_switch_jit_allocations.emplace(ptr, SwitchJITAllocation{jit});
+    const auto it = s_switch_jit_allocations.emplace(ptr, SwitchJITAllocation{jit}).first;
+#ifdef __SWITCH2__
+    // (the map's node keeps the Jit at this address until FreeExecutableMemory)
+    nx2JitRegister(&it->second.jit);
+#else
+    (void)it;
+#endif
   }
 #else
   int map_flags = MAP_ANON | MAP_PRIVATE;
@@ -154,6 +172,11 @@ void JITPageWriteEnableExecuteDisable()
     pthread_jit_write_protect_np(0);
   }
 #endif
+#ifdef __SWITCH2__
+  // A write scope (a compiled block with its near and far code and links, a backpatch, destroyed blocks) publishes
+  // its changes to kaiHEN in one request when its outermost scope ends; the thread runs none of them before.
+  nx2JitBatchBegin();
+#endif
   JITPageWriteNestCounter()++;
 }
 // Allows a thread to execute memory allocated for execution, but not write to it.
@@ -172,6 +195,9 @@ void JITPageWriteDisableExecuteEnable()
   {
     pthread_jit_write_protect_np(1);
   }
+#endif
+#ifdef __SWITCH2__
+  nx2JitBatchEnd();
 #endif
 }
 
@@ -263,6 +289,9 @@ void FreeExecutableMemory(void* ptr, size_t size)
       return;
     }
     jit = it->second.jit;
+#ifdef __SWITCH2__
+    nx2JitUnregister(&it->second.jit);
+#endif
     s_switch_jit_allocations.erase(it);
   }
 

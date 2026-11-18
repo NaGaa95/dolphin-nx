@@ -55,6 +55,10 @@ std::string GetDiskShaderCacheFileName(APIType api_type, const char* type, bool 
     File::CreateDir(File::GetUserPath(D_SHADERCACHE_IDX));
 
   std::string filename = File::GetUserPath(D_SHADERCACHE_IDX);
+#ifdef __SWITCH2__
+  // The Switch 2's shaders are kept apart from the Switch's: one SD card can serve both consoles.
+  filename += "NX2-";
+#endif
   if (include_api)
   {
     switch (api_type)

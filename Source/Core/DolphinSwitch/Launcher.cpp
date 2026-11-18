@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "DolphinSwitch/Launcher.h"
+#include "DolphinSwitch/Deko3DName.h"
 
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
@@ -94,6 +95,12 @@ namespace
 {
 constexpr std::string_view DATA_DIRECTORY = "sdmc:/switch/dolphin";
 constexpr std::string_view CONFIG_PATH = "sdmc:/switch/dolphin/launcher.ini";
+// The release each build last installed: the two consoles' builds can share one SD card.
+#ifdef __SWITCH2__
+constexpr char INSTALLED_RELEASE_TAG_KEY[] = "Launcher/InstalledReleaseTagNX2";
+#else
+constexpr char INSTALLED_RELEASE_TAG_KEY[] = "Launcher/InstalledReleaseTag";
+#endif
 constexpr std::string_view COVER_DIRECTORY = "sdmc:/switch/dolphin/covers";
 constexpr std::string_view LSFG_DIRECTORY = "sdmc:/switch/dolphin/lsfg";
 constexpr int COVER_CACHE_LIMIT = 64;
@@ -1166,7 +1173,8 @@ static constexpr SettingHelpEntry SETTING_HELP[] = {
      "Signs in to RetroAchievements and controls achievement, hardcore-mode and progress "
      "notifications for supported game hashes."},
     {"Frame Generation", "Settings group",
-     "Configures Vulkan and Deko3D LSFG 2x frame generation. It inserts display frames but does "
+     "Configures Vulkan and " DEKO3D_DISPLAY_NAME " LSFG 2x frame generation. It inserts display "
+     "frames but does "
      "not increase "
      "the emulated game's speed."},
     {"CPU / Emulation", "Settings group",
@@ -1239,8 +1247,9 @@ static constexpr SettingHelpEntry SETTING_HELP[] = {
      "title-specific timing adjustment."},
 
     {"Video backend", "Graphics backend",
-     "Selects the renderer for the next game, globally or per game. Deko3D is the default. "
-     "OpenGL offers NVC0 or Zink; Deko3D uses its own native renderer."},
+     "Selects the renderer for the next game, globally or per game. " DEKO3D_DISPLAY_NAME
+     " is the default. "
+     "OpenGL offers NVC0 or Zink; " DEKO3D_DISPLAY_NAME " uses its own native renderer."},
     {"GLThread", "OpenGL command threading",
      "Lets Mesa build OpenGL command streams on a worker thread. It can improve CPU-limited "
      "games, but may reduce performance or expose compatibility issues in others. This setting "
@@ -1273,7 +1282,7 @@ static constexpr SettingHelpEntry SETTING_HELP[] = {
      "Opens graphics workarounds that trade accuracy for performance. Dolphin's defaults are "
      "recommended for most games."},
 
-    {"LSFG 2x (Vulkan / Deko3D)", "Frame generation",
+    {"LSFG 2x (Vulkan / " DEKO3D_DISPLAY_NAME ")", "Frame generation",
      "Makes LSFG 2x available for the launch. It creates an intermediate display frame between "
      "rendered frames, adding smoothness without increasing emulation speed."},
     {"Flow resolution", "Frame generation quality",
@@ -1283,7 +1292,8 @@ static constexpr SettingHelpEntry SETTING_HELP[] = {
      "Uses LSFG's lighter performance-oriented path. Disable it only when testing quality with "
      "enough GPU headroom."},
     {"Lossless.dll", "Required component",
-     "Uses Lossless.dll from the lsfg folder for Vulkan and Deko3D frame generation."},
+     "Uses Lossless.dll from the lsfg folder for Vulkan and " DEKO3D_DISPLAY_NAME
+     " frame generation."},
 
     {"Anti-aliasing", "Image quality / performance",
      "Smooths polygon edges. MSAA increases GPU and memory cost; SSAA is substantially more "
@@ -2333,7 +2343,7 @@ void Launcher::LoadDefaults()
   m_store.SetBool("Launcher/ShowRegionFlags", true);
   m_store.SetBool("Launcher/ShowCustomSettingsBadges", true);
   m_store.SetBool("Launcher/CheckUpdatesAtBoot", true);
-  m_store.Set("Launcher/InstalledReleaseTag", Updater::BuiltReleaseTag());
+  m_store.Set(INSTALLED_RELEASE_TAG_KEY, Updater::BuiltReleaseTag());
   m_store.SetInt("Launcher/GridColumns", 5);
   m_store.SetInt("Launcher/GridRows", 2);
   m_store.Set("Network/SteamGridDBKey", "");
@@ -8023,7 +8033,7 @@ void Launcher::GraphicsSettings(bool per_game, Game* game)
 {
 #if defined(HAS_DEKO3D) || defined(DOLPHIN_SWITCH_EMBEDDED_DEKO3D)
   static constexpr std::array<std::string_view, 4> BACKEND_LABELS = {
-      "Vulkan (NVK)", "OpenGL (NVC0)", "OpenGL (Zink/NVK)", "Deko3D"};
+      "Vulkan (NVK)", "OpenGL (NVC0)", "OpenGL (Zink/NVK)", DEKO3D_DISPLAY_NAME};
 #else
   static constexpr std::array<std::string_view, 3> BACKEND_LABELS = {
       "Vulkan (NVK)", "OpenGL (NVC0)", "OpenGL (Zink/NVK)"};
@@ -8505,7 +8515,7 @@ void Launcher::FrameGenerationSettings(bool per_game, Game* game)
         const float flow = effective_flow();
         const bool performance = effective_performance();
         return std::vector<Row>{
-            {"LSFG 2x (Vulkan / Deko3D)",
+            {"LSFG 2x (Vulkan / " DEKO3D_DISPLAY_NAME ")",
              per_game ? PerGameBoolLabel(*game, "Video_Settings", "LSFGEnabled",
                                          Config::Get(Config::GFX_LSFG_ENABLED)) :
                         std::string(enabled ? "On" : "Off"),
@@ -13716,6 +13726,11 @@ void Launcher::CreateHomeShortcut(Game* game)
 {
   if (!game)
     return;
+#ifdef __SWITCH2__
+  // Installing a forwarder needs ns/ncm/spl, which kaiHEN does not provide (ForwarderSwitch2.cpp).
+  Toast("HOME menu shortcuts are not available on the Switch 2.", 2400);
+  return;
+#endif
   const GameDetailLayout layout = ComputeGameDetailLayout();
   constexpr int icon_size = 260;
   const int icon_x = layout.preview.x + (layout.preview.w - icon_size) / 2;
@@ -13934,7 +13949,7 @@ void Launcher::CreateHomeShortcut(Game* game)
 std::string Launcher::InstalledReleaseTag() const
 {
   const std::string built = Updater::BuiltReleaseTag();
-  const std::string stored = Trim(m_store.Get("Launcher/InstalledReleaseTag"));
+  const std::string stored = Trim(m_store.Get(INSTALLED_RELEASE_TAG_KEY));
   if (stored.empty())
     return built;
   return Updater::IsNewer(stored, built) ? stored : built;
@@ -18691,13 +18706,13 @@ bool Launcher::LaunchEmbeddedRuntime(const std::string& launcher_path, const Lau
 {
   if (!Initialize(true))
   {
-    *error = "The Deko3D loading screen could not be initialized.";
+    *error = "The " DEKO3D_DISPLAY_NAME " loading screen could not be initialized.";
     return false;
   }
   bool launched = false;
   std::atomic<float> progress{0.0f};
   RunBusyTask(
-      "Loading Deko3D", {},
+      "Loading " DEKO3D_DISPLAY_NAME, {},
       [&] {
         launched = EmbeddedRuntime::Launch(launcher_path, request, error, [&](u64 done, u64 total) {
           progress.store(total ? static_cast<float>(done) / total : 0.0f,
@@ -18744,7 +18759,7 @@ bool RecordInstalledReleaseTag(std::string_view tag)
   Store store;
   if (!store.Load(std::string(CONFIG_PATH)))
     return false;
-  store.Set("Launcher/InstalledReleaseTag", normalized);
+  store.Set(INSTALLED_RELEASE_TAG_KEY, normalized);
   return store.Save(std::string(CONFIG_PATH));
 }
 

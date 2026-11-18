@@ -9,7 +9,7 @@ namespace Deko3D
 {
 bool VideoBackend::Initialize(const WindowSystemInfo&)
 {
-  PanicAlertFmt("Deko3D must be launched through Dolphin's embedded runtime.");
+  PanicAlertFmt(DEKO3D_DISPLAY_NAME " must be launched through Dolphin's embedded runtime.");
   return false;
 }
 

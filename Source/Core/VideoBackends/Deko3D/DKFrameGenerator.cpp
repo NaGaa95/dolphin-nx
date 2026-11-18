@@ -29,6 +29,9 @@
 #include "Common/Align.h"
 #include "Common/HorizonClocks.h"
 #include "Common/Logging/Log.h"
+#ifdef __SWITCH2__
+#include "Common/nx2_platform.h"
+#endif
 
 #include "VideoBackends/Deko3D/Constants.h"
 #include "VideoBackends/Deko3D/DKCommandBufferManager.h"
@@ -166,7 +169,15 @@ public:
   bool Generate(const AbstractTexture* frame, const MathUtil::Rectangle<int>& rect) override;
   const AbstractTexture* GetGeneratedFrame(u32 index) const override;
   u32 GetGeneratedFrameCount() const override { return m_graph_config.generated_frames; }
+#ifdef __SWITCH2__
+  // One refresh: at 120 Hz a 60 FPS game gets a generated frame in between.
+  DT GetDisplayInterval() const override
+  {
+    return std::chrono::nanoseconds(1'000'000'000 / std::max(nx2DisplayRefreshRate(), 1));
+  }
+#else
   DT GetDisplayInterval() const override { return DISPLAY_INTERVAL; }
+#endif
   void Reset() override { m_frames_since_reset = 0; }
 
 private:

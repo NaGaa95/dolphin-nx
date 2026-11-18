@@ -36,6 +36,9 @@
 #include <fmt/ranges.h>
 
 #include "Common/CommonTypes.h"
+#ifdef __SWITCH2__
+#include "Common/nx2_platform.h"
+#endif
 #include "Common/FileUtil.h"
 #include "Common/StringUtil.h"
 
@@ -236,7 +239,13 @@ void CPUInfo::Detect()
   bSHA2 = true;
   bCRC32 = true;
 #elif defined(__SWITCH__)
+#ifdef __SWITCH2__
+  // Six Cortex-A78C cores for the process (core mask 0x3F), with the Armv8.2 crypto and CRC extensions.
+  model_name = "Nintendo Switch 2 (NVIDIA Tegra T239, Cortex-A78C)";
+  num_cores = std::max(nx2CoreCount(), 1);
+#else
   model_name = "Nintendo Switch";
+#endif
   bAES = true;
   bSHA1 = true;
   bSHA2 = true;

@@ -13,6 +13,11 @@
 
 #ifdef __SWITCH__
 #include <switch.h>
+#ifdef __SWITCH2__
+#include <atomic>
+#include <utility>
+#include "Common/nx2_platform.h"
+#endif
 #endif
 
 #ifdef __APPLE__
@@ -154,7 +159,30 @@ void SetThreadAffinity(std::thread::native_handle_type thread, u32 mask)
 
 void SetCurrentThreadAffinity(u32 mask)
 {
-#ifdef __SWITCH__
+#ifdef __SWITCH2__
+  // Switch 2: six cores. 0 (the emulated CPU) and 1 (the GPU thread) stay pinned; 2, the Switch's one core for
+  // everything else, becomes the worker cores 2-5 in turn: each thread gets an ideal core and may move among them.
+  const u64 cores = nx2CoreMask();
+  int32_t core = static_cast<int32_t>(mask);
+  if (core < 2 && ((cores >> core) & 1))
+  {
+    svcSetThreadCoreMask(CUR_THREAD_HANDLE, core, 1ULL << core);
+    return;
+  }
+  const u64 workers = cores & ~u64{3};
+  if (!workers)
+  {
+    svcSetThreadCoreMask(CUR_THREAD_HANDLE, -1, cores);
+    return;
+  }
+  static std::atomic<unsigned> s_next_worker{0};
+  const unsigned count = static_cast<unsigned>(__builtin_popcountll(workers));
+  unsigned pick = s_next_worker.fetch_add(1, std::memory_order_relaxed) % count;
+  u64 rest = workers;
+  while (pick--)
+    rest &= rest - 1;
+  svcSetThreadCoreMask(CUR_THREAD_HANDLE, __builtin_ctzll(rest), workers);
+#elif defined(__SWITCH__)
   int32_t core = static_cast<int32_t>(mask);
   if (core > 2)
     core = 2;
@@ -173,7 +201,20 @@ bool AdjustCurrentThreadPriority(int offset)
 
   // Horizon uses 6-bit priorities.
   const s64 adjusted = static_cast<s64>(current_priority) + offset;
-  const u32 priority = static_cast<u32>(adjusted < 0 ? 0 : adjusted > 0x3f ? 0x3f : adjusted);
+#ifdef __SWITCH2__
+  // kaiHEN's host title refuses priorities outside its mask (63 among them).
+  static const auto [highest, lowest] = [] {
+    u64 mask = 0;
+    if (R_FAILED(svcGetInfo(&mask, InfoType_PriorityMask, CUR_PROCESS_HANDLE, 0)) || mask == 0)
+      return std::pair<s64, s64>{0, 0x3f};
+    return std::pair<s64, s64>{__builtin_ctzll(mask), 63 - __builtin_clzll(mask)};
+  }();
+#else
+  constexpr s64 highest = 0;
+  constexpr s64 lowest = 0x3f;
+#endif
+  const u32 priority =
+      static_cast<u32>(adjusted < highest ? highest : adjusted > lowest ? lowest : adjusted);
   return priority == static_cast<u32>(current_priority) ||
          R_SUCCEEDED(svcSetThreadPriority(CUR_THREAD_HANDLE, priority));
 #else

@@ -21,6 +21,11 @@
 #include <vector>
 
 #include <switch.h>
+#ifdef __SWITCH2__
+#include "Common/nx2_platform.h"
+#include "DolphinSwitch/FrameGeneration.h"
+#endif
+#include "DolphinSwitch/Deko3DName.h"
 
 #include "Common/Config/Config.h"
 #include "Common/FileUtil.h"
@@ -85,7 +90,10 @@
 
 extern "C" {
 u32 __nx_applet_type = AppletType_Application;
+#ifndef __SWITCH2__
+// (a Switch 1 profile: libounce ends the program when the Switch 2 refuses it)
 u32 __nx_applet_PerformanceConfiguration[2] = {0x92220007, 0};
+#endif
 }
 
 namespace
@@ -130,6 +138,12 @@ bool ConfigureDefaultNWindow(NWindow* window, u32 width, u32 height)
   if (!window || !nwindowIsValid(window))
     return false;
 
+#ifdef __SWITCH2__
+  // The default window keeps libounce's per-mode size (nx2DisplayInit) and presents at the display's rate.
+  (void)width;
+  (void)height;
+  return R_SUCCEEDED(nx2DisplayApply(1));
+#endif
   const Result dimensions_result = nwindowSetDimensions(window, width, height);
   const Result crop_result = nwindowSetCrop(window, 0, 0, width, height);
   const Result interval_result = nwindowSetSwapInterval(window, 1);
@@ -993,6 +1007,10 @@ void RunWithLoadingScreen(const std::function<void()>& task)
   if (worker_created)
     threadClose(&worker);
   consoleExit(nullptr);
+#if defined(__SWITCH2__) && !defined(DOLPHIN_SWITCH_DEKO3D_RUNTIME)
+  // (after the framebuffer console: the game's Vulkan or OpenGL renderer opens the GPU again)
+  nx2MesaGpuRecover();
+#endif
 }
 
 SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
@@ -1067,8 +1085,15 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
 
   NWindow* const window = nwindowGetDefault();
   const bool docked = appletGetOperationMode() == AppletOperationMode_Console;
+#ifdef __SWITCH2__
+  (void)docked;
+  (void)nx2DisplayUpdate();
+  u32 width = 1920, height = 1080;
+  nx2DisplaySize(&width, &height);
+#else
   const u32 width = docked ? 1920 : 1280;
   const u32 height = docked ? 1080 : 720;
+#endif
   if (!ConfigureDefaultNWindow(window, width, height))
     return {false, "The display could not be configured after loading the game."};
   const WindowSystemInfo wsi{WindowSystemType::Switch, nullptr, window, window};
@@ -1112,7 +1137,7 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
             Deko3D::FrameGeneration::ShaderStatus::NotPrepared)
     {
       consoleInit(nullptr);
-      std::printf("Loading Deko3D LSFG...\n\n");
+      std::printf("Loading " DEKO3D_DISPLAY_NAME " LSFG...\n\n");
       consoleUpdate(nullptr);
       handoff_error = Deko3D::FrameGeneration::PrepareShaders([](u32 compiled, u32 total) {
         std::printf("\r%u%%", total ? compiled * 100 / total : 0);
@@ -1125,7 +1150,7 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
         return false;
       if (!ConfigureDefaultNWindow(window, width, height))
       {
-        handoff_error = "Deko3D could not restore the display after loading LSFG.";
+        handoff_error = DEKO3D_DISPLAY_NAME " could not restore the display after loading LSFG.";
         return false;
       }
     }
@@ -1429,12 +1454,22 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
       pause_after_render_generation.reset();
     }
 
+#if defined(__SWITCH2__)
+    // Docking, the TV's resolution and frame generation (1440p at 120 Hz docked) resize the default window, which
+    // libounce sizes per mode: the renderer follows.
+    if (nx2DisplaySetFrameGeneration(DolphinSwitch::FrameGeneration::IsEnabled()))
+      (void)nx2DisplayReapply();
+    if (nx2DisplayUpdate() && g_presenter)
+      g_presenter->ResizeSurface();
+#endif
     const std::uint64_t operation_mode_generation =
         s_operation_mode_generation.load(std::memory_order_acquire);
     if (operation_mode_generation != handled_operation_mode_generation)
     {
       handled_operation_mode_generation = operation_mode_generation;
-#ifdef HAS_DEKO3D
+#if defined(__SWITCH2__)
+      // (handled above: libounce resized the default window for the new mode)
+#elif defined(HAS_DEKO3D)
       const bool now_docked = appletGetOperationMode() == AppletOperationMode_Console;
       const u32 new_width = now_docked ? 1920 : 1280;
       const u32 new_height = now_docked ? 1080 : 720;
@@ -1482,13 +1517,21 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
 
 int main(int argc, char** argv)
 {
+#ifdef __SWITCH2__
+  nx2DisplayInit();
+#endif
   Common::HorizonFastmem::ReserveArenaAddressSpace();
 
   // Closing from HOME must run the normal shutdown, which saves the NAND and SYSCONF.
   const bool exit_locked = R_SUCCEEDED(appletLockExit());
   Common::ScopeGuard exit_lock_guard([exit_locked] {
     if (exit_locked)
+#ifdef __SWITCH2__
+      // (the system ends the process once the lock is released: the exit cleanup releases it last)
+      nx2ExitReleaseLockLast();
+#else
       (void)appletUnlockExit();
+#endif
   });
 
   saltynx_start();
@@ -1521,7 +1564,7 @@ int main(int argc, char** argv)
   if (!runtime_request)
   {
     (void)DolphinSwitch::EmbeddedRuntime::ReturnToLauncher(
-        {}, "The Deko3D runtime must be launched from Dolphin.");
+        {}, "The " DEKO3D_DISPLAY_NAME " runtime must be launched from Dolphin.");
     return EXIT_FAILURE;
   }
   const std::string launcher_path = runtime_request->launcher_path;
@@ -1550,7 +1593,7 @@ int main(int argc, char** argv)
   {
 #ifdef DOLPHIN_SWITCH_DEKO3D_RUNTIME
     (void)DolphinSwitch::EmbeddedRuntime::ReturnToLauncher(
-        launcher_path, "The Deko3D runtime's system data could not be mounted.");
+        launcher_path, "The " DEKO3D_DISPLAY_NAME " runtime's system data could not be mounted.");
 #endif
     return EXIT_FAILURE;
   }
@@ -1569,7 +1612,8 @@ int main(int argc, char** argv)
   {
 #ifdef DOLPHIN_SWITCH_DEKO3D_RUNTIME
     (void)DolphinSwitch::EmbeddedRuntime::ReturnToLauncher(
-        launcher_path, "Deko3D requires launching Dolphin with full application memory.");
+        launcher_path,
+        DEKO3D_DISPLAY_NAME " requires launching Dolphin with full application memory.");
     return EXIT_FAILURE;
 #else
     return DolphinSwitch::RunAppletInstaller() ? EXIT_SUCCESS : EXIT_FAILURE;
@@ -1664,7 +1708,16 @@ int main(int argc, char** argv)
       break;
     }
 
+#if defined(__SWITCH2__) && !defined(DOLPHIN_SWITCH_DEKO3D_RUNTIME)
+    // (after the launcher's GL: the game's Vulkan or OpenGL renderer opens the GPU again)
+    nx2MesaGpuRecover();
+#endif
     const SessionResult result = RunGameSession(*request, launcher_path);
+#if defined(__SWITCH2__) && !defined(DOLPHIN_SWITCH_DEKO3D_RUNTIME)
+    // (back to the launcher's GL)
+    if (!result.exit_application && !result.restart_launcher)
+      nx2MesaGpuRecover();
+#endif
     if (result.exit_application)
       break;
 #ifdef DOLPHIN_SWITCH_DEKO3D_RUNTIME

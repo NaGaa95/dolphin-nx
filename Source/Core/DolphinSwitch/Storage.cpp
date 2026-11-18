@@ -5,7 +5,11 @@
 #include "DolphinSwitch/Storage.h"
 
 #include <switch.h>
+#ifdef __SWITCH2__
+#include "DolphinSwitch/SwitchUsbHsFsStub.h"  // no USB drives on the Switch 2 (usb:hs is never opened)
+#else
 #include <usbhsfs.h>
+#endif
 
 #include <ctime>
 #include <smb2/smb2.h>

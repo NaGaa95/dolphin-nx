@@ -36,7 +36,14 @@ namespace
 constexpr char kLatestReleaseUrl[] =
     "https://api.github.com/repos/NaGaa95/dolphin-nx/releases/latest";
 constexpr char kReleaseAssetPrefix[] = "https://github.com/NaGaa95/dolphin-nx/releases/download/";
+// Each build installs only its own release asset (a release carries both).
+#ifdef __SWITCH2__
+constexpr char kDefaultLauncherPath[] = "sdmc:/switch/dolphin/dolphin-nx2.nro";
+constexpr char kPreferredAsset[] = "dolphin-nx2.nro";
+#else
 constexpr char kDefaultLauncherPath[] = "sdmc:/switch/dolphin/dolphin.nro";
+constexpr char kPreferredAsset[] = "dolphin.nro";
+#endif
 constexpr std::size_t kMaxReleaseResponse = 2 * 1024 * 1024;
 constexpr std::uint64_t kMinimumNroSize = 1024 * 1024;
 constexpr std::uint64_t kMaximumNroSize = 512ULL * 1024 * 1024;
@@ -273,31 +280,22 @@ bool ParseRelease(const std::string& json, ReleaseInfo& release, std::string& er
   if (release.notes.empty())
     release.notes = "No release notes were provided.";
 
-  int bestAsset = -1;
-  const auto assets = JsonArrayObjects(json, "assets");
-  for (std::size_t index = 0; index < assets.size(); ++index)
+  for (const std::string& asset : JsonArrayObjects(json, "assets"))
   {
     std::string name;
     std::string url;
     std::uint64_t size = 0;
-    if (!JsonString(assets[index], "name", name) ||
-        !JsonString(assets[index], "browser_download_url", url) ||
-        !JsonUnsigned(assets[index], "size", size))
+    if (!JsonString(asset, "name", name) || !JsonString(asset, "browser_download_url", url) ||
+        !JsonUnsigned(asset, "size", size))
       continue;
-    const std::string lowerName = Lower(name);
-    if (lowerName.size() < 4 || lowerName.substr(lowerName.size() - 4) != ".nro" ||
-        size < kMinimumNroSize || size > kMaximumNroSize || !StartsWith(url, kReleaseAssetPrefix))
+    if (Lower(name) != kPreferredAsset || size < kMinimumNroSize || size > kMaximumNroSize ||
+        !StartsWith(url, kReleaseAssetPrefix))
       continue;
-    if (bestAsset < 0 || lowerName == "dolphin.nro")
-    {
-      bestAsset = static_cast<int>(index);
-      release.asset_name = std::move(name);
-      release.asset_url = std::move(url);
-      release.asset_size = size;
-      JsonString(assets[index], "digest", release.asset_digest);
-      if (lowerName == "dolphin.nro")
-        break;
-    }
+    release.asset_name = std::move(name);
+    release.asset_url = std::move(url);
+    release.asset_size = size;
+    JsonString(asset, "digest", release.asset_digest);
+    break;
   }
   return true;
 }
@@ -414,6 +412,43 @@ bool ParseSha256(const std::string& digest, std::array<u8, SHA256_HASH_SIZE>& ou
   return true;
 }
 
+// Whether an NRO is built for this console: libounce programs carry an "OUN0" record after the MOD0 header naming
+// their platform (1 Switch, 2 Switch 2); libnx programs have none.
+bool TargetsThisConsole(FILE* file, const NroStart& start, const NroHeader& header)
+{
+  constexpr u32 MOD0_MAGIC = 0x30444F4D;
+  constexpr u32 OUN0_MAGIC = 0x304E554F;
+  constexpr u32 LNY_PREFIX = 0x594E4C;
+  constexpr std::size_t RECORDS_OFFSET = 0x1C;
+  constexpr std::size_t RECORD_SIZE = 0xC;
+  std::array<u32, (RECORDS_OFFSET + 8 * RECORD_SIZE) / sizeof(u32)> mod0{};
+  u32 platform = 0;
+  if (start.mod_offset < header.size && std::fseek(file, start.mod_offset, SEEK_SET) == 0)
+  {
+    const std::size_t available = std::min<std::size_t>(sizeof(mod0), header.size - start.mod_offset);
+    const std::size_t words = std::fread(mod0.data(), 1, available, file) / sizeof(u32);
+    if (words > RECORDS_OFFSET / sizeof(u32) && mod0[0] == MOD0_MAGIC)
+    {
+      for (std::size_t word = RECORDS_OFFSET / sizeof(u32); word + 1 < words;
+           word += RECORD_SIZE / sizeof(u32))
+      {
+        if (mod0[word] == OUN0_MAGIC)
+        {
+          platform = mod0[word + 1];
+          break;
+        }
+        if ((mod0[word] & 0xFFFFFF) != LNY_PREFIX)
+          break;
+      }
+    }
+  }
+#ifdef __SWITCH2__
+  return platform == 2;
+#else
+  return platform != 2;
+#endif
+}
+
 bool ValidNro(const std::string& path, std::uint64_t expectedSize)
 {
   struct stat fileStat{};
@@ -427,9 +462,12 @@ bool ValidNro(const std::string& path, std::uint64_t expectedSize)
   NroHeader header{};
   const bool read = std::fread(&start, 1, sizeof(start), file) == sizeof(start) &&
                     std::fread(&header, 1, sizeof(header), file) == sizeof(header);
+  const bool valid = read && header.magic == NROHEADER_MAGIC &&
+                     header.size >= sizeof(start) + sizeof(header) &&
+                     header.size <= static_cast<u64>(fileStat.st_size) &&
+                     TargetsThisConsole(file, start, header);
   std::fclose(file);
-  if (!read || header.magic != NROHEADER_MAGIC || header.size < sizeof(start) + sizeof(header) ||
-      header.size > static_cast<u64>(fileStat.st_size))
+  if (!valid)
     return false;
   for (const auto& segment : header.segments)
     if (segment.file_off > header.size || segment.size > header.size - segment.file_off)

@@ -17,6 +17,7 @@
 #include "Common/Align.h"
 #include "Common/CommonTypes.h"
 #include "Common/JitRegister.h"
+#include "Common/MemoryUtil.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/Core.h"
 #include "Core/Host.h"
@@ -319,6 +320,10 @@ void JitBaseBlockCache::InvalidateICacheLine(u32 address)
 
 void JitBaseBlockCache::InvalidateICache(u32 initial_address, u32 initial_length, bool forced)
 {
+#ifdef __SWITCH2__
+  // Publishes the patches of every block destroyed here to kaiHEN in one request.
+  const Common::ScopedJITPageWriteAndNoExecute enable_jit_page_writes;
+#endif
   u32 address = initial_address;
   u32 length = initial_length;
   while (length > 0)

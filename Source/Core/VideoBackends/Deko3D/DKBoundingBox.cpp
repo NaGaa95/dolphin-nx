@@ -54,6 +54,10 @@ std::vector<BBoxType> DKBoundingBox::Read(u32 index, u32 length)
   ASSERT(index + length <= NUM_BBOX_VALUES);
 
   DkCmdBuf cmdbuf = g_dk_command_buffer_mgr->GetCurrentCommandBuffer();
+#ifdef __SWITCH2__
+  // (the copy engine runs alongside graphics on the Switch 2: wait for the shaders' atomics)
+  dkCmdBufBarrier(cmdbuf, DkBarrier_Full, 0);
+#endif
   dkCmdBufCopyBuffer(cmdbuf, m_gpu_buffer.getGpuAddr(), m_readback_buffer.getGpuAddr(),
                      BUFFER_SIZE);
 
@@ -88,7 +92,16 @@ void DKBoundingBox::Write(u32 index, std::span<const BBoxType> values)
   std::memcpy(m_upload_buffer->GetCurrentHostPointer(), values.data(), size);
   m_upload_buffer->CommitMemory(size);
 
-  dkCmdBufCopyBuffer(g_dk_command_buffer_mgr->GetCurrentCommandBuffer(), upload_addr,
-                     m_gpu_buffer.getGpuAddr() + index * sizeof(BBoxType), size);
+  const DkCmdBuf cmdbuf = g_dk_command_buffer_mgr->GetCurrentCommandBuffer();
+#ifdef __SWITCH2__
+  // (the copy engine runs alongside graphics on the Switch 2: the shaders' atomics and the reset
+  // values stay in order)
+  dkCmdBufBarrier(cmdbuf, DkBarrier_Full, 0);
+#endif
+  dkCmdBufCopyBuffer(cmdbuf, upload_addr, m_gpu_buffer.getGpuAddr() + index * sizeof(BBoxType),
+                     size);
+#ifdef __SWITCH2__
+  dkCmdBufBarrier(cmdbuf, DkBarrier_Full, DkInvalidateFlags_L2Cache);
+#endif
 }
 }

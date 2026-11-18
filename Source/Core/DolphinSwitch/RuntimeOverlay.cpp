@@ -119,6 +119,8 @@ bool s_initialized = false;
 bool s_show_fps = false;
 bool s_vbi_skip = false;
 bool s_is_wii = false;
+// The quick menu's scale for the frame being drawn (OverlayScale): row and list heights follow it.
+float s_ui_scale = 1.0f;
 Page s_page = Page::Main;
 int s_selection = 0;
 int s_controller_player = 0;
@@ -963,11 +965,17 @@ void CenteredText(std::string_view text)
   ImGui::TextUnformatted(text.data(), text.data() + text.size());
 }
 
+// The overlay's sizes are laid out for 1080 lines: scaled to the output's height (2x on a 4K TV).
+float OverlayScale(const ImGuiIO& io)
+{
+  return std::max(0.72f, io.DisplaySize.y / 1080.0f);
+}
+
 void SelectableRow(const std::string& label, int index, float height = 48.0f)
 {
   const bool selected = s_selection == index;
   ImGui::Selectable((label + "##row" + std::to_string(index)).c_str(), selected,
-                    ImGuiSelectableFlags_None, {0.0f, height});
+                    ImGuiSelectableFlags_None, {0.0f, height * s_ui_scale});
   if (selected)
     ImGui::SetScrollHereY(0.5f);
 }
@@ -1017,6 +1025,12 @@ void RenderMainPage()
   SelectableRow("Return to Dolphin launcher", 13);
   if (HasGBA())
     SelectableRow("Game Boy Advance                                >", 14);
+}
+
+// The rows RenderMainPage draws: 12, and up to 15 for a Wii game.
+int MainPageRowCount()
+{
+  return 12 + (s_is_wii ? 2 : 0) + (HasGBA() ? 1 : 0);
 }
 
 void RenderSkylandersPage()
@@ -1106,7 +1120,8 @@ void RenderControllerModesPage()
 
 void RenderStatePage(bool saving)
 {
-  const float child_height = std::max(220.0f, ImGui::GetContentRegionAvail().y - 58.0f);
+  const float child_height =
+      std::max(220.0f * s_ui_scale, ImGui::GetContentRegionAvail().y - 58.0f * s_ui_scale);
   ImGui::BeginChild("state slots", {0.0f, child_height}, false, ImGuiWindowFlags_NoInputs);
   for (int slot = 0; slot < static_cast<int>(State::NUM_STATES); ++slot)
   {
@@ -1133,7 +1148,8 @@ void RenderDiscBrowser()
 {
   ImGui::TextUnformatted(Shorten(s_browser_directory, 88).c_str());
   ImGui::Separator();
-  const float child_height = std::max(200.0f, ImGui::GetContentRegionAvail().y - 58.0f);
+  const float child_height =
+      std::max(200.0f * s_ui_scale, ImGui::GetContentRegionAvail().y - 58.0f * s_ui_scale);
   ImGui::BeginChild("disc files", {0.0f, child_height}, false, ImGuiWindowFlags_NoInputs);
   if (s_browser_entries.empty())
   {
@@ -1160,7 +1176,8 @@ void RenderDiscBrowser()
 
 void RenderCheatsPage()
 {
-  const float child_height = std::max(220.0f, ImGui::GetContentRegionAvail().y - 58.0f);
+  const float child_height =
+      std::max(220.0f * s_ui_scale, ImGui::GetContentRegionAvail().y - 58.0f * s_ui_scale);
   ImGui::BeginChild("cheat list", {0.0f, child_height}, false, ImGuiWindowFlags_NoInputs);
   SelectableRow(std::string("Cheat engine                 <  ") +
                     (s_cheats_enabled ? "Enabled" : "Disabled") + "  >",
@@ -1195,7 +1212,8 @@ void RenderAchievementsPage()
   if (!s_achievement_presence.empty())
     ImGui::TextColored({0.55f, 0.92f, 1.0f, 1.0f}, "%s", s_achievement_presence.c_str());
   ImGui::Separator();
-  const float child_height = std::max(210.0f, ImGui::GetContentRegionAvail().y - 116.0f);
+  const float child_height =
+      std::max(210.0f * s_ui_scale, ImGui::GetContentRegionAvail().y - 116.0f * s_ui_scale);
   ImGui::BeginChild("achievement list", {0.0f, child_height}, false,
                     ImGuiWindowFlags_NoInputs);
   int row = 0;
@@ -1229,10 +1247,10 @@ void RenderAlert()
   CenteredText(s_alert_caption.empty() ? "Dolphin message" : s_alert_caption);
   ImGui::PopStyleColor();
   ImGui::Spacing();
-  ImGui::PushTextWrapPos(ImGui::GetWindowWidth() - 30.0f);
+  ImGui::PushTextWrapPos(ImGui::GetWindowWidth() - 30.0f * s_ui_scale);
   ImGui::TextWrapped("%s", s_alert_message.c_str());
   ImGui::PopTextWrapPos();
-  ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 86.0f);
+  ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 86.0f * s_ui_scale);
   ImGui::Separator();
   CenteredText("A / B  Close");
 }
@@ -1599,7 +1617,7 @@ void SetControllerModeResult(int player, ControllerMode mode, bool success)
 void DrawBanner(const std::string& text)
 {
   const ImGuiIO& io = ImGui::GetIO();
-  const float scale = std::clamp(io.DisplaySize.y / 1080.0f, 0.72f, 1.0f);
+  const float scale = OverlayScale(io);
   const float font_size = 26.0f * scale;
   const ImVec2 text_size = ImGui::GetFont()->CalcTextSizeA(font_size, FLT_MAX, 0.0f, text.c_str());
   const ImVec2 text_pos{(io.DisplaySize.x - text_size.x) * 0.5f, 24.0f * scale};
@@ -1637,7 +1655,7 @@ void DrawTouchCalibration()
     return;
 
   const ImGuiIO& io = ImGui::GetIO();
-  const float scale = std::clamp(io.DisplaySize.y / 1080.0f, 0.72f, 1.0f);
+  const float scale = OverlayScale(io);
   const ImVec2 center{left + s_calibration_x * width, top + s_calibration_y * height};
   const float radius = 26.0f * scale;
   ImDrawList* const draw = ImGui::GetForegroundDrawList();
@@ -1681,10 +1699,16 @@ void Draw()
   const ImGuiIO& io = ImGui::GetIO();
   ImGui::GetBackgroundDrawList()->AddRectFilled({0.0f, 0.0f}, io.DisplaySize,
                                                 IM_COL32(0, 0, 0, 132));
-  const float scale = std::clamp(io.DisplaySize.y / 1080.0f, 0.72f, 1.0f);
+  const float scale = OverlayScale(io);
+  s_ui_scale = scale;
   ImGui::SetNextWindowPos({io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f}, ImGuiCond_Always,
                           {0.5f, 0.5f});
-  ImGui::SetNextWindowSize({880.0f * scale, 760.0f * scale}, ImGuiCond_Always);
+  // Tall enough for the main page and the button hints below it: padding, title, two separators, the hints, and
+  // 48-pixel rows with their spacing.
+  const float main_page_height =
+      ((22.0f * 2 + (25.0f + 8.0f) * 2 + (1.0f + 8.0f) * 2 + 8.0f) + MainPageRowCount() * (48.0f + 8.0f)) *
+      scale;
+  ImGui::SetNextWindowSize({880.0f * scale, std::max(760.0f * scale, main_page_height)}, ImGuiCond_Always);
   ImGui::SetNextWindowBgAlpha(0.96f);
 
   ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 16.0f * scale);
@@ -1748,7 +1772,7 @@ void Draw()
     case Page::Main:
       RenderMainPage();
       ImGui::Separator();
-      CenteredText("D-Pad  Navigate     A  Select     B  Close     L + R + Plus  Toggle");
+      CenteredText("D-Pad  Navigate     A  Select     B  Close");
       break;
     case Page::SaveStates:
       RenderStatePage(true);

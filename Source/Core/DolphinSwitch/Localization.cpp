@@ -19,6 +19,7 @@
 #include "Common/IOFile.h"
 #include "Common/JsonUtil.h"
 #include "DolphinSwitch/SystemLanguage.h"
+#include "DolphinSwitch/Deko3DName.h"
 
 namespace DolphinSwitch
 {
@@ -46,6 +47,7 @@ struct LauncherTranslation
 
 // These are Switch-launcher-specific strings which are not present in Dolphin's regular gettext
 // catalog yet. Everything else falls through to the catalog generated from Languages/po.
+#define LSFG_LABEL "LSFG 2x (Vulkan / " DEKO3D_DISPLAY_NAME ")"
 constexpr std::array LAUNCHER_TRANSLATIONS = {
     LauncherTranslation{"System", "Système", "System", "Sistema", "Sistema", "Sistema"},
     LauncherTranslation{"Language", "Langue", "Sprache", "Idioma", "Lingua", "Idioma"},
@@ -648,11 +650,10 @@ constexpr std::array LAUNCHER_TRANSLATIONS = {
                         "Carica profilo", "Carregar perfil"},
     LauncherTranslation{"Lossless.dll", "Lossless.dll", "Lossless.dll", "Lossless.dll",
                         "Lossless.dll", "Lossless.dll"},
-    LauncherTranslation{"LSFG 2x (Vulkan / Deko3D)", "LSFG 2x (Vulkan / Deko3D)",
-                        "LSFG 2x (Vulkan / Deko3D)", "LSFG 2x (Vulkan / Deko3D)",
-                        "LSFG 2x (Vulkan / Deko3D)", "LSFG 2x (Vulkan / Deko3D)"},
-    LauncherTranslation{"Loading Deko3D", "Chargement de Deko3D", "Deko3D wird geladen",
-                        "Cargando Deko3D", "Caricamento Deko3D", "A carregar Deko3D"},
+    LauncherTranslation{LSFG_LABEL, LSFG_LABEL, LSFG_LABEL, LSFG_LABEL, LSFG_LABEL, LSFG_LABEL},
+    LauncherTranslation{"Loading " DEKO3D_DISPLAY_NAME, "Chargement de " DEKO3D_DISPLAY_NAME,
+                        DEKO3D_DISPLAY_NAME " wird geladen", "Cargando " DEKO3D_DISPLAY_NAME,
+                        "Caricamento " DEKO3D_DISPLAY_NAME, "A carregar " DEKO3D_DISPLAY_NAME},
     LauncherTranslation{"Memory card path", "Chemin de la carte mémoire", "Speicherkartenpfad",
                         "Ruta de la tarjeta de memoria", "Percorso scheda di memoria",
                         "Caminho do cartão de memória"},

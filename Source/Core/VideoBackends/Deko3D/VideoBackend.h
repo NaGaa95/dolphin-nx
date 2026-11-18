@@ -5,6 +5,7 @@
 #pragma once
 
 #include "Common/Common.h"
+#include "DolphinSwitch/Deko3DName.h"
 #include "VideoCommon/VideoBackendBase.h"
 
 namespace Deko3D
@@ -16,7 +17,7 @@ public:
   void Shutdown() override;
 
   std::string GetConfigName() const override { return CONFIG_NAME; }
-  std::string GetDisplayName() const override { return "deko3d"; }
+  std::string GetDisplayName() const override { return DEKO3D_DISPLAY_NAME; }
   void InitBackendInfo(const WindowSystemInfo& wsi) override;
 
   static constexpr const char* CONFIG_NAME = "Deko3D";

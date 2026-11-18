@@ -250,8 +250,16 @@ void DKTexture::CopyRectangleFromTexture(const AbstractTexture* src,
       static_cast<u32>(dst_rect.left),       static_cast<u32>(dst_rect.top),         0,
       static_cast<u32>(dst_rect.GetWidth()), static_cast<u32>(dst_rect.GetHeight()), 1};
 
-  dkCmdBufCopyImage(g_dk_command_buffer_mgr->GetCurrentCommandBuffer(), &src_view, &src_image_rect,
-                    &dst_view, &dst_image_rect, 0);
+  const DkCmdBuf cmdbuf = g_dk_command_buffer_mgr->GetCurrentCommandBuffer();
+#ifdef __SWITCH2__
+  // The copy engine runs alongside graphics on the Switch 2: the copy waits for the draws before
+  // it, and what follows waits for the copy.
+  dkCmdBufBarrier(cmdbuf, DkBarrier_Full, 0);
+#endif
+  dkCmdBufCopyImage(cmdbuf, &src_view, &src_image_rect, &dst_view, &dst_image_rect, 0);
+#ifdef __SWITCH2__
+  dkCmdBufBarrier(cmdbuf, DkBarrier_Full, DkInvalidateFlags_Image);
+#endif
 }
 
 void DKTexture::ResolveFromTexture(const AbstractTexture* src, const MathUtil::Rectangle<int>& rect,
@@ -406,11 +414,19 @@ void DKStagingTexture::CopyFromTexture(const AbstractTexture* src,
                                       static_cast<size_t>(dst_rect.left) * m_texel_size);
   const DkCopyBuf dst{m_memblock.getGpuAddr() + offset, static_cast<u32>(m_config.GetStride()), 0};
 
+#ifdef __SWITCH2__
+  // (the copy engine runs alongside graphics on the Switch 2)
+  dkCmdBufBarrier(cmdbuf, DkBarrier_Full, 0);
+#endif
   dkCmdBufCopyImageToBuffer(cmdbuf, &src_view, &src_image_rect, &dst, 0);
 
+#ifdef __SWITCH2__
+  dkCmdBufBarrier(cmdbuf, DkBarrier_Full, DkInvalidateFlags_L2Cache);
+#else
   const u32 threed_nop = 0x80000040;
   dkCmdBufReplayCmds(cmdbuf, &threed_nop, 1);
   dkCmdBufBarrier(cmdbuf, DkBarrier_None, DkInvalidateFlags_L2Cache);
+#endif
 
   m_needs_flush = true;
   m_flush_fence_counter = g_dk_command_buffer_mgr->GetCurrentFenceCounter();
@@ -439,7 +455,14 @@ void DKStagingTexture::CopyToTexture(const MathUtil::Rectangle<int>& src_rect, A
       static_cast<u32>(dst_rect.left),       static_cast<u32>(dst_rect.top),         0,
       static_cast<u32>(dst_rect.GetWidth()), static_cast<u32>(dst_rect.GetHeight()), 1};
 
+#ifdef __SWITCH2__
+  // (the copy engine runs alongside graphics on the Switch 2)
+  dkCmdBufBarrier(cmdbuf, DkBarrier_Full, 0);
+#endif
   dkCmdBufCopyBufferToImage(cmdbuf, &src, &dst_view, &dst_image_rect, 0);
+#ifdef __SWITCH2__
+  dkCmdBufBarrier(cmdbuf, DkBarrier_Full, DkInvalidateFlags_Image);
+#endif
 
   m_needs_flush = true;
   m_flush_fence_counter = g_dk_command_buffer_mgr->GetCurrentFenceCounter();
