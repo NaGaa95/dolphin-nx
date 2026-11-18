@@ -25,6 +25,7 @@ namespace
 std::atomic_bool s_available{false};
 std::atomic_bool s_enabled{false};
 std::atomic_bool s_passthrough{false};
+std::atomic_bool s_high_refresh{false};
 std::mutex s_mutex;
 std::string s_status = "Disabled in the launcher";
 
@@ -91,6 +92,22 @@ bool IsHighFPSPassthrough()
     return Vulkan::LSFG::IsHighFPSPassthrough();
 #endif
   return false;
+}
+
+// The docked 120 Hz output is for a 50/60 FPS game: asked once the game shows that rate (passed
+// through at 60 Hz) while frame generation runs with the option on, then kept until frame
+// generation stops, so a game that slows down for a while does not switch the TV back and forth.
+// A 30 FPS game stays at the TV's resolution and 60 Hz.
+bool WantsHighRefresh()
+{
+  if (!Config::Get(Config::GFX_LSFG_120HZ_OUTPUT) || !IsEnabled())
+  {
+    s_high_refresh.store(false, std::memory_order_relaxed);
+    return false;
+  }
+  if (IsHighFPSPassthrough())
+    s_high_refresh.store(true, std::memory_order_relaxed);
+  return s_high_refresh.load(std::memory_order_relaxed);
 }
 
 bool RequestEnabled(bool enabled)

@@ -17,6 +17,10 @@
 
 #include "lsfg_bridge.h"
 
+#ifdef __SWITCH2__
+#include "Common/nx2_platform.h"
+#endif
+
 namespace Vulkan::LSFG
 {
 namespace
@@ -113,6 +117,17 @@ bool SourceIsHighRateLocked()
 {
   return s_state.source_samples >= 8 && s_state.source_interval_ns > 0.0 &&
          s_state.source_interval_ns < 30'000'000.0;
+}
+
+// A 50/60 FPS game is doubled only on a 120 Hz display (Switch 2: handheld, or a TV on frame
+// generation's 120 Hz output); at 60 Hz it is presented as it is.
+bool DisplayDoublesHighRate()
+{
+#ifdef __SWITCH2__
+  return nx2DisplayRefreshRate() >= 120;
+#else
+  return false;
+#endif
 }
 }  // namespace
 
@@ -276,7 +291,7 @@ VkResult Present(VkQueue queue, const VkPresentInfoKHR& present_info)
   if (s_state.rate_decision < 0 && s_state.source_samples >= 8)
     s_state.rate_decision = SourceIsHighRateLocked() ? 1 : 0;
 
-  if (s_state.rate_decision == 1)
+  if (s_state.rate_decision == 1 && !DisplayDoublesHighRate())
   {
     s_state.status = "Frame generation On (native 50/60 FPS protected)";
     if (source_interval >= 31'500'000)
@@ -371,7 +386,8 @@ bool IsEnabled()
 bool IsHighFPSPassthrough()
 {
   return s_state.enabled.load(std::memory_order_acquire) &&
-         s_state.rate_decision.load(std::memory_order_acquire) == 1;
+         s_state.rate_decision.load(std::memory_order_acquire) == 1 &&
+         !DisplayDoublesHighRate();
 }
 
 bool RequestEnabled(bool enabled)

@@ -1455,9 +1455,9 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
     }
 
 #if defined(__SWITCH2__)
-    // Docking, the TV's resolution and frame generation (1440p at 120 Hz docked) resize the default window, which
-    // libounce sizes per mode: the renderer follows.
-    if (nx2DisplaySetFrameGeneration(DolphinSwitch::FrameGeneration::IsEnabled()))
+    // Docking, the TV's resolution and frame generation's 120 Hz output (1440p or 1080p docked, with the option on)
+    // resize the default window, which libounce sizes per mode: the renderer follows.
+    if (nx2DisplaySetFrameGeneration(DolphinSwitch::FrameGeneration::WantsHighRefresh()))
       (void)nx2DisplayReapply();
     if (nx2DisplayUpdate() && g_presenter)
       g_presenter->ResizeSurface();
@@ -1497,6 +1497,11 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
   boot_boost.reset();
   Core::Stop(system);
   Core::Shutdown(system);
+#ifdef __SWITCH2__
+  // (the launcher goes back to the TV's resolution at 60 Hz)
+  if (nx2DisplaySetFrameGeneration(false))
+    (void)nx2DisplayReapply();
+#endif
 
   std::string error_message = CollectAlertText({});
   std::string gci_sync_warning;

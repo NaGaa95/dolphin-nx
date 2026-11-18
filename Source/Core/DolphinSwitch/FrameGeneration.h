@@ -15,6 +15,8 @@ bool AreDekoShadersPrepared();
 bool IsAvailable();
 bool IsEnabled();
 bool IsHighFPSPassthrough();
+// Switch 2: whether to ask for the docked 120 Hz output (nx2DisplaySetFrameGeneration), for the main loop.
+bool WantsHighRefresh();
 bool RequestEnabled(bool enabled);
 std::string GetStatus();
 

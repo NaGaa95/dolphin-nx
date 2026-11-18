@@ -112,6 +112,7 @@ extern const Info<bool> GFX_CPU_CULL;
 extern const Info<bool> GFX_LSFG_ENABLED;
 extern const Info<float> GFX_LSFG_FLOW_SCALE;
 extern const Info<bool> GFX_LSFG_PERFORMANCE_MODE;
+extern const Info<bool> GFX_LSFG_120HZ_OUTPUT;
 
 extern const Info<TriState> GFX_MTL_MANUALLY_UPLOAD_BUFFERS;
 extern const Info<TriState> GFX_MTL_USE_PRESENT_DRAWABLE;

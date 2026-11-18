@@ -138,6 +138,9 @@ const Info<float> GFX_LSFG_FLOW_SCALE{{System::GFX, "Settings", "LSFGFlowScale"}
 #endif
 const Info<bool> GFX_LSFG_PERFORMANCE_MODE{
     {System::GFX, "Settings", "LSFGPerformanceMode"}, true};
+// Switch 2, docked: frame generation may switch the TV to 120 Hz (1440p or 1080p) for a 50/60 FPS
+// game.
+const Info<bool> GFX_LSFG_120HZ_OUTPUT{{System::GFX, "Settings", "LSFG120HzOutput"}, false};
 
 const Info<TriState> GFX_MTL_MANUALLY_UPLOAD_BUFFERS{
     {System::GFX, "Settings", "ManuallyUploadBuffers"}, TriState::Auto};

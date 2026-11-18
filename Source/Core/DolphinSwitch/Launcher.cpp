@@ -89,6 +89,10 @@
 #include "VideoCommon/PostProcessing.h"
 #include "VideoCommon/VideoConfig.h"
 
+#ifdef __SWITCH2__
+#include "Common/nx2_platform.h"
+#endif
+
 namespace DolphinSwitch
 {
 namespace
@@ -110,7 +114,14 @@ constexpr int COVER_UPLOAD_BUDGET = 2;
 constexpr std::size_t COVER_JOB_LIMIT = 96;
 constexpr std::size_t COVER_READY_LIMIT = 4;
 constexpr std::size_t TEXT_CACHE_LIMIT = 512;
-constexpr std::size_t TEXT_CACHE_BYTES = 12 * 1024 * 1024;
+constexpr std::size_t TEXT_CACHE_BYTES = 12 * 1024 * 1024;  // up to 1080p: see TextCacheBudget
+// Text textures have the output's resolution, so the budget grows with the square of the UI scale:
+// a 4K screen's text would not fit a 1080p budget and would be drawn again every frame.
+std::size_t TextCacheBudget(float font_scale)
+{
+  const float scale = std::max(1.5f, font_scale) / 1.5f;
+  return static_cast<std::size_t>(static_cast<float>(TEXT_CACHE_BYTES) * scale * scale);
+}
 constexpr std::size_t METRIC_CACHE_LIMIT = 2048;
 constexpr std::size_t ELLIPSIS_CACHE_LIMIT = 512;
 constexpr std::size_t BUSY_TASK_STACK_SIZE = 2 * 1024 * 1024;
@@ -1295,6 +1306,10 @@ static constexpr SettingHelpEntry SETTING_HELP[] = {
     {"Lossless.dll", "Required component",
      "Uses Lossless.dll from the lsfg folder for Vulkan and " DEKO3D_DISPLAY_NAME
      " frame generation."},
+    {"120 Hz Docked Mode", "Frame generation",
+     "Docked, switches the TV to 120 Hz (1440p or 1080p, the TV's 120 Hz mode) while frame "
+     "generation runs for a 50/60 FPS game, so that it is doubled to 120 FPS. Off, the output "
+     "stays at the TV's resolution and frame generation doubles 30 FPS games to 60."},
 
     {"Anti-aliasing", "Image quality / performance",
      "Smooths polygon edges. MSAA increases GPU and memory cost; SSAA is substantially more "
@@ -1631,6 +1646,11 @@ static constexpr SettingHelpEntry SETTING_HELP[] = {
      "Enables launcher transitions, animated highlights and moving theme elements."},
     {"Sound effects", "Launcher audio",
      "Enables SDL launcher navigation, confirmation and back sound effects."},
+#ifdef __SWITCH2__
+    {"Joy-Con mouse", "Launcher input",
+     "Lets a Joy-Con set down on a surface move a cursor in the launcher (Switch 2). Turn it off to "
+     "keep the Joy-Con's shoulder buttons for the launcher only."},
+#endif
     {"SteamGridDB API key", "Artwork service",
      "Edits the API key used to search and download SteamGridDB covers and shortcut icons. Leave "
      "it blank to remove the saved key."},
@@ -2008,6 +2028,17 @@ private:
   void DrawSettingsFooter(std::string_view text);
   void BeginScreenFx();
   void DrawFadeIn();
+  // SDL_RenderPresent, after the Joy-Con mouse cursor (Switch 2).
+  void PresentFrame();
+#ifdef __SWITCH2__
+  void StartJoyConMouse();
+  void StopJoyConMouse();
+  void JoyConMouseThread();
+  bool JoyConMouseInUse() const;
+  static int SDLCALL JoyConMouseEventFilter(void* userdata, SDL_Event* event);
+  void PushJoyConMouseFinger(Uint32 type, int x, int y, float dx = 0.0f, float dy = 0.0f);
+  void DrawJoyConMouseCursor();
+#endif
   void ShowInfoCard(std::string_view section, std::string_view title, std::string_view kind,
                     std::string_view description, std::string_view current, std::string_view scope,
                     bool localize_title = true, bool localize_current = false);
@@ -2262,6 +2293,16 @@ private:
   float m_ui_scale = 1.0f;
   float m_font_scale = 1.0f;
   bool m_present_vsync = false;
+#ifdef __SWITCH2__
+  std::thread m_mouse_thread;
+  std::atomic_bool m_mouse_stop{false};
+  std::atomic_bool m_mouse_down{false};
+  std::atomic_int m_mouse_x{-1};
+  std::atomic_int m_mouse_y{-1};
+  std::atomic<Uint32> m_mouse_moved_at{0};
+  Uint32 m_mouse_wake_event = static_cast<Uint32>(-1);
+  bool m_mouse_filter_set = false;
+#endif
   Theme m_theme = Theme::Wii;
   bool m_animations = true;
   bool m_show_titles = true;
@@ -2592,7 +2633,7 @@ bool Launcher::Initialize(bool applet_installer)
     DrawWrappedCentered(
         m_font_small, m_width / 2, m_height / 2 + 26, panel_width - 64, 32, 2,
         m_localization.Translate("The first page will appear as soon as it is ready."), m_dim);
-    SDL_RenderPresent(m_renderer);
+    PresentFrame();
     LoadSourcesAndShares();
     m_cover_download_ready = CoverDownload::Initialize();
   }
@@ -2606,6 +2647,15 @@ void Launcher::Shutdown()
   if (m_shutdown)
     return;
   m_shutdown = true;
+#ifdef __SWITCH2__
+  // (the game that follows runs in this process and must not see the cursor's events)
+  StopJoyConMouse();
+  if (m_mouse_filter_set)
+  {
+    SDL_SetEventFilter(nullptr, nullptr);
+    m_mouse_filter_set = false;
+  }
+#endif
   // The USB callback uses SDL_PushEvent, so fence it before the SDL event subsystem is torn down.
   Storage::SetUsbStatusCallback(nullptr);
   StopGameScan();
@@ -2709,7 +2759,7 @@ void Launcher::PrepareApplicationExit()
                         m_localization.Translate("Closing Dolphin..."), m_value);
     DrawWrappedCentered(m_font_small, m_width / 2, m_height / 2 + 30, panel_width - 64, 32, 2,
                         m_localization.Translate("Finishing background operations safely."), m_dim);
-    SDL_RenderPresent(m_renderer);
+    PresentFrame();
   };
   render_closing();
 
@@ -3164,32 +3214,36 @@ void Launcher::DrawWiiBackground(float time)
       SDL_Rect glow{center_x - radius * 2, center_y - radius * 2, radius * 4, radius * 4};
       SDL_RenderCopy(m_renderer, m_glow, nullptr, &glow);
     }
-    constexpr int segments = 24;
-    std::array<SDL_Point, segments + 1> outer{};
-    std::array<SDL_Point, segments + 1> inner{};
-    for (int segment = 0; segment <= segments; ++segment)
-    {
-      const float angle = segment * 6.2831853f / segments;
-      const float x = std::cos(angle);
-      const float y = std::sin(angle);
-      outer[segment] = {center_x + static_cast<int>(x * radius),
-                        center_y + static_cast<int>(y * radius)};
-      inner[segment] = {center_x + static_cast<int>(x * (radius - 1)),
-                        center_y + static_cast<int>(y * (radius - 1))};
-    }
-    SDL_SetRenderDrawColor(m_renderer, 188, 240, 255, alpha);
-    SDL_RenderDrawLines(m_renderer, outer.data(), outer.size());
-    SDL_RenderDrawLines(m_renderer, inner.data(), inner.size());
-    SDL_SetRenderDrawColor(m_renderer, 235, 252, 255,
-                           static_cast<Uint8>(std::min(255, static_cast<int>(alpha) + 55)));
-    std::array<SDL_Point, 6> highlight{};
-    for (int segment = 0; segment < static_cast<int>(highlight.size()); ++segment)
-    {
-      const float angle = 3.55f + segment * 0.13f;
-      highlight[segment] = {center_x + static_cast<int>(std::cos(angle) * radius),
-                            center_y + static_cast<int>(std::sin(angle) * radius)};
-    }
-    SDL_RenderDrawLines(m_renderer, highlight.data(), highlight.size());
+    // The outline (two one-pixel circles) and its highlight are triangle strips: SDL draws a scaled
+    // diagonal line one pixel-sized rectangle at a time.
+    const auto draw_arc = [&](float first_angle, float step, float outer_radius, float inner_radius,
+                              SDL_Color color) {
+      constexpr int segments = 24;
+      std::array<SDL_Vertex, (segments + 1) * 2> vertices{};
+      std::array<int, segments * 6> indices{};
+      for (int segment = 0; segment <= segments; ++segment)
+      {
+        const float angle = first_angle + segment * step;
+        const float x = std::cos(angle);
+        const float y = std::sin(angle);
+        vertices[segment * 2] = {{center_x + x * outer_radius, center_y + y * outer_radius}, color,
+                                 {0, 0}};
+        vertices[segment * 2 + 1] = {{center_x + x * inner_radius, center_y + y * inner_radius},
+                                     color, {0, 0}};
+      }
+      for (int segment = 0; segment < segments; ++segment)
+      {
+        const int a = segment * 2;
+        const std::array<int, 6> quad{a, a + 2, a + 1, a + 1, a + 2, a + 3};
+        std::copy(quad.begin(), quad.end(), indices.begin() + segment * 6);
+      }
+      SDL_RenderGeometry(m_renderer, nullptr, vertices.data(), static_cast<int>(vertices.size()),
+                         indices.data(), static_cast<int>(indices.size()));
+    };
+    draw_arc(0.0f, 6.2831853f / 24, radius + 0.5f, radius - 1.5f, SDL_Color{188, 240, 255, alpha});
+    draw_arc(3.55f, 0.65f / 24, radius + 0.5f, radius - 0.5f,
+             SDL_Color{235, 252, 255,
+                       static_cast<Uint8>(std::min(255, static_cast<int>(alpha) + 55))});
   };
 
   for (int index = 0; index < 18; ++index)
@@ -3323,7 +3377,8 @@ void Launcher::DrawText(TTF_Font* font, int x, int y, std::string_view text, SDL
   }
   const std::size_t bytes =
       static_cast<std::size_t>(pixel_width) * static_cast<std::size_t>(pixel_height) * 4;
-  if (bytes > TEXT_CACHE_BYTES)
+  const std::size_t budget = TextCacheBudget(m_font_scale);
+  if (bytes > budget)
   {
     const SDL_FRect destination{static_cast<float>(x), static_cast<float>(y), width, height};
     SDL_RenderCopyF(m_renderer, texture, nullptr, &destination);
@@ -3331,7 +3386,7 @@ void Launcher::DrawText(TTF_Font* font, int x, int y, std::string_view text, SDL
     return;
   }
   while (!m_text_cache.empty() &&
-         (m_text_cache.size() >= TEXT_CACHE_LIMIT || m_text_cache_bytes > TEXT_CACHE_BYTES - bytes))
+         (m_text_cache.size() >= TEXT_CACHE_LIMIT || m_text_cache_bytes > budget - bytes))
   {
     auto victim = m_text_cache.begin();
     for (auto iterator = std::next(m_text_cache.begin()); iterator != m_text_cache.end();
@@ -4032,6 +4087,190 @@ void Launcher::DrawFadeIn()
              SDL_Color{0, 0, 0, static_cast<Uint8>(200 * (duration - elapsed) / duration)});
 }
 
+void Launcher::PresentFrame()
+{
+#ifdef __SWITCH2__
+  DrawJoyConMouseCursor();
+#endif
+  SDL_RenderPresent(m_renderer);
+}
+
+#ifdef __SWITCH2__
+// A Joy-Con set down on a surface is a mouse (HID Nmouse, which merges both Joy-Cons and a USB
+// mouse): its pointer moves a cursor, and its click (L/ZL or R/ZR) is a touch at the cursor, as an
+// SDL finger, so it taps, drags and scrolls wherever the touch screen does. While the cursor is in
+// use, L/ZL and R/ZR do not also act as shoulder buttons.
+namespace
+{
+constexpr SDL_FingerID JOYCON_MOUSE_FINGER = 0x4A434D53;
+constexpr Uint32 JOYCON_MOUSE_SHOWN_MS = 4000;
+}  // namespace
+
+// While the cursor is in use, the Joy-Con's click buttons are the mouse's only.
+int SDLCALL Launcher::JoyConMouseEventFilter(void* userdata, SDL_Event* event)
+{
+  if (!static_cast<const Launcher*>(userdata)->JoyConMouseInUse())
+    return 1;
+  if ((event->type == SDL_CONTROLLERBUTTONDOWN || event->type == SDL_CONTROLLERBUTTONUP) &&
+      (event->cbutton.button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER ||
+       event->cbutton.button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER))
+    return 0;
+  if (event->type == SDL_CONTROLLERAXISMOTION &&
+      (event->caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT ||
+       event->caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT))
+    return 0;
+  return 1;
+}
+
+bool Launcher::JoyConMouseInUse() const
+{
+  const Uint32 moved_at = m_mouse_moved_at.load(std::memory_order_relaxed);
+  return m_mouse_down.load(std::memory_order_relaxed) ||
+         (moved_at != 0 && SDL_GetTicks() - moved_at < JOYCON_MOUSE_SHOWN_MS);
+}
+
+void Launcher::PushJoyConMouseFinger(Uint32 type, int x, int y, float dx, float dy)
+{
+  SDL_Event event{};
+  event.type = type;
+  event.tfinger.timestamp = SDL_GetTicks();
+  event.tfinger.touchId = JOYCON_MOUSE_FINGER;
+  event.tfinger.fingerId = JOYCON_MOUSE_FINGER;
+  event.tfinger.x = std::clamp(static_cast<float>(x) / m_width, 0.0f, 1.0f);
+  event.tfinger.y = std::clamp(static_cast<float>(y) / m_height, 0.0f, 1.0f);
+  event.tfinger.dx = dx;
+  event.tfinger.dy = dy;
+  event.tfinger.pressure = type == SDL_FINGERUP ? 0.0f : 1.0f;
+  SDL_PushEvent(&event);
+}
+
+void Launcher::JoyConMouseThread()
+{
+  if (R_FAILED(hidInitializeNmouse(nullptr, 0, m_width, m_height, HidNmousePointerType_Default)))
+    return;
+  hidSetMergedNmouseSourceTypes(HidNmouseType_JoyLeft | HidNmouseType_JoyRight |
+                                HidNmouseType_StandardMouse);
+  int last_x = -1;
+  int last_y = -1;
+  u64 last_sample = 0;
+  Uint32 last_wake = 0;
+  bool hide_wake_sent = true;
+  while (!m_mouse_stop.load(std::memory_order_acquire))
+  {
+    HidNmouseHandle handle{};
+    HidNmouseState state{};
+    size_t total = 0;
+    const bool present = R_SUCCEEDED(hidGetMergedNmouseHandle(&handle)) &&
+                         R_SUCCEEDED(hidGetNmouseStates(handle, &state, 1, &total)) && total;
+    if (present && state.sampling_number != last_sample)
+    {
+      last_sample = state.sampling_number;
+      const int x = std::clamp(static_cast<int>(state.x), 0, m_width - 1);
+      const int y = std::clamp(static_cast<int>(state.y), 0, m_height - 1);
+      // (bit 1 of the flags: a Joy-Con in hand reports with it clear)
+      const bool moved =
+          last_x >= 0 && (state.flags & 2) != 0 && (x != last_x || y != last_y);
+      const bool held = (state.buttons & HidMouseButton_Left) != 0;
+      const bool was_down = m_mouse_down.load(std::memory_order_relaxed);
+      const Uint32 now = SDL_GetTicks();
+      if (moved)
+      {
+        m_mouse_moved_at.store(now ? now : 1, std::memory_order_relaxed);
+        hide_wake_sent = false;
+      }
+      m_mouse_x.store(x, std::memory_order_relaxed);
+      m_mouse_y.store(y, std::memory_order_relaxed);
+      // A click counts only while the cursor shows: L/ZL and R/ZR stay shoulder buttons for a
+      // Joy-Con in hand.
+      if (held && !was_down && JoyConMouseInUse())
+      {
+        m_mouse_down.store(true, std::memory_order_relaxed);
+        PushJoyConMouseFinger(SDL_FINGERDOWN, x, y);
+      }
+      else if (!held && was_down)
+      {
+        m_mouse_down.store(false, std::memory_order_relaxed);
+        PushJoyConMouseFinger(SDL_FINGERUP, x, y);
+      }
+      else if (was_down && moved)
+      {
+        PushJoyConMouseFinger(SDL_FINGERMOTION, x, y, static_cast<float>(x - last_x) / m_width,
+                              static_cast<float>(y - last_y) / m_height);
+      }
+      // A static screen sleeps until an SDL event: wake it to draw the cursor where it went.
+      if (moved && m_mouse_wake_event != static_cast<Uint32>(-1) && now - last_wake >= 16)
+      {
+        SDL_Event wake{};
+        wake.type = m_mouse_wake_event;
+        SDL_PushEvent(&wake);
+        last_wake = now;
+      }
+      last_x = x;
+      last_y = y;
+    }
+    // Once more when the cursor times out, so a static screen erases it.
+    if (!hide_wake_sent && !JoyConMouseInUse() && m_mouse_wake_event != static_cast<Uint32>(-1))
+    {
+      SDL_Event wake{};
+      wake.type = m_mouse_wake_event;
+      SDL_PushEvent(&wake);
+      hide_wake_sent = true;
+    }
+    svcSleepThread(present ? 4'000'000 : 50'000'000);
+  }
+  hidFinalizeNmouse();
+}
+
+void Launcher::StartJoyConMouse()
+{
+  if (m_mouse_thread.joinable())
+    return;
+  if (m_mouse_wake_event == static_cast<Uint32>(-1))
+    m_mouse_wake_event = SDL_RegisterEvents(1);
+  // Once: SDL_SetEventFilter drops the queued events, and the filter passes everything while the
+  // mouse is off (Shutdown removes it).
+  if (!m_mouse_filter_set)
+  {
+    SDL_SetEventFilter(JoyConMouseEventFilter, this);
+    m_mouse_filter_set = true;
+  }
+  m_mouse_stop.store(false, std::memory_order_release);
+  m_mouse_thread = std::thread([this] { JoyConMouseThread(); });
+}
+
+void Launcher::StopJoyConMouse()
+{
+  if (!m_mouse_thread.joinable())
+    return;
+  m_mouse_stop.store(true, std::memory_order_release);
+  m_mouse_thread.join();
+  m_mouse_down.store(false, std::memory_order_relaxed);
+  m_mouse_moved_at.store(0, std::memory_order_relaxed);
+}
+
+// An arrow at the cursor, drawn last.
+void Launcher::DrawJoyConMouseCursor()
+{
+  const int x = m_mouse_x.load(std::memory_order_relaxed);
+  const int y = m_mouse_y.load(std::memory_order_relaxed);
+  if (x < 0 || !JoyConMouseInUse())
+    return;
+  SDL_RenderSetClipRect(m_renderer, nullptr);
+  const float fx = static_cast<float>(x);
+  const float fy = static_cast<float>(y);
+  const SDL_Color edge{20, 24, 32, 235};
+  const SDL_Color fill{250, 252, 255, 255};
+  const SDL_Vertex outline[] = {{{fx - 1.5f, fy - 2.5f}, edge, {0, 0}},
+                                {{fx - 1.5f, fy + 21.0f}, edge, {0, 0}},
+                                {{fx + 16.0f, fy + 15.5f}, edge, {0, 0}}};
+  const SDL_Vertex arrow[] = {{{fx, fy}, fill, {0, 0}},
+                              {{fx, fy + 17.0f}, fill, {0, 0}},
+                              {{fx + 12.5f, fy + 13.0f}, fill, {0, 0}}};
+  SDL_RenderGeometry(m_renderer, nullptr, outline, 3, nullptr, 0);
+  SDL_RenderGeometry(m_renderer, nullptr, arrow, 3, nullptr, 0);
+}
+#endif
+
 void Launcher::ShowInfoCard(std::string_view section, std::string_view title, std::string_view kind,
                             std::string_view description, std::string_view current,
                             std::string_view scope, bool localize_title, bool localize_current)
@@ -4107,7 +4346,7 @@ void Launcher::ShowInfoCard(std::string_view section, std::string_view title, st
         std::pair{"A", "Close"}};
     DrawFooter(close_hint, panel_y + panel_height - 32);
     DrawFadeIn();
-    SDL_RenderPresent(m_renderer);
+    PresentFrame();
     WaitForNextFrame();
   }
 }
@@ -5965,7 +6204,7 @@ void Launcher::RenderMessage(std::string_view title, std::span<const std::string
         {std::pair{"A", "Continue"}};
     DrawFooter(continue_hint, footer_y);
     DrawFadeIn();
-    SDL_RenderPresent(m_renderer);
+    PresentFrame();
     WaitForNextFrame();
   }
 }
@@ -5985,7 +6224,7 @@ void Launcher::Toast(std::string message, int milliseconds)
     const int y = (m_height - height) / 2;
     GlassPanel(x, y, width, height);
     DrawTextCentered(m_font, m_width / 2, y + 46, message, m_text);
-    SDL_RenderPresent(m_renderer);
+    PresentFrame();
     WaitForNextFrame(true);
   } while (m_running && appletMainLoop() && !SDL_TICKS_PASSED(SDL_GetTicks(), deadline));
 }
@@ -6100,7 +6339,7 @@ bool Launcher::Confirm(std::string_view title, std::span<const std::string> line
     RoundedPanel(no_x, button_y, button_width, button_height, m_focus, m_selection, 6);
     draw_choice(no_x, "B", no_label);
     DrawFadeIn();
-    SDL_RenderPresent(m_renderer);
+    PresentFrame();
     WaitForNextFrame();
   }
   return false;
@@ -6205,7 +6444,7 @@ int Launcher::Dropdown(std::string_view title, const std::vector<std::string>& c
         std::pair{"A", "Select"}, std::pair{"B", "Back"}};
     DrawFooter(footer, panel_y + panel_height - 28);
     DrawFadeIn();
-    SDL_RenderPresent(m_renderer);
+    PresentFrame();
     WaitForNextFrame();
   }
   return current;
@@ -6468,7 +6707,7 @@ int Launcher::RunRows(std::string_view title, std::string_view context,
     footer[hint_count++] = {"B", "Back"};
     DrawFooter(std::span(footer).first(hint_count));
     DrawFadeIn();
-    SDL_RenderPresent(m_renderer);
+    PresentFrame();
     WaitForNextFrame();
   }
   return finish(-1);
@@ -7496,7 +7735,7 @@ void Launcher::RenderGrid(int selection)
     DrawFooter(hints, m_height - 50);
   }
   DrawFadeIn();
-  SDL_RenderPresent(m_renderer);
+  PresentFrame();
 }
 
 std::string Launcher::SharedGameIniPath(const Game& game) const
@@ -8508,6 +8747,11 @@ void Launcher::FrameGenerationSettings(bool per_game, Game* game)
   const auto effective_performance = [&] {
     return parse_bool(local("LSFGPerformanceMode"), Config::Get(Config::GFX_LSFG_PERFORMANCE_MODE));
   };
+#ifdef __SWITCH2__
+  const auto effective_120hz = [&] {
+    return parse_bool(local("LSFG120HzOutput"), Config::Get(Config::GFX_LSFG_120HZ_OUTPUT));
+  };
+#endif
 
   RunRows(
       per_game ? "Game frame generation" : "Frame Generation", game ? game->title : std::string{},
@@ -8522,7 +8766,7 @@ void Launcher::FrameGenerationSettings(bool per_game, Game* game)
         const bool enabled = effective_enabled();
         const int flow = effective_flow();
         const bool performance = effective_performance();
-        return std::vector<Row>{
+        std::vector<Row> rows{
             {"LSFG 2x (Vulkan / " DEKO3D_DISPLAY_NAME ")",
              per_game ? PerGameBoolLabel(*game, "Video_Settings", "LSFGEnabled",
                                          Config::Get(Config::GFX_LSFG_ENABLED)) :
@@ -8534,9 +8778,17 @@ void Launcher::FrameGenerationSettings(bool per_game, Game* game)
                                          Config::Get(Config::GFX_LSFG_PERFORMANCE_MODE)) :
                         std::string(performance ? "On" : "Off"),
              ready && enabled},
-            {"Lossless.dll", installed ? "Installed" : "Missing", false, false, false, true, true,
-             installed ? STATUS_OK_COLOR : STATUS_MISSING_COLOR},
         };
+#ifdef __SWITCH2__
+        rows.push_back({"120 Hz Docked Mode",
+                        per_game ? PerGameBoolLabel(*game, "Video_Settings", "LSFG120HzOutput",
+                                                    Config::Get(Config::GFX_LSFG_120HZ_OUTPUT)) :
+                                   std::string(effective_120hz() ? "On" : "Off"),
+                        ready && enabled});
+#endif
+        rows.push_back({"Lossless.dll", installed ? "Installed" : "Missing", false, false, false,
+                        true, true, installed ? STATUS_OK_COLOR : STATUS_MISSING_COLOR});
+        return rows;
       },
       [&](int index, int delta) {
         if (index == 0)
@@ -8586,16 +8838,37 @@ void Launcher::FrameGenerationSettings(bool per_game, Game* game)
             MarkConfigDirty();
           }
         }
+#ifdef __SWITCH2__
+        else if (index == 3)
+        {
+          if (per_game)
+          {
+            EditPerGameBool(*game, "120 Hz Docked Mode", "Video_Settings", "LSFG120HzOutput",
+                            Config::Get(Config::GFX_LSFG_120HZ_OUTPUT), delta);
+          }
+          else
+          {
+            Config::SetBase(Config::GFX_LSFG_120HZ_OUTPUT,
+                            !Config::Get(Config::GFX_LSFG_120HZ_OUTPUT));
+            MarkConfigDirty();
+          }
+        }
+#endif
         return false;
       },
       false,
       [&](int index) {
-        if (index < 0 || index > 2)
+#ifdef __SWITCH2__
+        constexpr int last_setting = 3;
+#else
+        constexpr int last_setting = 2;
+#endif
+        if (index < 0 || index > last_setting)
           return false;
         if (per_game)
         {
-          static constexpr std::array<std::string_view, 3> keys = {"LSFGEnabled", "LSFGFlowScale",
-                                                                   "LSFGPerformanceMode"};
+          static constexpr std::array<std::string_view, 4> keys = {
+              "LSFGEnabled", "LSFGFlowScale", "LSFGPerformanceMode", "LSFG120HzOutput"};
           SetGameSetting(*game, "Video_Settings", keys[index], std::nullopt);
           if (index == 0)
             SetGameSetting(*game, "Video_Hacks", "SkipDuplicateXFBs", std::nullopt);
@@ -8604,8 +8877,10 @@ void Launcher::FrameGenerationSettings(bool per_game, Game* game)
           ResetConfigSetting(Config::GFX_LSFG_ENABLED);
         else if (index == 1)
           ResetConfigSetting(Config::GFX_LSFG_FLOW_SCALE);
-        else
+        else if (index == 2)
           ResetConfigSetting(Config::GFX_LSFG_PERFORMANCE_MODE);
+        else
+          ResetConfigSetting(Config::GFX_LSFG_120HZ_OUTPUT);
         return true;
       });
   if (game)
@@ -10841,7 +11116,7 @@ void Launcher::RenderControllerCapture(const InputBinding& binding, int position
   DrawTextCentered(m_font_small, m_width / 2, hint_y + hint_step,
                    m_localization.Translate("Touch left to clear       Touch right to cancel"),
                    m_dim);
-  SDL_RenderPresent(m_renderer);
+  PresentFrame();
 }
 
 std::optional<std::string> Launcher::CaptureControllerInput(const InputBinding& binding,
@@ -11184,7 +11459,7 @@ void Launcher::ControllerMappingSettings(bool wii, int port, bool per_game, Game
     }
     DrawSettingsFooter("A  Assign       X  Info       B  Back");
     DrawFadeIn();
-    SDL_RenderPresent(m_renderer);
+    PresentFrame();
     WaitForNextFrame();
   }
   finish();
@@ -13715,7 +13990,7 @@ bool Launcher::ChooseForwarderIcon(Game* game, std::string* output_path)
         std::pair{"A", "Use icon"}, std::pair{"B", "Back"}};
     DrawFooter(footer);
     DrawFadeIn();
-    SDL_RenderPresent(m_renderer);
+    PresentFrame();
     WaitForNextFrame();
   }
   for (SDL_Texture* texture : textures)
@@ -13946,7 +14221,7 @@ void Launcher::CreateHomeShortcut(Game* game)
         std::pair<std::string_view, std::string_view>{"B", "Back"}};
     DrawFooter(footer);
     DrawFadeIn();
-    SDL_RenderPresent(m_renderer);
+    PresentFrame();
     WaitForNextFrame();
   }
   if (icon)
@@ -14323,7 +14598,7 @@ void Launcher::UpdateScreen()
       DrawFooter(std::span(controls).first(hint_count), panel_y + panel_height - 35);
     }
     DrawFadeIn();
-    SDL_RenderPresent(m_renderer);
+    PresentFrame();
     WaitForNextFrame();
   }
 }
@@ -14364,7 +14639,11 @@ void Launcher::AppearanceSettings()
 {
   static constexpr std::array<std::string_view, 2> THEMES = {"Wii", "Classic"};
   static constexpr std::array<std::string_view, 2> THEME_VALUES = {"wii", "classic"};
+#ifdef __SWITCH2__
+  constexpr int option_count = 13;
+#else
   constexpr int option_count = 12;
+#endif
   constexpr int update_row = option_count;
   constexpr int selection_count = option_count + 1;
   const int row_height = SettingsRowHeight();
@@ -14394,6 +14673,9 @@ void Launcher::AppearanceSettings()
             m_store.GetBool("Launcher/CheckUpdatesAtBoot", true) ? "On" : "Off"},
         Row{"SteamGridDB API key", steamgriddb_key_set ? "Configured" : "Not set", true, false,
             false},
+#ifdef __SWITCH2__
+        Row{"Joy-Con mouse", m_store.GetBool("Launcher/JoyConMouse", true) ? "On" : "Off"},
+#endif
     };
   };
 
@@ -14499,6 +14781,17 @@ void Launcher::AppearanceSettings()
       }
       return;
     }
+#ifdef __SWITCH2__
+    else if (index == 12)
+    {
+      const bool enabled = !m_store.GetBool("Launcher/JoyConMouse", true);
+      m_store.SetBool("Launcher/JoyConMouse", enabled);
+      if (enabled)
+        StartJoyConMouse();
+      else
+        StopJoyConMouse();
+    }
+#endif
     MarkStoreDirty();
     ApplyAppearance();
   };
@@ -14551,6 +14844,12 @@ void Launcher::AppearanceSettings()
     case 11:
       m_store.Set("Network/SteamGridDBKey", "");
       break;
+#ifdef __SWITCH2__
+    case 12:
+      m_store.SetBool("Launcher/JoyConMouse", true);
+      StartJoyConMouse();
+      break;
+#endif
     default:
       return;
     }
@@ -14750,7 +15049,7 @@ void Launcher::AppearanceSettings()
     footer[hint_count++] = {"B", "Back"};
     DrawFooter(std::span(footer).first(hint_count));
     DrawFadeIn();
-    SDL_RenderPresent(m_renderer);
+    PresentFrame();
     WaitForNextFrame();
   }
   finish();
@@ -14934,7 +15233,7 @@ void Launcher::GameSourcesScreen()
                current ? m_value : (index == 0 ? m_highlight : m_text));
     }
     DrawSettingsFooter("A  Select       B  Back");
-    SDL_RenderPresent(m_renderer);
+    PresentFrame();
     WaitForNextFrame();
   }
 }
@@ -15280,7 +15579,7 @@ bool Launcher::EditSmbShare(Storage::SmbShare* share, bool creating)
         std::pair<std::string_view, std::string_view>{"B", "Cancel"}};
     DrawFooter(hints);
     DrawFadeIn();
-    SDL_RenderPresent(m_renderer);
+    PresentFrame();
     WaitForNextFrame();
   }
   return saved;
@@ -15538,7 +15837,7 @@ void Launcher::NetworkSharesScreen()
     }
     DrawSettingsFooter("A  Select       B  Back");
     DrawFadeIn();
-    SDL_RenderPresent(m_renderer);
+    PresentFrame();
     WaitForNextFrame();
   }
 }
@@ -15815,7 +16114,7 @@ bool Launcher::RenderTransfer(TransferState* state)
         std::pair{"B", "Cancel"}};
     DrawFooter(controls);
   }
-  SDL_RenderPresent(m_renderer);
+  PresentFrame();
   return !state->cancelled.load(std::memory_order_relaxed);
 }
 
@@ -15892,7 +16191,7 @@ void Launcher::RunBusyTask(std::string_view title, std::string_view detail,
             std::pair{"B", "Cancel"}};
         DrawFooter(hints, panel_y + panel_height - 28);
       }
-      SDL_RenderPresent(m_renderer);
+      PresentFrame();
       WaitForNextFrame(true);
     }
     else
@@ -16517,7 +16816,7 @@ std::string Launcher::FileBrowser(const std::string& start, bool select_folder, 
     {
       DrawSettingsFooter("A  Open / Select       B  Back");
     }
-    SDL_RenderPresent(m_renderer);
+    PresentFrame();
     WaitForNextFrame();
   }
   return {};
@@ -16828,7 +17127,7 @@ void Launcher::LibrarySettings()
     else
       DrawSettingsFooter("A  Open       B  Back");
     DrawFadeIn();
-    SDL_RenderPresent(m_renderer);
+    PresentFrame();
     WaitForNextFrame();
   }
   saved.first = selection;
@@ -16876,7 +17175,7 @@ int Launcher::ChooseCoverArtwork(const std::vector<CoverDownload::Artwork>& artw
     DrawArtworkPreview(nullptr, layout.preview, false, std::string_view{});
     DrawTextCentered(m_font, layout.preview.x + layout.preview.w / 2, m_height / 2 - 18,
                      m_localization.Translate("Loading preview..."), m_dim);
-    SDL_RenderPresent(m_renderer);
+    PresentFrame();
     const std::string& url =
         artwork[index].thumbnail_url.empty() ? artwork[index].url : artwork[index].thumbnail_url;
     std::atomic_bool cancel{false};
@@ -16998,7 +17297,7 @@ int Launcher::ChooseCoverArtwork(const std::vector<CoverDownload::Artwork>& artw
         std::pair{"A", "Use artwork"}, std::pair{"B", background ? "Skip background" : "Back"}};
     DrawFooter(footer);
     DrawFadeIn();
-    SDL_RenderPresent(m_renderer);
+    PresentFrame();
     WaitForNextFrame();
   }
   release_preview();
@@ -17531,7 +17830,7 @@ void Launcher::CoverSettings(Game* game)
       DrawFooter(hints);
     }
     DrawFadeIn();
-    SDL_RenderPresent(m_renderer);
+    PresentFrame();
     WaitForNextFrame();
   }
 }
@@ -17717,7 +18016,7 @@ void Launcher::SettingsRoot()
     }
     DrawSettingsFooter("A  Choose       X  Info       B  Back");
     DrawFadeIn();
-    SDL_RenderPresent(m_renderer);
+    PresentFrame();
     WaitForNextFrame();
   }
 }
@@ -17840,7 +18139,7 @@ void Launcher::PerGameSettingsRoot(Game* game)
     }
     DrawSettingsFooter("A  Choose       X  Info       B  Back");
     DrawFadeIn();
-    SDL_RenderPresent(m_renderer);
+    PresentFrame();
     WaitForNextFrame();
   }
 }
@@ -18123,7 +18422,7 @@ void Launcher::PerGameMenu(Game* game, bool* launch, bool* rescan)
 
     DrawGameMenu(game, selection);
     DrawFadeIn();
-    SDL_RenderPresent(m_renderer);
+    PresentFrame();
     WaitForNextFrame();
   }
 }
@@ -18306,7 +18605,7 @@ bool Launcher::RunAppletInstaller()
       DrawFooter(hints);
     }
     DrawFadeIn();
-    SDL_RenderPresent(m_renderer);
+    PresentFrame();
     WaitForNextFrame();
   }
   return true;
@@ -18328,6 +18627,10 @@ std::optional<LaunchRequest> Launcher::Run()
     m_store_dirty = true;
   }
   ScanGames();
+#ifdef __SWITCH2__
+  if (m_store.GetBool("Launcher/JoyConMouse", true))
+    StartJoyConMouse();
+#endif
   BeginScreenFx();
   RenderGrid(0);
   StartUsbInitialization();
