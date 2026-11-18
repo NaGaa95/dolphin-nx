@@ -164,7 +164,8 @@ void VideoConfig::Refresh()
 #ifdef HAS_DEKO3D
   bFrameGeneration = DolphinSwitch::FrameGeneration::IsEnabled();
   frame_generation.multiplier = 2;
-  frame_generation.flow_scale = Config::Get(Config::GFX_LSFG_FLOW_SCALE) > 0.375f ? 2 : 4;
+  const float flow = Config::Get(Config::GFX_LSFG_FLOW_SCALE);
+  frame_generation.flow_scale = flow > 0.75f ? 1 : flow > 0.375f ? 2 : 4;
   frame_generation.performance = Config::Get(Config::GFX_LSFG_PERFORMANCE_MODE);
 #endif
 

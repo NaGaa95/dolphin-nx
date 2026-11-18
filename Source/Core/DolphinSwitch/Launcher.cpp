@@ -1286,8 +1286,9 @@ static constexpr SettingHelpEntry SETTING_HELP[] = {
      "Makes LSFG 2x available for the launch. It creates an intermediate display frame between "
      "rendered frames, adding smoothness without increasing emulation speed."},
     {"Flow resolution", "Frame generation quality",
-     "Sets the optical-flow working resolution. Half can retain more motion detail, while Quarter "
-     "uses less GPU time and memory and is recommended on Switch."},
+     "Sets the optical-flow working resolution. Quarter uses the least GPU time and memory and is "
+     "recommended on Switch; Half retains more motion detail and is recommended on Switch 2; Full "
+     "retains the most and costs the most."},
     {"Performance mode", "Frame generation performance",
      "Uses LSFG's lighter performance-oriented path. Disable it only when testing quality with "
      "enough GPU headroom."},
@@ -8482,10 +8483,17 @@ void Launcher::FrameGenerationSettings(bool per_game, Game* game)
       return false;
     return fallback;
   };
-  const auto normalize_flow = [](float value) { return value > 0.375f ? 0.5f : 0.25f; };
-  const auto flow_label = [](float value) {
-    return value > 0.375f ? std::string{"Half"} : std::string{"Quarter (recommended)"};
-  };
+  // LSFG's optical-flow resolutions; the console's default is the recommended one.
+  static constexpr std::array<float, 3> FLOW_SCALES = {0.25f, 0.5f, 1.0f};
+  static constexpr std::array<std::string_view, 3> FLOW_VALUES = {"0.25", "0.5", "1"};
+#ifdef __SWITCH2__
+  static constexpr std::array<std::string_view, 3> FLOW_LABELS = {"Quarter", "Half (recommended)",
+                                                                  "Full"};
+#else
+  static constexpr std::array<std::string_view, 3> FLOW_LABELS = {"Quarter (recommended)", "Half",
+                                                                  "Full"};
+#endif
+  const auto flow_index = [](float value) { return value > 0.75f ? 2 : value > 0.375f ? 1 : 0; };
   const auto local = [&](std::string_view key) {
     return per_game && game ? GetGameSetting(*game, "Video_Settings", key) : std::nullopt;
   };
@@ -8494,8 +8502,8 @@ void Launcher::FrameGenerationSettings(bool per_game, Game* game)
   };
   const auto effective_flow = [&] {
     const std::optional<std::string> value = local("LSFGFlowScale");
-    return normalize_flow(value ? std::strtof(value->c_str(), nullptr) :
-                                  Config::Get(Config::GFX_LSFG_FLOW_SCALE));
+    return flow_index(value ? std::strtof(value->c_str(), nullptr) :
+                              Config::Get(Config::GFX_LSFG_FLOW_SCALE));
   };
   const auto effective_performance = [&] {
     return parse_bool(local("LSFGPerformanceMode"), Config::Get(Config::GFX_LSFG_PERFORMANCE_MODE));
@@ -8512,7 +8520,7 @@ void Launcher::FrameGenerationSettings(bool per_game, Game* game)
                                         Config::Get(Config::MAIN_GFX_BACKEND);
         const bool ready = installed || (backend == "Deko3D" && prepared);
         const bool enabled = effective_enabled();
-        const float flow = effective_flow();
+        const int flow = effective_flow();
         const bool performance = effective_performance();
         return std::vector<Row>{
             {"LSFG 2x (Vulkan / " DEKO3D_DISPLAY_NAME ")",
@@ -8520,7 +8528,7 @@ void Launcher::FrameGenerationSettings(bool per_game, Game* game)
                                          Config::Get(Config::GFX_LSFG_ENABLED)) :
                         std::string(enabled ? "On" : "Off"),
              ready || enabled},
-            {"Flow resolution", flow_label(flow), ready && enabled},
+            {"Flow resolution", std::string(FLOW_LABELS[flow]), ready && enabled},
             {"Performance mode",
              per_game ? PerGameBoolLabel(*game, "Video_Settings", "LSFGPerformanceMode",
                                          Config::Get(Config::GFX_LSFG_PERFORMANCE_MODE)) :
@@ -8553,15 +8561,14 @@ void Launcher::FrameGenerationSettings(bool per_game, Game* game)
         }
         else if (index == 1)
         {
-          const std::array<std::string_view, 2> labels = {"Quarter (recommended)", "Half"};
           const int selected =
-              SelectChoice("Flow resolution", labels, effective_flow() > 0.375f ? 1 : 0, delta);
+              SelectChoice("Flow resolution", FLOW_LABELS, effective_flow(), delta);
           if (per_game)
             SetGameSetting(*game, "Video_Settings", "LSFGFlowScale",
-                           selected == 0 ? "0.25" : "0.5");
+                           std::string(FLOW_VALUES[selected]));
           else
           {
-            Config::SetBase(Config::GFX_LSFG_FLOW_SCALE, selected == 0 ? 0.25f : 0.5f);
+            Config::SetBase(Config::GFX_LSFG_FLOW_SCALE, FLOW_SCALES[selected]);
             MarkConfigDirty();
           }
         }

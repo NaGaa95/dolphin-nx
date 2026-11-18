@@ -306,9 +306,9 @@ VkResult Present(VkQueue queue, const VkPresentInfoKHR& present_info)
     }
     s_state.initialization_attempted = true;
 
+    // (the same steps as the Deko3D renderer's)
     float flow_scale = Config::Get(Config::GFX_LSFG_FLOW_SCALE);
-    if (flow_scale != 0.25f && flow_scale != 0.5f)
-      flow_scale = 0.25f;
+    flow_scale = flow_scale > 0.75f ? 1.0f : flow_scale > 0.375f ? 0.5f : 0.25f;
 
     const LsfgNxCreateInfo create_info{
         .instance = g_vulkan_context->GetVulkanInstance(),

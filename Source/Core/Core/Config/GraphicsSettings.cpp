@@ -130,7 +130,12 @@ const Info<bool> GFX_PREFER_VS_FOR_LINE_POINT_EXPANSION{
 const Info<bool> GFX_CPU_CULL{{System::GFX, "Settings", "CPUCull"}, false};
 
 const Info<bool> GFX_LSFG_ENABLED{{System::GFX, "Settings", "LSFGEnabled"}, false};
+// LSFG's optical-flow resolution: 0.25 (quarter), 0.5 (half) or 1 (full). Half on the Switch 2.
+#ifdef __SWITCH2__
+const Info<float> GFX_LSFG_FLOW_SCALE{{System::GFX, "Settings", "LSFGFlowScale"}, 0.5f};
+#else
 const Info<float> GFX_LSFG_FLOW_SCALE{{System::GFX, "Settings", "LSFGFlowScale"}, 0.25f};
+#endif
 const Info<bool> GFX_LSFG_PERFORMANCE_MODE{
     {System::GFX, "Settings", "LSFGPerformanceMode"}, true};
 
