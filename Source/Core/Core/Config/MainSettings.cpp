@@ -228,6 +228,10 @@ const Info<bool> MAIN_SWITCH_TOUCHSCREEN_POINTER{
     {System::Main, "Core", "SwitchTouchscreenPointer"}, true};
 const Info<bool> MAIN_SWITCH_TOUCHSCREEN_CLICK{{System::Main, "Core", "SwitchTouchscreenClick"},
                                                true};
+#ifdef __SWITCH2__
+const Info<bool> MAIN_SWITCH_JOYCON_MOUSE_POINTER{
+    {System::Main, "Core", "SwitchJoyConMousePointer"}, false};
+#endif
 const Info<GBAScreens> MAIN_SWITCH_GBA_SCREENS{{System::Main, "Switch", "GBAScreens"},
                                                GBAScreens::Small};
 const Info<GBAScreenCorner> MAIN_SWITCH_GBA_SCREEN_CORNER{

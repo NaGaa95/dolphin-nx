@@ -1587,6 +1587,12 @@ static constexpr SettingHelpEntry SETTING_HELP[] = {
     {"Touchscreen Wii pointer", "Pointer input",
      "Uses the Switch touchscreen as an absolute Wii Remote pointer in handheld mode. Touches "
      "outside the rendered game area are ignored."},
+#ifdef __SWITCH2__
+    {"Wii pointer", "Pointer input",
+     "Chooses what aims Wii Remote 1's pointer. Off keeps the gyro and the right stick, "
+     "Touchscreen uses the touchscreen in handheld mode, and Joy-Con mouse uses a Joy-Con set "
+     "down on a surface. The touch calibration applies to both."},
+#endif
     {"Touchscreen tap presses A", "Pointer input",
      "Lifting your finger from the touchscreen presses the Wii Remote A button where you "
      "touched."},
@@ -12306,6 +12312,25 @@ void Launcher::ControllerSettings(bool per_game, Game* game)
       return "Disabled";
     }
   };
+#ifdef __SWITCH2__
+  // What aims the Wii pointer: 0 the gyro and the right stick, 1 the touchscreen, 2 the Joy-Con mouse.
+  static constexpr std::array<std::string_view, 3> WII_POINTER_SOURCES = {"Off", "Touchscreen",
+                                                                          "Joy-Con mouse"};
+  const auto wii_pointer_source = [&] {
+    const auto read = [&](std::string_view key, bool global) {
+      const auto local = per_game && game ? GetGameSetting(*game, "Core", key) : std::nullopt;
+      if (!local)
+        return global;
+      const std::string value = Lower(*local);
+      return value == "true" || value == "1" || value == "yes";
+    };
+    if (read("SwitchJoyConMousePointer", Config::Get(Config::MAIN_SWITCH_JOYCON_MOUSE_POINTER)))
+      return 2;
+    return read("SwitchTouchscreenPointer", Config::Get(Config::MAIN_SWITCH_TOUCHSCREEN_POINTER)) ?
+               1 :
+               0;
+  };
+#endif
   RunRows(
       per_game ? "Game controllers" : "Controller / Input", game ? game->title : std::string{},
       [&] {
@@ -12350,6 +12375,12 @@ void Launcher::ControllerSettings(bool per_game, Game* game)
                           false, true, true, false});
         }
         const bool wii_game = !per_game || (game && game->platform.starts_with("Wii"));
+#ifdef __SWITCH2__
+        rows.push_back({"Wii pointer",
+                        wii_game ? std::string(WII_POINTER_SOURCES[wii_pointer_source()]) :
+                                   std::string("Wii games only"),
+                        wii_game});
+#else
         rows.push_back(
             {"Touchscreen Wii pointer",
              wii_game ?
@@ -12359,6 +12390,7 @@ void Launcher::ControllerSettings(bool per_game, Game* game)
                       (Config::Get(Config::MAIN_SWITCH_TOUCHSCREEN_POINTER) ? "On" : "Off")) :
                  "Wii games only",
              wii_game});
+#endif
         rows.push_back(
             {"Touchscreen tap presses A",
              wii_game ?
@@ -12462,6 +12494,25 @@ void Launcher::ControllerSettings(bool per_game, Game* game)
         }
         else if (index == 8)
         {
+#ifdef __SWITCH2__
+          if (!per_game || (game && game->platform.starts_with("Wii")))
+          {
+            const int source =
+                SelectChoice("Wii pointer", WII_POINTER_SOURCES, wii_pointer_source(), delta);
+            if (source >= 0 && per_game)
+            {
+              SetGameSettings(*game,
+                              {{"Core", "SwitchTouchscreenPointer", source == 1 ? "True" : "False"},
+                               {"Core", "SwitchJoyConMousePointer", source == 2 ? "True" : "False"}});
+            }
+            else if (source >= 0)
+            {
+              Config::SetBase(Config::MAIN_SWITCH_TOUCHSCREEN_POINTER, source == 1);
+              Config::SetBase(Config::MAIN_SWITCH_JOYCON_MOUSE_POINTER, source == 2);
+              MarkConfigDirty();
+            }
+          }
+#else
           if (per_game)
           {
             if (game && game->platform.starts_with("Wii"))
@@ -12476,6 +12527,7 @@ void Launcher::ControllerSettings(bool per_game, Game* game)
                             !Config::Get(Config::MAIN_SWITCH_TOUCHSCREEN_POINTER));
             MarkConfigDirty();
           }
+#endif
         }
         else if (index == 9)
         {
@@ -12519,10 +12571,23 @@ void Launcher::ControllerSettings(bool per_game, Game* game)
         }
         if (index == 8)
         {
+#ifdef __SWITCH2__
+          if (per_game)
+          {
+            SetGameSettings(*game, {{"Core", "SwitchTouchscreenPointer", std::nullopt},
+                                    {"Core", "SwitchJoyConMousePointer", std::nullopt}});
+          }
+          else
+          {
+            ResetConfigSetting(Config::MAIN_SWITCH_TOUCHSCREEN_POINTER);
+            ResetConfigSetting(Config::MAIN_SWITCH_JOYCON_MOUSE_POINTER);
+          }
+#else
           if (per_game)
             SetGameSetting(*game, "Core", "SwitchTouchscreenPointer", std::nullopt);
           else
             ResetConfigSetting(Config::MAIN_SWITCH_TOUCHSCREEN_POINTER);
+#endif
           return true;
         }
         if (index == 9)

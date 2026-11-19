@@ -123,6 +123,10 @@ extern const Info<bool> MAIN_CONNECT_WIIMOTES_FOR_CONTROLLER_INTERFACE;
 #ifdef __SWITCH__
 extern const Info<bool> MAIN_SWITCH_TOUCHSCREEN_POINTER;
 extern const Info<bool> MAIN_SWITCH_TOUCHSCREEN_CLICK;
+#ifdef __SWITCH2__
+// The Joy-Con mouse aims the Wii pointer (it takes precedence over the touchscreen pointer).
+extern const Info<bool> MAIN_SWITCH_JOYCON_MOUSE_POINTER;
+#endif
 enum class GBAScreens
 {
   Hidden,

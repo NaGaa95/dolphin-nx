@@ -573,15 +573,13 @@ TouchMapping LoadTouchMapping(const std::string& game_id)
   return mapping;
 }
 
-// Returns the packed pointer position for the current touch, if it lands on the game image.
-std::optional<std::uint64_t> GetWiiTouchPointerPosition(const TouchMapping& mapping)
+// Returns the packed pointer position for a point of the 1280x720 screen on the game image. A point off the image
+// gives nothing, or with clamp the image's nearest edge.
+std::optional<std::uint64_t> GetWiiPointerPosition(const TouchMapping& mapping, double screen_x,
+                                                   double screen_y, bool clamp)
 {
   constexpr double touchscreen_width = 1280.0;
   constexpr double touchscreen_height = 720.0;
-
-  const ciface::Switch::TouchscreenState touch = ciface::Switch::GetTouchscreenState();
-  if (!touch.pressed)
-    return std::nullopt;
 
   const int backbuffer_width = g_presenter->GetBackbufferWidth();
   const int backbuffer_height = g_presenter->GetBackbufferHeight();
@@ -596,15 +594,16 @@ std::optional<std::uint64_t> GetWiiTouchPointerPosition(const TouchMapping& mapp
   const int right = std::max(viewport.left, viewport.right);
   const int top = std::min(viewport.top, viewport.bottom);
   const int bottom = std::max(viewport.top, viewport.bottom);
-  const double x_in_backbuffer =
-      static_cast<double>(touch.x) * (backbuffer_width - 1) / (touchscreen_width - 1.0);
-  const double y_in_backbuffer =
-      static_cast<double>(touch.y) * (backbuffer_height - 1) / (touchscreen_height - 1.0);
+  double x_in_backbuffer = screen_x * (backbuffer_width - 1) / (touchscreen_width - 1.0);
+  double y_in_backbuffer = screen_y * (backbuffer_height - 1) / (touchscreen_height - 1.0);
 
   if (x_in_backbuffer < left || x_in_backbuffer >= right || y_in_backbuffer < top ||
       y_in_backbuffer >= bottom)
   {
-    return std::nullopt;
+    if (!clamp)
+      return std::nullopt;
+    x_in_backbuffer = std::clamp(x_in_backbuffer, double(left), double(std::max(left, right - 1)));
+    y_in_backbuffer = std::clamp(y_in_backbuffer, double(top), double(std::max(top, bottom - 1)));
   }
 
   const double touch_x = (x_in_backbuffer - left) / std::max(1, right - left - 1) * 2.0 - 1.0;
@@ -615,6 +614,15 @@ std::optional<std::uint64_t> GetWiiTouchPointerPosition(const TouchMapping& mapp
     return static_cast<std::uint16_t>(std::lround((value + 1.0) * 32767.5));
   };
   return quantize(x) | (static_cast<std::uint64_t>(quantize(y)) << 16);
+}
+
+// Returns the packed pointer position for the current touch, if it lands on the game image.
+std::optional<std::uint64_t> GetWiiTouchPointerPosition(const TouchMapping& mapping)
+{
+  const ciface::Switch::TouchscreenState touch = ciface::Switch::GetTouchscreenState();
+  if (!touch.pressed)
+    return std::nullopt;
+  return GetWiiPointerPosition(mapping, touch.x, touch.y, false);
 }
 
 // Calibration targets on the game image, from its top-left corner.
@@ -788,6 +796,58 @@ void UpdateWiiTouchPointerState(bool enabled, bool click_enabled, const TouchMap
   s_wii_touch_pointer_state.store(TOUCH_POINTER_ACTIVE | pointer.position,
                                   std::memory_order_release);
 }
+
+#ifdef __SWITCH2__
+// The Joy-Con mouse aims the pointer like a touch that is never lifted: the gyro is ignored and
+// recentered on it, and the stick does not move it. It aims while it moved on a surface in the
+// last 2 s (bit 1 of the flags: a Joy-Con in hand still reports, with it clear); otherwise the
+// pointer is the gyro and the stick's, from where the mouse left it.
+void UpdateWiiMousePointerState(bool enabled, const TouchMapping& mapping)
+{
+  static u64 s_last_sample = 0;
+  static u64 s_moved_tick = 0;
+  static s32 s_last_x = 0;
+  static s32 s_last_y = 0;
+  if (!enabled || !g_presenter)
+  {
+    s_last_sample = s_moved_tick = 0;
+    ResetWiiTouchPointerState();
+    return;
+  }
+  if (Host_UIBlocksControllerState())
+    return;
+
+  HidNmouseHandle handle{};
+  HidNmouseState state{};
+  size_t total = 0;
+  if (R_FAILED(hidGetMergedNmouseHandle(&handle)) ||
+      R_FAILED(hidGetNmouseStates(handle, &state, 1, &total)) || total == 0)
+  {
+    ResetWiiTouchPointerState();
+    return;
+  }
+  if (state.sampling_number != s_last_sample)
+  {
+    if (s_last_sample != 0 && (state.flags & 2) && (state.x != s_last_x || state.y != s_last_y))
+      s_moved_tick = armGetSystemTick();
+    s_last_sample = state.sampling_number;
+    s_last_x = state.x;
+    s_last_y = state.y;
+  }
+  constexpr u64 IN_USE_NS = 2'000'000'000ULL;
+  if (s_moved_tick == 0 || armTicksToNs(armGetSystemTick() - s_moved_tick) >= IN_USE_NS)
+  {
+    ResetWiiTouchPointerState();
+    return;
+  }
+  if (const std::optional<std::uint64_t> position =
+          GetWiiPointerPosition(mapping, state.x, state.y, true))
+  {
+    s_wii_touch_pointer_state.store(TOUCH_POINTER_ACTIVE | TOUCH_POINTER_AIMING | *position,
+                                    std::memory_order_release);
+  }
+}
+#endif
 
 bool InstallWiiTouchPointerOverride()
 {
@@ -1279,9 +1339,16 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
   if (!skylander_warning.empty())
     DolphinSwitch::RuntimeOverlay::SetStatus(skylander_warning);
 
-  const bool touch_pointer_enabled =
-      runtime_controllers.is_wii && Config::Get(Config::MAIN_SWITCH_TOUCHSCREEN_POINTER);
-  const bool touch_pointer_installed = touch_pointer_enabled && InstallWiiTouchPointerOverride();
+#ifdef __SWITCH2__
+  const bool mouse_pointer_enabled =
+      runtime_controllers.is_wii && Config::Get(Config::MAIN_SWITCH_JOYCON_MOUSE_POINTER);
+#else
+  constexpr bool mouse_pointer_enabled = false;
+#endif
+  const bool touch_pointer_enabled = runtime_controllers.is_wii && !mouse_pointer_enabled &&
+                                     Config::Get(Config::MAIN_SWITCH_TOUCHSCREEN_POINTER);
+  const bool touch_pointer_installed =
+      (touch_pointer_enabled || mouse_pointer_enabled) && InstallWiiTouchPointerOverride();
   const bool touch_click_enabled = Config::Get(Config::MAIN_SWITCH_TOUCHSCREEN_CLICK);
   s_touch_calibration = {};
   TouchMapping touch_mapping = LoadTouchMapping(resolved_request.game_id);
@@ -1299,6 +1366,21 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
     if (host_hid_initialized)
       hidExit();
   });
+#ifdef __SWITCH2__
+  // The Joy-Con mouse pointer reads the merged pointer of both Joy-Cons (and a USB mouse).
+  const bool nmouse_open =
+      mouse_pointer_enabled &&
+      R_SUCCEEDED(hidInitializeNmouse(nullptr, 0, 1280, 720, HidNmousePointerType_Default));
+  if (nmouse_open)
+  {
+    hidSetMergedNmouseSourceTypes(HidNmouseType_JoyLeft | HidNmouseType_JoyRight |
+                                  HidNmouseType_StandardMouse);
+  }
+  Common::ScopeGuard nmouse_guard([nmouse_open] {
+    if (nmouse_open)
+      hidFinalizeNmouse();
+  });
+#endif
 
   (void)appletSetMediaPlaybackState(true);
   Common::ScopeGuard playback_guard([] { (void)appletSetMediaPlaybackState(false); });
@@ -1345,7 +1427,14 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
           axis(right.x), -axis(right.y));
     }
     if (!UpdateTouchCalibration(resolved_request.game_id, &touch_mapping))
-      UpdateWiiTouchPointerState(touch_pointer_installed, touch_click_enabled, touch_mapping);
+    {
+#ifdef __SWITCH2__
+      if (mouse_pointer_enabled)
+        UpdateWiiMousePointerState(touch_pointer_installed, touch_mapping);
+      else
+#endif
+        UpdateWiiTouchPointerState(touch_pointer_installed, touch_click_enabled, touch_mapping);
+    }
 
     const bool overlay_visible = DolphinSwitch::RuntimeOverlay::IsVisible();
     if (overlay_visible && !previous_overlay_visible &&
