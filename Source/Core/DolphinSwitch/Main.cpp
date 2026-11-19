@@ -506,14 +506,39 @@ WiimoteEmu::Wiimote* GetEmulatedWiimote(int player)
   return static_cast<WiimoteEmu::Wiimote*>(config->GetController(player));
 }
 
+struct TouchPointer
+{
+  bool touching = false;
+  std::optional<std::chrono::steady_clock::time_point> released;
+  std::uint64_t position = 0;
+  // The pointer stick's state when the touched spot started being held.
+  std::optional<ControllerEmu::Cursor::StateData> held_stick;
+};
+TouchPointer s_touch_pointer;
+
 void ResetWiiTouchPointerState()
 {
+  s_touch_pointer = {};
   s_wii_touch_pointer_state.store(0, std::memory_order_release);
+}
+
+std::optional<ControllerEmu::Cursor::StateData> GetWiiPointerStickState()
+{
+  WiimoteEmu::Wiimote* const wiimote = GetEmulatedWiimote(0);
+  if (!wiimote)
+    return std::nullopt;
+
+  const auto state_lock = ControllerEmu::EmulatedController::GetStateLock();
+  return static_cast<const ControllerEmu::Cursor*>(
+             wiimote->GetWiimoteGroup(WiimoteEmu::WiimoteGroup::Point))
+      ->GetLastState();
 }
 
 constexpr std::uint64_t TOUCH_POINTER_ACTIVE = 1ULL << 63;
 constexpr std::uint64_t TOUCH_POINTER_CLICK = 1ULL << 62;
 constexpr std::uint64_t TOUCH_POINTER_CALIBRATING = 1ULL << 61;
+// Set while a touch aims the pointer: the gyro is ignored and recentered on the touched spot.
+constexpr std::uint64_t TOUCH_POINTER_AIMING = 1ULL << 60;
 
 // Maps a touch on the game image to the IR cursor: cursor = scale * touch + offset, per axis.
 struct TouchMapping
@@ -649,19 +674,13 @@ bool UpdateTouchCalibration(const std::string& game_id, TouchMapping* mapping)
     return true;
   s_touch_calibration.touching = false;
 
-  WiimoteEmu::Wiimote* const wiimote = GetEmulatedWiimote(0);
-  if (!wiimote)
+  const std::optional<ControllerEmu::Cursor::StateData> cursor = GetWiiPointerStickState();
+  if (!cursor)
   {
     StopTouchCalibration();
     return false;
   }
-  {
-    const auto state_lock = ControllerEmu::EmulatedController::GetStateLock();
-    const auto* ir = static_cast<const ControllerEmu::Cursor*>(
-        wiimote->GetWiimoteGroup(WiimoteEmu::WiimoteGroup::Point));
-    const ControllerEmu::Cursor::StateData cursor = ir->GetLastState();
-    s_touch_calibration.cursors[s_touch_calibration.step] = {cursor.x, cursor.y};
-  }
+  s_touch_calibration.cursors[s_touch_calibration.step] = {cursor->x, cursor->y};
 
   if (++s_touch_calibration.step < static_cast<int>(TOUCH_CALIBRATION_TARGETS.size()))
   {
@@ -702,50 +721,72 @@ bool UpdateTouchCalibration(const std::string& game_id, TouchMapping* mapping)
 void UpdateWiiTouchPointerState(bool enabled, bool click_enabled, const TouchMapping& mapping)
 {
   using Clock = std::chrono::steady_clock;
-  // On release the pointer stays put, then A is pressed once the game's cursor has settled.
+  // A is pressed shortly after release, then the touched spot is held until the stick moves.
   constexpr auto CLICK_START = std::chrono::milliseconds(50);
   constexpr auto CLICK_END = std::chrono::milliseconds(150);
+  constexpr double STICK_MOVED = 0.15;
 
-  static bool s_touching = false;
-  static std::optional<Clock::time_point> s_released;
-  static std::uint64_t s_last_position = 0;
-
-  if (!enabled || Host_UIBlocksControllerState() || !g_presenter)
+  if (!enabled || !g_presenter)
   {
-    s_touching = false;
-    s_released.reset();
     ResetWiiTouchPointerState();
+    return;
+  }
+
+  TouchPointer& pointer = s_touch_pointer;
+  if (Host_UIBlocksControllerState())
+  {
+    // A touch cut short by a menu keeps its spot without clicking.
+    if (pointer.touching || pointer.released)
+    {
+      pointer.touching = false;
+      pointer.released.reset();
+      pointer.held_stick = GetWiiPointerStickState();
+    }
     return;
   }
 
   const Clock::time_point now = Clock::now();
   if (const std::optional<std::uint64_t> position = GetWiiTouchPointerPosition(mapping))
   {
-    s_touching = true;
-    s_released.reset();
-    s_last_position = *position;
-    s_wii_touch_pointer_state.store(TOUCH_POINTER_ACTIVE | *position, std::memory_order_release);
-    return;
-  }
-
-  if (s_touching)
-  {
-    s_touching = false;
-    if (click_enabled)
-      s_released = now;
-  }
-
-  if (s_released && now - *s_released < CLICK_END)
-  {
-    const bool click = now - *s_released >= CLICK_START;
-    s_wii_touch_pointer_state.store(TOUCH_POINTER_ACTIVE | s_last_position |
-                                        (click ? TOUCH_POINTER_CLICK : 0),
+    pointer.touching = true;
+    pointer.released.reset();
+    pointer.held_stick.reset();
+    pointer.position = *position;
+    s_wii_touch_pointer_state.store(TOUCH_POINTER_ACTIVE | TOUCH_POINTER_AIMING | *position,
                                     std::memory_order_release);
     return;
   }
 
-  s_released.reset();
-  ResetWiiTouchPointerState();
+  if (pointer.touching)
+  {
+    pointer.touching = false;
+    pointer.released = now;
+  }
+
+  if (pointer.released)
+  {
+    if (click_enabled && now - *pointer.released < CLICK_END)
+    {
+      const bool click = now - *pointer.released >= CLICK_START;
+      s_wii_touch_pointer_state.store(TOUCH_POINTER_ACTIVE | TOUCH_POINTER_AIMING |
+                                          pointer.position | (click ? TOUCH_POINTER_CLICK : 0),
+                                      std::memory_order_release);
+      return;
+    }
+    pointer.released.reset();
+    pointer.held_stick = GetWiiPointerStickState();
+  }
+
+  const std::optional<ControllerEmu::Cursor::StateData> stick =
+      pointer.held_stick ? GetWiiPointerStickState() : std::nullopt;
+  if (!stick || std::abs(stick->x - pointer.held_stick->x) > STICK_MOVED ||
+      std::abs(stick->y - pointer.held_stick->y) > STICK_MOVED)
+  {
+    ResetWiiTouchPointerState();
+    return;
+  }
+  s_wii_touch_pointer_state.store(TOUCH_POINTER_ACTIVE | pointer.position,
+                                  std::memory_order_release);
 }
 
 bool InstallWiiTouchPointerOverride()
@@ -778,6 +819,12 @@ bool InstallWiiTouchPointerOverride()
     }
     if (group_name != WiimoteEmu::Wiimote::IR_GROUP)
       return std::nullopt;
+    if (control_name == WiimoteEmu::Wiimote::GYRO_BYPASS_OVERRIDE)
+    {
+      if ((packed & TOUCH_POINTER_AIMING) != 0)
+        return 1.0;
+      return std::nullopt;
+    }
 
     const auto decode = [](std::uint16_t value) {
       return static_cast<ControlState>(value) / 32767.5 - 1.0;
