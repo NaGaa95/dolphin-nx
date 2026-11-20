@@ -504,6 +504,7 @@ bool DKStateTracker::Bind()
 
   if (m_dirty_flags & DIRTY_FLAG_PIPELINE)
   {
+    DKShaderCode::PrepareForUse(cmdbuf);
     m_pipeline->Replay(cmdbuf);
     m_dirty_flags |= DIRTY_FLAG_COMPUTE_SHADER;
   }
@@ -562,6 +563,7 @@ bool DKStateTracker::BindCompute()
 
   if (m_dirty_flags & DIRTY_FLAG_COMPUTE_SHADER)
   {
+    DKShaderCode::PrepareForUse(cmdbuf);
     const DkShader* shader = m_compute_shader->GetShader();
     dkCmdBufBindShaders(cmdbuf, DkStageFlag_Compute, &shader, 1);
   }

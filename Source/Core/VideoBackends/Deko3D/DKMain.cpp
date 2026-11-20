@@ -16,6 +16,7 @@
 #include "VideoBackends/Deko3D/DKGfx.h"
 #include "VideoBackends/Deko3D/DKObjectCache.h"
 #include "VideoBackends/Deko3D/DKPerfQuery.h"
+#include "VideoBackends/Deko3D/DKShader.h"
 #include "VideoBackends/Deko3D/DKShaderCompiler.h"
 #include "VideoBackends/Deko3D/DKStateTracker.h"
 #include "VideoBackends/Deko3D/DKSwapChain.h"
@@ -103,6 +104,7 @@ void VideoBackend::Shutdown()
   DKStateTracker::DestroyInstance();
   g_dk_object_cache.reset();
   g_dk_command_buffer_mgr.reset();
+  DKShaderCode::ReleaseMemory();
   g_dk_context.reset();
 }
 }

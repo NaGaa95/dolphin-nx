@@ -21,14 +21,24 @@ namespace Deko3D
 class DKShaderCode
 {
 public:
-  DKShaderCode(dk::UniqueMemBlock block, const DkShader& shader);
+  struct Block;
+
+  DKShaderCode(std::shared_ptr<Block> block, u32 offset, u32 size, const DkShader& shader);
   ~DKShaderCode();
 
   const DkShader* GetShader() const { return &m_shader; }
   bool IsValid() const { return dkShaderIsValid(&m_shader); }
 
+  // Before binding shaders: once code went into a range that held other code, the GPU's shader
+  // cache is invalidated.
+  static void PrepareForUse(DkCmdBuf cmdbuf);
+  // At backend shutdown, after the command buffers have retired every shader.
+  static void ReleaseMemory();
+
 private:
-  dk::UniqueMemBlock m_block;
+  std::shared_ptr<Block> m_block;
+  u32 m_offset;
+  u32 m_size;
   DkShader m_shader;
 };
 
