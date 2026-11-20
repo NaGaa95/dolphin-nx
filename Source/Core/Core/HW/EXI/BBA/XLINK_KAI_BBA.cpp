@@ -84,8 +84,14 @@ void CEXIETHERNET::XLinkNetworkInterface::Deactivate()
   m_read_enabled.Clear();
   m_read_thread_shutdown.Set();
 
+#ifdef __SWITCH__
+  // Horizon cannot detach a thread (std::thread::detach aborts), and a blocked receive could keep
+  // a join waiting: the thread object is left behind instead.
+  new std::thread(std::move(m_read_thread));
+#else
   // Detach the thread and let it die on its own (leaks ~9kb of memory)
   m_read_thread.detach();
+#endif
 
   // Close the socket
   m_sf_socket.unbind();

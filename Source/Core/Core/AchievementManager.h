@@ -193,6 +193,10 @@ public:
 
 private:
   AchievementManager() = default;
+#ifdef __SWITCH__
+  ~AchievementManager();
+  void JoinIdleThread();
+#endif
 
   struct FilereaderState
   {
@@ -294,6 +298,12 @@ private:
   std::condition_variable m_audio_cv;
   std::vector<SoundType> m_audio_queue;
   std::atomic<bool> m_audio_thread_stop{false};
+
+#ifdef __SWITCH__
+  std::mutex m_idle_mutex;
+  std::thread m_idle_thread;
+  std::atomic<bool> m_idle_running{false};
+#endif
 
   std::atomic_bool m_background_execution_allowed = true;
   Badge m_player_badge;

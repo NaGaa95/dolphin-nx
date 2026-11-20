@@ -539,7 +539,7 @@ bool AchievementManager::CanPause()
 
 void AchievementManager::DoIdle()
 {
-  std::thread([this] {
+  auto idle = [this] {
     while (true)
     {
       Common::SleepCurrentThread(1000);
@@ -566,8 +566,45 @@ void AchievementManager::DoIdle()
         rc_client_idle(m_client);
       });
     }
-  }).detach();
+  };
+#ifdef __SWITCH__
+  // Horizon cannot detach a thread (std::thread::detach aborted the emulator on every pause): the
+  // idle loop gets a joinable thread, only while a game is loaded, and a running one carries on.
+  std::lock_guard idle_guard{m_idle_mutex};
+  if (m_idle_thread.joinable())
+  {
+    if (m_idle_running.load(std::memory_order_acquire))
+      return;
+    m_idle_thread.join();
+  }
+  {
+    std::lock_guard lg{m_lock};
+    if (!m_client || !IsGameLoaded())
+      return;
+  }
+  m_idle_running.store(true, std::memory_order_release);
+  m_idle_thread = std::thread([this, idle] {
+    idle();
+    m_idle_running.store(false, std::memory_order_release);
+  });
+#else
+  std::thread(idle).detach();
+#endif
 }
+
+#ifdef __SWITCH__
+AchievementManager::~AchievementManager()
+{
+  JoinIdleThread();
+}
+
+void AchievementManager::JoinIdleThread()
+{
+  std::lock_guard idle_guard{m_idle_mutex};
+  if (m_idle_thread.joinable())
+    m_idle_thread.join();
+}
+#endif
 
 std::recursive_mutex& AchievementManager::GetLock()
 {
@@ -983,6 +1020,9 @@ void AchievementManager::Shutdown()
     m_dll_found = false;
     INFO_LOG_FMT(ACHIEVEMENTS, "Achievement Manager shut down.");
   }
+#ifdef __SWITCH__
+  JoinIdleThread();
+#endif
 }
 
 void* AchievementManager::FilereaderOpen(const char* path_utf8)
