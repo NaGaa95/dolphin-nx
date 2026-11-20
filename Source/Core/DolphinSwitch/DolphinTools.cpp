@@ -284,9 +284,31 @@ Result InstallCertificateMaterial(const std::string& source_root, std::string* e
   return Result::Success;
 }
 
+// GCMemcard::Save rewrites the card in place: a copy stays beside it until the save completes, and
+// opening the card puts it back after a save that was cut short (closing from HOME, a power loss).
+std::string MemcardBackupPath(const std::string& card_path)
+{
+  return card_path + ".dolphin-backup";
+}
+
+bool SaveMemoryCard(Memcard::GCMemcard& card, const std::string& card_path)
+{
+  const std::string backup = MemcardBackupPath(card_path);
+  if (!File::Copy(card_path, backup) || !card.Save())
+    return false;
+  File::Delete(backup);
+  return true;
+}
+
 Result OpenMemoryCard(const std::string& card_path, std::optional<Memcard::GCMemcard>* card,
                       std::string* error)
 {
+  const std::string backup = MemcardBackupPath(card_path);
+  if (File::IsFile(backup) && !File::Rename(backup, card_path))
+  {
+    SetError(error, "The memory card's backup from an interrupted save could not be restored.");
+    return Result::IoError;
+  }
   auto [issues, opened] = Memcard::GCMemcard::Open(card_path);
   if (!opened || issues.HasCriticalErrors() || !opened->IsValid())
   {
@@ -557,7 +579,7 @@ Result ImportGCSave(const std::string& card_path, const std::string& save_path, 
   switch (card->ImportFile(std::get<Memcard::Savefile>(save)))
   {
   case Memcard::GCMemcardImportFileRetVal::SUCCESS:
-    if (!card->Save())
+    if (!SaveMemoryCard(*card, card_path))
     {
       SetError(error, "The updated memory card could not be written.");
       return Result::IoError;
@@ -606,7 +628,7 @@ Result DeleteGCSave(const std::string& card_path, u8 directory_index, std::strin
   if (!card->GetDEntry(directory_index))
     return Result::NotFound;
   if (card->RemoveFile(directory_index) != Memcard::GCMemcardRemoveFileRetVal::SUCCESS ||
-      !card->Save())
+      !SaveMemoryCard(*card, card_path))
   {
     SetError(error, "The save could not be removed from the memory card.");
     return Result::IoError;
