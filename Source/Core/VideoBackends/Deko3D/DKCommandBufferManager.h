@@ -85,6 +85,7 @@ private:
   bool CreateCommandBuffers();
   void BeginCommandBuffer();
   void WaitForCommandBufferCompletion(u32 index);
+  void ReleaseIdleGrowthChunks();
 
   bool CreateTimestampMemory();
   void WriteBeginTimestamp(u32 index);

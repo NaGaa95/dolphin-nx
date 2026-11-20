@@ -5,6 +5,7 @@
 #include "VideoBackends/Deko3D/DKCommandBufferManager.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <utility>
 
 #include "Common/Align.h"
@@ -39,10 +40,27 @@ void DKCommandBufferManager::CommandMemory::Grow(size_t min_req_size)
   GrowthChunk& chunk = *growth_chunks[next_growth_chunk];
   if (!chunk.block || chunk.size < size)
   {
-
-    chunk.block = dk::MemBlockMaker{g_dk_context->GetDevice(), size}
-                      .setFlags(DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached)
-                      .create();
+    const auto create = [size] {
+      return dk::MemBlockMaker{g_dk_context->GetDevice(), size}
+          .setFlags(DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached)
+          .create();
+    };
+    dk::UniqueMemBlock block = create();
+    if (!block)
+    {
+      // deko3d would record through a null block: free the growth chunks of the command buffers
+      // the GPU is done with, then try once more.
+      g_dk_command_buffer_mgr->ReleaseIdleGrowthChunks();
+      block = create();
+    }
+    if (!block)
+    {
+      PanicAlertFmt("Out of memory for {} bytes of deko3d command memory.", size);
+      std::abort();
+    }
+    if (chunk.block)
+      MemoryTracker::UnregisterMemBlock(chunk.block);
+    chunk.block = std::move(block);
     chunk.size = size;
     MemoryTracker::RegisterMemBlock(chunk.block, "command memory growth chunk");
   }
@@ -295,6 +313,28 @@ void DKCommandBufferManager::WaitForCommandBufferCompletion(u32 index)
   }
 
   m_completed_fence_counter = now_completed_counter;
+}
+
+void DKCommandBufferManager::ReleaseIdleGrowthChunks()
+{
+  for (u32 i = 0; i < NUM_COMMAND_BUFFERS; ++i)
+  {
+    CmdBufferResources& resources = m_command_buffers[i];
+    if (i == m_current_cmd_buffer || resources.fence_counter > m_completed_fence_counter)
+      continue;
+    // (Rewind gives the command buffer only its initial block again before it records)
+    for (CommandMemory* memory : {&resources.init, &resources.draw})
+    {
+      for (const auto& chunk : memory->growth_chunks)
+      {
+        if (!chunk->block)
+          continue;
+        MemoryTracker::UnregisterMemBlock(chunk->block);
+        chunk->block = {};
+        chunk->size = 0;
+      }
+    }
+  }
 }
 
 void DKCommandBufferManager::WaitForFenceCounter(u64 fence_counter)
