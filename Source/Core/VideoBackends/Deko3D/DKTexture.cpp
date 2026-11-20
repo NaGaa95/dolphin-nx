@@ -427,6 +427,8 @@ void DKStagingTexture::CopyFromTexture(const AbstractTexture* src,
   dkCmdBufReplayCmds(cmdbuf, &threed_nop, 1);
   dkCmdBufBarrier(cmdbuf, DkBarrier_None, DkInvalidateFlags_L2Cache);
 #endif
+  // The command buffer's fence then waits for the copy, before Flush() lets the CPU read it.
+  g_dk_command_buffer_mgr->NotifyCpuReadback();
 
   m_needs_flush = true;
   m_flush_fence_counter = g_dk_command_buffer_mgr->GetCurrentFenceCounter();
