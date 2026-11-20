@@ -13932,11 +13932,6 @@ bool Launcher::ChooseForwarderIcon(Game* game, std::string* output_path)
         },
         &cancel);
   }
-  if (paths.empty())
-  {
-    Toast("No icon found - download a cover first", 1600);
-    return false;
-  }
 
   const int count = static_cast<int>(paths.size());
   const int columns = std::max(1, std::min(count, 5));
@@ -14117,11 +14112,6 @@ void Launcher::CreateHomeShortcut(Game* game)
       *value = std::move(replacement);
   };
   const auto build = [&] {
-    if (icon_path.empty())
-    {
-      Toast("Pick an icon first", 1200);
-      return;
-    }
     std::array<char, 512> error{};
     bool created = false;
     std::vector<std::string> legacy_game_paths;
