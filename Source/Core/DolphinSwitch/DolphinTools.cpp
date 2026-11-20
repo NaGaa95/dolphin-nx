@@ -167,6 +167,9 @@ constexpr u64 BOOTMII_NAND_SIZE = 0x21000000;
 constexpr u64 BOOTMII_KEYS_SIZE = 0x400;
 constexpr std::array<std::string_view, 3> NAND_CERTIFICATE_FILES = {
     "clientca.pem", "clientcakey.pem", "rootca.pem"};
+// Every NAND tool, and the scan thread's title listing: two IOS kernels at once clear each other's
+// NAND /tmp and finish each other's imports (and assert on the Wii root they share).
+std::recursive_mutex s_nand_mutex;
 std::mutex s_nand_certificate_mutex;
 
 bool HasRequiredCertificateMaterial(const std::string& root)
@@ -611,6 +614,7 @@ Result DeleteGCSave(const std::string& card_path, u8 directory_index, std::strin
 
 std::vector<WiiSaveEntry> ListWiiSaves()
 {
+  std::lock_guard nand_lock{s_nand_mutex};
   std::vector<WiiSaveEntry> result;
   const File::FSTEntry title_root =
       File::ScanDirectoryTree(JoinPath(File::GetUserPath(D_WIIROOT_IDX), "title"), false);
@@ -647,6 +651,7 @@ std::vector<WiiSaveEntry> ListWiiSaves()
 
 Result ImportWiiSave(const std::string& data_bin_path, bool overwrite, std::string* error)
 {
+  std::lock_guard nand_lock{s_nand_mutex};
   const Result result = MapWiiSaveResult(
       WiiSave::Import(data_bin_path, [overwrite] { return overwrite; }));
   if (result != Result::Success)
@@ -656,6 +661,7 @@ Result ImportWiiSave(const std::string& data_bin_path, bool overwrite, std::stri
 
 Result ExportWiiSave(u64 title_id, const std::string& destination, std::string* error)
 {
+  std::lock_guard nand_lock{s_nand_mutex};
   if (!File::CreateDirs(destination))
     return Result::IoError;
   const Result result = MapWiiSaveResult(WiiSave::Export(title_id, destination));
@@ -666,6 +672,7 @@ Result ExportWiiSave(u64 title_id, const std::string& destination, std::string* 
 
 Result ExportAllWiiSaves(const std::string& destination, std::size_t* count, std::string* error)
 {
+  std::lock_guard nand_lock{s_nand_mutex};
   if (!File::CreateDirs(destination))
   {
     SetError(error, "The export directory could not be created.");
@@ -681,6 +688,7 @@ Result ExportAllWiiSaves(const std::string& destination, std::size_t* count, std
 
 Result DeleteWiiSave(u64 title_id, std::string* error)
 {
+  std::lock_guard nand_lock{s_nand_mutex};
   const std::string host_data_path =
       Common::GetTitleDataPath(title_id, Common::FromWhichRoot::Configured);
   const bool existed = File::IsDirectory(host_data_path);
@@ -705,6 +713,7 @@ Result DeleteWiiSave(u64 title_id, std::string* error)
 
 std::vector<InstalledTitle> ListInstalledWiiTitles()
 {
+  std::lock_guard nand_lock{s_nand_mutex};
   IOS::HLE::Kernel ios;
   Core::TitleDatabase title_database;
   const DiscIO::Language language = SConfig::GetInstance().GetCurrentLanguage(true);
@@ -759,6 +768,7 @@ std::vector<InstalledTitle> ListInstalledWiiTitles()
 
 Result InstallWAD(const std::string& wad_path, std::string* error)
 {
+  std::lock_guard nand_lock{s_nand_mutex};
   if (!File::IsFile(wad_path))
     return Result::NotFound;
   if (!WiiUtils::InstallWAD(wad_path))
@@ -771,6 +781,7 @@ Result InstallWAD(const std::string& wad_path, std::string* error)
 
 std::string GetSystemMenuDescription()
 {
+  std::lock_guard nand_lock{s_nand_mutex};
   IOS::HLE::Kernel ios;
   const IOS::ES::TMDReader tmd = ios.GetESCore().FindInstalledTMD(Titles::SYSTEM_MENU);
   if (!tmd.IsValid())
@@ -830,6 +841,7 @@ WiiUtils::UpdateCallback MakeUpdateCallback(const SystemUpdateProgress& progress
 Result OnlineSystemUpdate(const std::string& region, const SystemUpdateProgress& progress,
                           std::string* message)
 {
+  std::lock_guard nand_lock{s_nand_mutex};
   return FinishSystemUpdate(WiiUtils::DoOnlineUpdate(MakeUpdateCallback(progress), region),
                             message);
 }
@@ -837,6 +849,7 @@ Result OnlineSystemUpdate(const std::string& region, const SystemUpdateProgress&
 Result DiscSystemUpdate(const std::string& image_path, const SystemUpdateProgress& progress,
                         std::string* message)
 {
+  std::lock_guard nand_lock{s_nand_mutex};
   if (!File::IsFile(image_path))
     return Result::NotFound;
   return FinishSystemUpdate(WiiUtils::DoDiscUpdate(MakeUpdateCallback(progress), image_path),
@@ -845,6 +858,7 @@ Result DiscSystemUpdate(const std::string& image_path, const SystemUpdateProgres
 
 Result UninstallWiiTitle(u64 title_id, std::string* error)
 {
+  std::lock_guard nand_lock{s_nand_mutex};
   if (!WiiUtils::IsTitleInstalled(title_id))
     return Result::NotFound;
   if (!WiiUtils::UninstallTitle(title_id))
@@ -857,6 +871,7 @@ Result UninstallWiiTitle(u64 title_id, std::string* error)
 
 NANDStatus CheckNAND()
 {
+  std::lock_guard nand_lock{s_nand_mutex};
   IOS::HLE::Kernel ios;
   const WiiUtils::NANDCheckResult status = WiiUtils::CheckNAND(ios);
   return {status.bad,
@@ -869,6 +884,7 @@ NANDStatus CheckNAND()
 
 Result BackupNAND(const std::string& destination, std::string* error)
 {
+  std::lock_guard nand_lock{s_nand_mutex};
   const std::string source = File::GetUserPath(D_WIIROOT_IDX);
   const std::string normalized_source = NormalizedPathForComparison(source);
   const std::string normalized_destination = NormalizedPathForComparison(destination);
@@ -889,6 +905,7 @@ Result BackupNAND(const std::string& destination, std::string* error)
 
 Result RepairNAND(std::string* error)
 {
+  std::lock_guard nand_lock{s_nand_mutex};
   IOS::HLE::Kernel ios;
   if (!WiiUtils::RepairNAND(ios))
   {
@@ -901,6 +918,7 @@ Result RepairNAND(std::string* error)
 Result ImportBootMiiNAND(const std::string& nand_path, const std::string& keys_path,
                          std::string* error)
 {
+  std::lock_guard nand_lock{s_nand_mutex};
   if (const Result validation = ValidateBootMiiBackup(nand_path, keys_path, error);
       validation != Result::Success)
     return validation;
@@ -925,6 +943,7 @@ Result ImportBootMiiNAND(const std::string& nand_path, const std::string& keys_p
 
 Result ExtractNANDCertificates(const NANDCertificateSource& source, std::string* error)
 {
+  std::lock_guard nand_lock{s_nand_mutex};
   std::lock_guard lock{s_nand_certificate_mutex};
   if (const Result validation = ValidateBootMiiBackup(source.path, source.keys_path, error);
       validation != Result::Success)
@@ -961,6 +980,7 @@ Result ExtractNANDCertificates(const NANDCertificateSource& source, std::string*
 
 WiiNetworkStatus GetWiiNetworkStatus()
 {
+  std::lock_guard nand_lock{s_nand_mutex};
   const std::string root = File::GetUserPath(D_WIIROOT_IDX);
   return {File::IsFile(JoinPath(root, "shared2/sys/net/02/config.dat")),
           File::IsFile(JoinPath(root, "clientca.pem")),
@@ -969,6 +989,7 @@ WiiNetworkStatus GetWiiNetworkStatus()
 
 Result ResetWiiNetworkConfiguration(std::string* error)
 {
+  std::lock_guard nand_lock{s_nand_mutex};
   IOS::HLE::Kernel ios;
   IOS::HLE::Net::WiiNetConfig config;
   config.ResetConfig(ios.GetFS().get());
