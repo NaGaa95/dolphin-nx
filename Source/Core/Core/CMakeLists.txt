@@ -454,8 +454,6 @@ add_library(core
   IOS/USB/Common.h
   IOS/USB/Emulated/Infinity.cpp
   IOS/USB/Emulated/Infinity.h
-  IOS/USB/Emulated/Microphone.cpp
-  IOS/USB/Emulated/Microphone.h
   IOS/USB/Emulated/Skylanders/Skylander.cpp
   IOS/USB/Emulated/Skylanders/Skylander.h
   IOS/USB/Emulated/Skylanders/SkylanderCrypto.cpp
@@ -605,11 +603,11 @@ endif()
 add_custom_command(
   OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/AchievementApprovedHash.h
   COMMAND ${CMAKE_COMMAND}
-          -DJSON_FILE=${CMAKE_SOURCE_DIR}/Data/Sys/ApprovedInis.json
+          -DJSON_FILE=${PROJECT_SOURCE_DIR}/Data/Sys/ApprovedInis.json
           -DTEMPLATE_FILE=${CMAKE_CURRENT_SOURCE_DIR}/AchievementApprovedHash.h.in
           -DOUTPUT_FILE=${CMAKE_CURRENT_BINARY_DIR}/AchievementApprovedHash.h
-          -P ${CMAKE_SOURCE_DIR}/CMake/GenerateAchievementHash.cmake
-  DEPENDS ${CMAKE_SOURCE_DIR}/Data/Sys/ApprovedInis.json
+          -P ${PROJECT_SOURCE_DIR}/CMake/GenerateAchievementHash.cmake
+  DEPENDS ${PROJECT_SOURCE_DIR}/Data/Sys/ApprovedInis.json
           ${CMAKE_CURRENT_SOURCE_DIR}/AchievementApprovedHash.h.in
   COMMENT "Generating AchievementApprovedHash.h"
 )
