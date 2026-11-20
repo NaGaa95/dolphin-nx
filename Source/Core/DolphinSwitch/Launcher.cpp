@@ -2370,7 +2370,6 @@ private:
   std::string m_startup_message;
   std::string m_launcher_path;
   std::string m_update_notice_tag;
-  std::string m_update_notified_tag;
   Uint32 m_update_notice_until = 0;
   std::unordered_map<TextKey, TextTexture, TextKeyHash> m_text_cache;
   std::unordered_map<MetricKey, MetricEntry, MetricKeyHash> m_metric_cache;
@@ -14666,10 +14665,12 @@ void Launcher::UpdateScreen()
 void Launcher::PollUpdateNotification()
 {
   const Updater::Snapshot snapshot = Updater::GetSnapshot();
+  // Once per release: the launcher starts again after every game.
   if (snapshot.state == Updater::State::UpdateAvailable && !snapshot.release.tag.empty() &&
-      snapshot.release.tag != m_update_notified_tag)
+      snapshot.release.tag != m_store.Get("Launcher/UpdateNotifiedTag"))
   {
-    m_update_notified_tag = snapshot.release.tag;
+    m_store.Set("Launcher/UpdateNotifiedTag", snapshot.release.tag);
+    MarkStoreDirty();
     m_update_notice_tag = snapshot.release.tag;
     m_update_notice_until = SDL_GetTicks() + 9000;
   }
