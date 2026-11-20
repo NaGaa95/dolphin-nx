@@ -1,6 +1,6 @@
 set(DOLPHIN_SWITCH_RELEASE_NAME "Dolphin")
 set(DOLPHIN_SWITCH_RELEASE_AUTHOR "naga")
-set(DOLPHIN_SWITCH_RELEASE_VERSION "1.2.2" CACHE STRING
+set(DOLPHIN_SWITCH_RELEASE_VERSION "1.2.3" CACHE STRING
     "Semantic release version for the standalone Nintendo Switch frontend")
 
 add_executable(dolphin-switch
