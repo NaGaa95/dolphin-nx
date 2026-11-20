@@ -79,12 +79,11 @@ if(DOLPHIN_SWITCH)
     "${CMAKE_SOURCE_DIR}/Externals/Vulkan-Headers/include"
   )
   target_include_directories(dolphin_switch_lsfg PRIVATE "${CMAKE_SOURCE_DIR}/Source/Core")
-  # Dolphin normally builds without C++ exceptions. LSFG-VK deliberately uses
-  # exceptions as the error boundary around shader extraction and Vulkan setup.
+  # Dolphin builds without C++ exceptions; LSFG-VK uses them around shader extraction and Vulkan
+  # setup.
   target_compile_options(dolphin_switch_lsfg PRIVATE -fexceptions)
-  # Dolphin exposes Vulkan entry points as PFN variables. Keep the vendored
-  # backend on the same no-prototypes ABI so LTO does not merge those variables
-  # with Vulkan's normal function declarations.
+  # Dolphin's Vulkan entry points are PFN variables: the vendored backend uses the same
+  # no-prototypes ABI, so LTO does not merge them with Vulkan's function declarations.
   target_compile_definitions(dolphin_switch_lsfg PRIVATE USE_VULKAN=1 VK_NO_PROTOTYPES=1)
   target_link_libraries(dolphin_switch_lsfg PRIVATE common)
 

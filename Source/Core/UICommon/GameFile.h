@@ -57,9 +57,8 @@ public:
   ~GameFile();
 
   bool IsValid() const;
-  // Returns true when the file on disk no longer matches the source file that this metadata was
-  // read from. A source stamp is deliberately separate from m_file_size: for compressed images,
-  // m_file_size describes the image while this stamp describes the physical file itself.
+  // True when the file on disk no longer matches the one this metadata was read from (the stamp is
+  // the physical file's; m_file_size is the image's, which differs for compressed images).
   bool SourceFileChanged() const;
   const std::string& GetFilePath() const { return m_file_path; }
   const std::string& GetFileName() const { return m_file_name; }
@@ -155,9 +154,8 @@ private:
   s64 m_source_file_mtime_nsec{};
   s64 m_source_file_ctime{};
   s64 m_source_file_ctime_nsec{};
-  // A game-mod descriptor's metadata and sync identity also depend on files referenced by the
-  // JSON.  Persist inexpensive stat stamps for those files so changing the base image, banner, or
-  // Riivolution XML refreshes the cache even when the descriptor itself is untouched.
+  // A game mod's metadata also depends on the files its JSON names: their stat stamps are kept, so
+  // a new base image, banner or Riivolution XML refreshes the cache.
   std::vector<std::string> m_source_dependency_paths;
   std::vector<u8> m_source_dependency_stat_valid;
   std::vector<u64> m_source_dependency_sizes;

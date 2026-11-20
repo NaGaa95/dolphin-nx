@@ -79,10 +79,8 @@ std::string VideoBackend::GetDisplayName() const
 void VideoBackend::InitBackendInfo(const WindowSystemInfo& wsi)
 {
 #ifdef __SWITCH__
-  // The capability probe must not take ownership of the process-wide default NWindow. Destroying
-  // that temporary window surface calls nwindowReleaseBuffers(), which clears the dimensions that
-  // the Switch frontend selected for the upcoming game. The real context would then inherit the
-  // compositor's docked 1920x1080 default even when the session was configured for 1280x720.
+  // The capability probe must not take the default NWindow: destroying its surface calls
+  // nwindowReleaseBuffers(), which clears the size chosen for the game.
   WindowSystemInfo probe_wsi = wsi;
   probe_wsi.type = WindowSystemType::Headless;
   probe_wsi.display_connection = nullptr;

@@ -13,10 +13,9 @@ class System;
 
 namespace DolphinSwitch
 {
-// Keeps SMB-backed GCI folders safe by using an SD-resident working copy while emulation is
-// running. The SMB folder is reconciled before boot and after Core::Shutdown. A durable baseline
-// manifest is written before boot, so a HOME-menu force close leaves local changes pending rather
-// than losing them; they are reconciled the next time the same folder is used.
+// An SMB GCI folder is played from an SD copy, synced before boot and after Core::Shutdown. The
+// baseline is written before boot, so changes made before a force close from HOME are synced the
+// next time the folder is used.
 class GciSyncSession final
 {
 public:

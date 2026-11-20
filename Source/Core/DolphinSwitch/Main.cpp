@@ -1030,9 +1030,9 @@ bool ApplyRuntimeControllerMode(RuntimeControllerSession* session, int player,
     wiimote->UpdateReferences(g_controller_interface);
   }
 
-  // Changing the Wii Remote source synchronously pauses the CPU and refreshes input devices.
-  // Never run those callbacks while holding EmulatedController's state lock: the refresh path can
-  // acquire the device mutex in the opposite order and deadlock when switching to GameCube input.
+  // Changing the Wii Remote source pauses the CPU and refreshes the devices: never under
+  // EmulatedController's state lock (the refresh takes the device mutex in the other order and
+  // deadlocks when switching to GameCube input).
   {
     Config::ConfigChangeCallbackGuard config_guard;
     Config::SetCurrent(Config::GetInfoForSIDevice(player), mode == RuntimeControllerMode::GameCube ?
@@ -1216,10 +1216,8 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
       s_session_running.store(false, std::memory_order_release);
   });
 
-  // The launcher uses the same SDL device for UI sounds, but handing that long-lived device to
-  // Dolphin can leave Horizon's audio output stopped even though SDL still reports a valid handle.
-  // Give every game a fresh device, matching direct launches and avoiding a full application
-  // restart when the launcher device has become stale.
+  // A game gets an audio device of its own: the launcher's, handed over, can leave Horizon's output
+  // stopped while SDL still reports it valid.
   DolphinSwitch::Audio::ResetSharedAudioDevice();
 
   ScopedEnvironmentOverrides graphics_environment;
@@ -1319,10 +1317,8 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
   RuntimeControllerSession runtime_controllers = CreateRuntimeControllerSession(system);
   if (runtime_controllers.is_wii)
   {
-    // Loading a controller profile changes the selected attachment, but an already initialized
-    // emulated Wii Remote can retain its previous live extension until it is explicitly applied.
-    // Synchronize supported extensions at session startup, matching what the runtime menu does
-    // when the user re-selects the already highlighted controller mode.
+    // A loaded profile changes the selected attachment, but an initialized Wii Remote keeps its
+    // live extension until it is applied: apply it at session start, as the quick menu does.
     for (int player = 0; player < 4; ++player)
     {
       if (runtime_controllers.modes[player] != RuntimeControllerMode::GameCube &&

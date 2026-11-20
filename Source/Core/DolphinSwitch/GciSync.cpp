@@ -695,9 +695,8 @@ bool CopyFileDurably(const std::string& source, const FileState& expected_source
       *error = "A copied GCI file failed verification; the previous destination was kept.";
     return false;
   }
-  // The full plan is checked before any writes, but copying and hashing can take long enough for
-  // another SMB client to modify the destination. Check it once more immediately before the
-  // atomic rename so that a newer save is never silently overwritten in that race window.
+  // Another SMB client may change the destination while copying and hashing: check it again right
+  // before the rename, so a newer save is never overwritten.
   if (!ValidateState(destination, expected_destination, error))
   {
     File::Delete(temporary, File::IfAbsentBehavior::NoConsoleWarning);
@@ -808,8 +807,8 @@ bool Reconcile(const Snapshot& baseline, const std::string& local_root,
     return false;
   }
 
-  // Validate the complete plan before changing either side. This catches external edits made
-  // after the snapshots and keeps a partially applied plan recoverable through the old baseline.
+  // Check the whole plan before changing either side: it catches edits made since the snapshots,
+  // and a partly applied plan stays recoverable from the old baseline.
   for (const SyncAction& action : plan.actions)
   {
     if (!ValidateAction(action, local_root, remote_root, error))
@@ -874,8 +873,7 @@ bool EnsureRemoteRoot(const std::string& remote_path, std::string* error)
 
 std::string CacheKey(const std::string& remote_path, ExpansionInterface::Slot slot)
 {
-  // Preserve the remote path's case in the cache identity. Samba servers can expose
-  // case-sensitive paths, where two differently cased directory names are not interchangeable.
+  // The remote path keeps its case in the cache identity (Samba can be case-sensitive).
   const std::string identity = NormalizePath(remote_path) +
                                (slot == ExpansionInterface::Slot::A ? "\nslot-a" : "\nslot-b");
   return Lower(Common::SHA1::DigestToString(Common::SHA1::CalculateDigest(identity)));
@@ -917,9 +915,8 @@ struct GciSyncSession::Impl
     state.manifest_path = JoinPath(state.cache_root, "sync-state.json");
     state.conflict_root = JoinPath(state.cache_root, "conflicts");
 
-    // The journal itself is atomically replaced outside the live `files` directory. Recover it
-    // before loading so a force close between the two rename operations cannot make an existing
-    // cache look like an uninitialized one.
+    // The journal is replaced outside `files`: recover it before loading, so a force close between
+    // the two renames cannot make the cache look new.
     if (!RecoverAtomicArtifacts(state.cache_root, error))
       return false;
 
@@ -1034,9 +1031,8 @@ struct GciSyncSession::Impl
       {
         continue;
       }
-      // GCI folder settings store a base path. The EXI device expands that base to the current
-      // title's region directory before opening it, so synchronize and override that exact
-      // effective directory rather than accidentally caching the parent of USA/JAP/EUR.
+      // The setting is a base path that the EXI device extends with the region folder: sync that
+      // folder, not the parent of USA/JAP/EUR.
       const std::string path = NormalizePath(Config::GetGCIFolderPath(slot, region));
       if (!SmbIdFromPath(path))
         continue;

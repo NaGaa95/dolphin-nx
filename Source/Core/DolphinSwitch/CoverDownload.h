@@ -28,9 +28,8 @@ enum class TransferStage
   Image,
 };
 
-// RequestOptions is only observed for the duration of a synchronous operation. The caller owns
-// cancel and must keep it alive until that operation returns. Progress is invoked on the calling
-// thread (which is normally a launcher worker thread).
+// Used only during the (synchronous) call: cancel must outlive it, and progress runs on the calling
+// thread.
 struct RequestOptions
 {
   const std::atomic_bool* cancel = nullptr;
@@ -71,8 +70,8 @@ Result FetchIcons(const std::string& api_key, long game_id, std::vector<Artwork>
 Result DownloadImage(const std::string& url, const std::string& output_path,
                      const RequestOptions* options = nullptr);
 
-// Finds the closest SteamGridDB game/title match, chooses a portrait cover, and atomically writes
-// it to output_path. This is intended for cancellable batch "missing cover" jobs.
+// Finds the closest SteamGridDB match, picks a portrait cover and writes it to output_path
+// atomically (for the cancellable missing-cover batches).
 Result DownloadBestCover(const std::string& api_key, const std::string& title,
                          const std::string& output_path, CoverSelection* selection = nullptr,
                          const RequestOptions* options = nullptr);

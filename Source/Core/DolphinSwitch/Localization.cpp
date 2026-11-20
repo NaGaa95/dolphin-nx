@@ -45,8 +45,8 @@ struct LauncherTranslation
   std::string_view pt;
 };
 
-// These are Switch-launcher-specific strings which are not present in Dolphin's regular gettext
-// catalog yet. Everything else falls through to the catalog generated from Languages/po.
+// Launcher strings missing from Dolphin's gettext catalog; the rest comes from the catalog
+// (Languages/po).
 #define LSFG_LABEL "LSFG 2x (Vulkan / " DEKO3D_DISPLAY_NAME ")"
 constexpr std::array LAUNCHER_TRANSLATIONS = {
     LauncherTranslation{"System", "Système", "System", "Sistema", "Sistema", "Sistema"},
@@ -785,8 +785,7 @@ std::string ResolveSupportedCode(std::string_view code)
       return std::string(language.code);
   }
 
-  // Nintendo exposes both region-based and script-based Chinese language codes. Resolve every
-  // form to the canonical locale used by the packaged gettext and launcher catalogs.
+  // Horizon has region- and script-based Chinese codes: every form maps to the catalogs' locale.
   if (normalized == "zh" || normalized.starts_with("zh-cn") ||
       normalized.starts_with("zh-sg") || normalized.starts_with("zh-hans"))
   {

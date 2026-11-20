@@ -68,9 +68,8 @@ struct CachedDirectory
 
 struct SmbFile
 {
-  // devoptab allocates this structure as unconstructed storage, so keep the
-  // owning shared_ptr in a separately constructed object.  It pins the mount
-  // until close even after its device has been retired.
+  // devoptab allocates this structure unconstructed: the owning shared_ptr lives in an object of
+  // its own, which pins the mount until close, even once its device is retired.
   std::shared_ptr<SmbMount>* lifetime = nullptr;
   SmbMount* mount = nullptr;
   smb2fh* handle = nullptr;
@@ -125,10 +124,9 @@ struct SmbMount
   }
 };
 
-// Newlib retains the devoptab pointer in open descriptors.  Keep registration
-// records at stable addresses for the process lifetime; a remount receives a
-// fresh record so a callback already dispatched for an old registration can
-// never acquire the replacement connection by accident.
+// newlib keeps the devoptab pointer in open descriptors: records stay at stable addresses for the
+// process's life, and a remount gets a new record, so a callback for an old registration never
+// reaches the new connection.
 struct SmbDevice
 {
   std::string device_name;
@@ -158,9 +156,8 @@ void UsbStatusChanged(const UsbHsFsDevice* devices, u32 count, void*)
     s_usb_generation.fetch_add(1, std::memory_order_release);
   }
 
-  // Serialize invocation with registration changes so unregistering also
-  // fences the caller-owned userdata. Never hold the USB snapshot mutex while
-  // calling application code.
+  // Calls are serialized with registration changes, so unregistering also fences the userdata; the
+  // USB snapshot mutex is never held while calling out.
   std::lock_guard callback_lock(s_usb_callback_mutex);
   if (s_usb_callback)
     s_usb_callback(s_usb_callback_data);
@@ -391,9 +388,8 @@ bool ConnectSmbUnlocked(SmbMount* mount, bool reconnect,
   mount->state.store(reconnect ? SmbConnectionState::Reconnecting :
                                  SmbConnectionState::Connecting,
                      std::memory_order_release);
-  // Every context replacement invalidates all libsmb2 handles, including a
-  // failed reconnect. Open file/directory states use this generation to avoid
-  // dereferencing handles owned by a destroyed context.
+  // A new context (a failed reconnect too) invalidates every libsmb2 handle: open files and
+  // directories check this generation before using theirs.
   DisconnectSmbUnlocked(mount);
 
   mount->context = smb2_init_context();
@@ -557,10 +553,8 @@ bool ReopenFileUnlocked(SmbFile* file)
   {
     return false;
   }
-  // Reconnecting must only reopen the existing object. Replaying creation-time
-  // flags can truncate a partially copied file or make an O_EXCL handle fail
-  // after the first connection was lost. Access, append and synchronization
-  // flags remain intact; append positioning is enforced by SmbWrite below.
+  // A reconnect only reopens the file: replaying the creation flags could truncate a partial copy
+  // or fail an O_EXCL open. Access, append and sync flags stay (SmbWrite enforces append).
   const int reopen_flags =
       file->opened_once ? file->flags & ~(O_CREAT | O_EXCL | O_TRUNC) : file->flags;
   file->handle = smb2_open(file->mount->context, file->path, reopen_flags);
@@ -812,9 +806,8 @@ ssize_t SmbWrite(_reent* reent, void* state, const char* input, std::size_t leng
     return Fail(reent, -synchronized);
   if (length > 0 && (file->flags & O_APPEND) != 0)
   {
-    // libsmb2 does not implement O_APPEND itself. Seek on every write so a
-    // reconnect (or another writer extending the file) cannot turn an append
-    // handle into an overwrite at its previously cached position.
+    // libsmb2 has no O_APPEND: seek to the end on every write, so a reconnect or another writer
+    // cannot turn an append into an overwrite.
     std::uint64_t end_position = 0;
     const int seek_result =
         smb2_lseek(file->mount->context, file->handle, 0, SEEK_END, &end_position);
@@ -1413,8 +1406,8 @@ std::string UsbPhysicalId(const UsbHsFsDevice& device)
   HashInteger(&hash, device.vid);
   HashInteger(&hash, device.pid);
   HashText(&hash, device.serial_number);
-  // Some inexpensive enclosures expose no serial. Model and capacity make the
-  // fallback deterministic and substantially reduce accidental collisions.
+  // Some enclosures have no serial: the model and capacity make the fallback stable and collisions
+  // rare.
   if (!device.serial_number[0])
   {
     HashText(&hash, device.manufacturer);
@@ -1699,9 +1692,8 @@ bool MountSmb(const SmbShare& share, std::string* error, const std::atomic_bool*
     }
   }
 
-  // Another worker finished mounting this ID while we negotiated. Dispose of
-  // our duplicate connection outside the registry lock, then report/recover
-  // the published mount's actual state.
+  // Another worker mounted this ID meanwhile: drop this connection outside the lock and report that
+  // mount's state.
   mount.reset();
   std::unique_lock lock(raced_mount->io_mutex);
   if (MountRetired(raced_mount.get()))

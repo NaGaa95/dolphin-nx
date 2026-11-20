@@ -789,9 +789,8 @@ bool IsUsbStoragePath(const std::string& path)
 
 std::string UnavailableUsbSourcePath(std::string_view id, std::string_view relative)
 {
-  // A disconnected stable source must not keep its old mutable umsN: alias: another drive can
-  // legitimately receive that alias during startup. This non-filesystem placeholder remains
-  // unique and is replaced as soon as the bound volume is available again.
+  // A disconnected source must not keep its umsN: alias, which another drive may get meanwhile:
+  // this unique placeholder stands in until its volume is back.
   std::string path = "usbsource:" + std::string(id);
   if (!relative.empty())
     path = JoinPath(path, relative);
@@ -822,10 +821,9 @@ bool IsGamePath(std::string_view path)
   return std::ranges::contains(extensions, extension);
 }
 
-// The generic game-path helper returns one large vector after a complete recursive traversal.
-// This Switch-specific walker publishes entries as readdir discovers them and observes
-// cancellation between every directory entry. d_type avoids a network stat for normal SMB
-// entries; filesystems which report DT_UNKNOWN still get the required correctness fallback.
+// Publishes entries as readdir finds them and checks cancellation between entries (the generic
+// helper returns everything at the end). d_type saves a network stat per SMB entry; DT_UNKNOWN
+// falls back to stat.
 bool WalkGamePaths(std::string root, const std::atomic_bool& cancel,
                    const std::function<void(std::string)>& found)
 {
@@ -981,13 +979,13 @@ struct Game
   std::shared_ptr<const UICommon::GameFile> metadata;
   std::string path;
   std::string title;
-  // Stable launcher identity.  Unlike the legacy key, this never contains the file path and is
-  // retained in launcher.ini when an image is renamed or a USB device receives another umsN:.
+  // Stable launcher identity: it never contains the path, so it survives a rename or a new umsN:
+  // alias.
   std::string key;
   std::string legacy_key;
   std::string fingerprint;
-  // A deliberately content-insensitive identity tuple. Patched/repacked images of the same game
-  // retain it, while a different title replacing a file at the same path does not inherit state.
+  // Content-insensitive: patched or repacked images of a game keep it, another title at the same
+  // path does not.
   std::string base_identity;
   std::string canonical_path;
   std::string storage_id;
@@ -1002,9 +1000,8 @@ struct Game
   bool has_game_config = false;
   bool installed_nand = false;
   bool allow_legacy_path_migration = true;
-  // True when GameFileCache rebuilt this entry because its source/dependencies changed.  The
-  // stable fingerprint is intentionally content-insensitive for normal discs, so this separately
-  // invalidates metadata-derived artwork without forcing a full-image hash.
+  // True when GameFileCache rebuilt this entry (its source or dependencies changed): invalidates
+  // the artwork without hashing the image, which the fingerprint never does.
   bool metadata_refreshed = false;
   SDL_Texture* cover = nullptr;
   std::uint64_t cover_use = 0;
@@ -1034,14 +1031,14 @@ struct LibraryIdentityRecord
   std::string fingerprint;
   std::string base_identity;
   std::string canonical_path;
-  // Current case-preserving filesystem path.  Forwarders resolve this through the stable record
-  // after a rename; canonical_path remains the mount-independent matching key.
+  // Current path, case preserved (forwarders resolve it after a rename); canonical_path is the
+  // mount-independent key.
   std::string current_path;
-  // Exact prior filesystem paths are only used to find forwarders made before stable IDs existed.
-  // Keep this bounded: paths may include mutable umsN aliases and are never launch candidates.
+  // Earlier paths, only to find forwarders made before stable IDs (bounded, and never launched:
+  // they may hold old umsN: aliases).
   std::vector<std::string> previous_paths;
-  // A different title replaced the path formerly owned by this record. Retired records remain
-  // available for same-volume fingerprint recovery, but forwarders must never resolve them.
+  // Another title replaced this record's path: kept for fingerprint recovery, never resolved by
+  // forwarders.
   bool retired = false;
 };
 
@@ -1049,9 +1046,8 @@ constexpr std::size_t MAX_PREVIOUS_LIBRARY_PATHS = 4;
 
 std::string LegacyBaseIdentityFromFingerprint(std::string_view fingerprint)
 {
-  // Fingerprints written by the first stable-ID implementation were
-  // game-id:revision:disc:platform:size:sync-hash.  The prefix is sufficient to migrate those
-  // records without treating a patched image as another game.
+  // Older fingerprints were game-id:revision:disc:platform:size:sync-hash: their prefix migrates
+  // them, so a patched image stays the same game.
   std::size_t end = 0;
   for (int separator = 0; separator < 4; ++separator)
   {
@@ -2237,8 +2233,8 @@ private:
   std::vector<LibraryIdentityRecord> m_library_identities;
   bool m_library_identities_dirty = false;
   std::unordered_set<std::string> m_claimed_library_ids;
-  // Existing canonical paths are reserved during a progressive scan so an earlier, identical
-  // renamed image cannot steal their IDs through the fingerprint fallback.
+  // Reserved during a progressive scan, so an identical renamed copy cannot take their IDs through
+  // the fingerprint fallback.
   std::unordered_set<std::string> m_reserved_library_ids;
   std::unordered_set<std::string> m_favorites;
   LibraryView m_library_view = LibraryView::Recent;
@@ -2598,8 +2594,8 @@ bool Launcher::Initialize(bool applet_installer)
   m_font_service_ready = true;
   if (!LoadFonts())
   {
-    // A missing locale-specific shared font must not prevent the launcher from starting. Keep the
-    // translations and font family in sync so falling back never renders Chinese as empty boxes.
+    // A missing locale font must not stop the launcher; the translations follow the font that
+    // loaded, so Chinese never shows as empty boxes.
     m_store.Set("Launcher/Language", "en");
     MarkStoreDirty();
     m_localization.SetLanguage("en");
@@ -2627,8 +2623,8 @@ bool Launcher::Initialize(bool applet_installer)
   if (!applet_installer)
   {
     StartCoverDecodeWorker();
-    // Present the launcher as soon as SDL, fonts and the theme are ready. Source restoration,
-    // network startup and scanning happen after this frame so the user never waits on black.
+    // The first frame comes as soon as SDL, fonts and the theme are ready: sources, network and
+    // scanning start after it.
     ClearBackground();
     DrawHeader("Dolphin");
     const int panel_width = std::min(940, m_width - 64);
@@ -2803,8 +2799,8 @@ void Launcher::PrepareApplicationExit()
     m_cover_download_ready = false;
   }
   FlushPendingSaves();
-  // On a game launch storage must stay mounted, but on an explicit application exit it should be
-  // retired before SDL disappears so open SMB/USB registrations cannot prolong a black teardown.
+  // Storage stays mounted for a game launch; on exit it goes before SDL, so SMB/USB teardown does
+  // not hold a black screen.
   Storage::Shutdown();
 }
 
@@ -3732,8 +3728,7 @@ void Launcher::DrawSectionHeading(std::string_view title, int x, int y, int widt
 
 void Launcher::DrawHeader(std::string_view title, std::string_view context)
 {
-  // Header titles are launcher-owned UI.  Context strings are deliberately left raw because
-  // they frequently contain game names, paths, profile names, or remote share names.
+  // Titles are translated; context strings stay raw (game names, paths, profiles, shares).
   title = m_localization.Translate(title);
   DrawPageHeader(title, "Dolphin", context);
 }
@@ -4564,10 +4559,8 @@ void Launcher::WaitForNextFrame(bool force_animation)
   }
   Uint32 now = SDL_GetTicks();
 
-  // Static screens do not have a frame rate.  Poll applet lifecycle and worker state without
-  // returning to the caller (and therefore without rendering) until an event or real timer fires.
-  // USB and launcher workers also post SDL user events; the generation/state checks are a safe
-  // fallback for a lost or unavailable event bridge.
+  // A static screen draws nothing until an event or a timer: poll the applet and the workers here
+  // (they post SDL events; the generation checks cover a lost one).
   if (!animate)
   {
     m_frame_interval = 0;
@@ -4995,8 +4988,7 @@ void Launcher::PumpUsbInitialization()
     return;
   if (m_usb_initialization_thread.joinable())
     m_usb_initialization_thread.join();
-  // USB is optional. Keep SD/SMB usable when usb:hs is unavailable instead of interrupting startup
-  // with an error dialog; File Manager will simply have no USB roots.
+  // USB is optional: without usb:hs the launcher starts with no USB roots and no error.
   m_usb_initialization.reset();
 }
 
@@ -5032,9 +5024,8 @@ void Launcher::SaveSources()
                                      "usb:" + Lower(binding.first) + "/" + Lower(binding.second);
     if (path.empty() || !identities.insert(identity).second || normalized_sources.size() >= 16)
       continue;
-    // The runtime map is path-keyed for fast hotplug lookup. If topology churn temporarily gives
-    // this stable source the same mutable alias as another record, retain it under its unique
-    // unavailable placeholder instead of overwriting either binding.
+    // The map is keyed by path: a source whose alias another record holds for now keeps its
+    // placeholder instead of overwriting either.
     if (!binding.first.empty() && std::ranges::any_of(normalized_sources, [&](const auto& saved) {
           return Lower(saved) == Lower(path);
         }))
@@ -5189,9 +5180,8 @@ bool Launcher::RefreshConfiguredUsbSources()
   std::vector<std::pair<std::string, std::string>> stable_bindings(m_sources.size());
   bool changed = false;
 
-  // Phase one snapshots every source's stable identity before changing any spelling. Looking up
-  // and updating the path-keyed map in one loop is unsafe when ums aliases swap: inserting A's
-  // new ums0 key could overwrite B's old ums0 entry before B has been processed.
+  // First take every source's identity, then change the paths: when two drives swap aliases,
+  // updating the path-keyed map in one pass would overwrite B's ums0 with A's before B is read.
   for (std::size_t index = 0; index < m_sources.size(); ++index)
   {
     const std::string path = NormalizePath(m_sources[index]);
@@ -5245,9 +5235,8 @@ bool Launcher::RefreshConfiguredUsbSources()
     }
   }
 
-  // Phase two resolves every stable identity against the same USB snapshot, then atomically
-  // replaces the source vector and lookup map. A duplicate mutable spelling is represented by a
-  // stable placeholder, so both saved records survive until their volumes have distinct aliases.
+  // Then resolve every identity against the same USB snapshot and swap in the new sources and map;
+  // a duplicate alias gets a placeholder, so both records survive.
   std::vector<std::string> refreshed_sources;
   refreshed_sources.reserve(m_sources.size());
   std::unordered_map<std::string, std::pair<std::string, std::string>> refreshed_bindings;
@@ -5419,10 +5408,8 @@ bool Launcher::LibraryIdentityPathExists(const LibraryIdentityRecord& record) co
 std::string Launcher::GameFingerprint(const UICommon::GameFile& metadata) const
 {
   std::string hash;
-  // GetSyncHash may read an entire multi-gigabyte disc image.  Stable disc identity already has a
-  // game/title ID, platform, disc and revision, and deliberately survives patched/repacked images,
-  // so hashing those files only made every first scan dramatically slower.  Anonymous executables
-  // still need a content discriminator because they have no reliable title identity.
+  // No GetSyncHash for discs (it reads the whole image): their ID, platform, disc and revision
+  // identify them. Executables without a title ID still need the content hash.
   if (metadata.GetPlatform() == DiscIO::Platform::ELFOrDOL ||
       (metadata.GetGameID().empty() && metadata.GetTitleID() == 0))
   {
@@ -5444,9 +5431,8 @@ std::string Launcher::GameFingerprint(const UICommon::GameFile& metadata) const
 
 std::string Launcher::GameBaseIdentity(const UICommon::GameFile& metadata) const
 {
-  // The title ID adds precision for WADs, while platform/disc/revision distinguish multi-disc and
-  // revision-specific configurations. No filename, size, timestamp, or content hash belongs here:
-  // those are expected to change for patched games such as BetterWW.
+  // The title ID tells WADs apart, platform/disc/revision the discs and revisions. Nothing a patch
+  // changes (name, size, time, content hash), as with BetterWW.
   if (metadata.GetGameID().empty() && metadata.GetTitleID() == 0)
     return "v2-anonymous:" + Hex64(HashPath(GameFingerprint(metadata)));
   return "v2:" + metadata.GetGameID() + ":" + Hex64(metadata.GetTitleID()) + ":" +
@@ -5489,9 +5475,9 @@ void Launcher::AssignStableIdentity(Game* game)
       match = &record;
       break;
     }
-    // A different title now occupies this path. It must not receive path-derived settings,
-    // controls, artwork, or a legacy forwarder identity. Keep the canonical scope for recovery,
-    // but retire resolution so an already-installed stable forwarder cannot boot the replacement.
+    // Another title now has this path: it gets none of the record's settings, controls, artwork or
+    // forwarders. The record stays for recovery but is retired, so its forwarder cannot boot the
+    // new title.
     game->allow_legacy_path_migration = false;
     RememberPreviousLibraryPath(&record, record.current_path);
     record.current_path.clear();
@@ -5512,10 +5498,9 @@ void Launcher::AssignStableIdentity(Game* game)
           LibraryIdentityScope(record.canonical_path) != game_scope || !fingerprint_compatible ||
           !base_compatible(record))
         continue;
-      // All live records are reserved without touching the filesystem at scan startup. Only a
-      // rare fingerprint-based rename candidate needs a stat; exact canonical matches above are
-      // still immediate. This removes one potentially-networked stat per library entry from every
-      // launch while keeping identical copies from stealing one another's IDs.
+      // Live records are reserved without filesystem access; only a fingerprint rename candidate
+      // needs a stat (not one network stat per game at every launch), and identical copies cannot
+      // take each other's IDs.
       if (m_reserved_library_ids.contains(record.id))
       {
         if (LibraryIdentityPathExists(record))
@@ -5550,7 +5535,7 @@ void Launcher::AssignStableIdentity(Game* game)
   }
   else
   {
-    // Patched/repacked content with a compatible base tuple legitimately keeps its identity.
+    // Patched or repacked content with the same base tuple keeps its identity.
     const std::string current_path = NormalizePath(game->path);
     if (!match->current_path.empty() &&
         Lower(NormalizePath(match->current_path)) != Lower(current_path))
@@ -5567,8 +5552,7 @@ void Launcher::AssignStableIdentity(Game* game)
     match->current_path = current_path;
     match->retired = false;
   }
-  // Populate the field when migrating a record written by a launcher version that only stored the
-  // canonical key.
+  // (a record from a version that stored only the canonical key)
   if (match->current_path.empty())
   {
     match->current_path = NormalizePath(game->path);
@@ -5699,9 +5683,8 @@ void Launcher::StartGameScan(std::vector<std::string> sources, bool replace)
   else
   {
     m_claimed_library_ids.clear();
-    // Records belonging to the roots being refreshed must remain available so incoming entries
-    // update their existing IDs. Every unaffected live game is claimed up front; otherwise a new
-    // byte-identical file from a partial USB/SMB scan could steal another game's fingerprint ID.
+    // The refreshed roots' records stay available for their entries; every other live game is
+    // claimed first, so an identical file from a partial scan cannot take its ID.
     std::erase_if(m_games, [&](Game& game) {
       if (game.installed_nand)
         return false;
@@ -5887,9 +5870,8 @@ void Launcher::StartGameScan(std::vector<std::string> sources, bool replace)
           }
           const std::size_t processed =
               state->processed.fetch_add(1, std::memory_order_acq_rel) + 1;
-          // Wake immediately for the first game and first complete page, then coalesce
-          // notifications. Sorting/rebuilding the visible list once per file was the dominant cost
-          // in large caches.
+          // Wake at once for the first game and the first full page, then coalesce (sorting the
+          // list for each file is costly in a large library).
           if (processed <= first_page_size || processed % 32 == 0)
           {
             SDL_Event wake{};
@@ -5914,8 +5896,8 @@ void Launcher::StartGameScan(std::vector<std::string> sources, bool replace)
           process_path(path);
         }
 
-        // Enumerate and publish one source at a time. A slow SMB source must not hold back games
-        // already found on SD or USB, while all_paths is still retained for the final cache prune.
+        // One source at a time, so a slow SMB share does not hold back SD and USB games; all_paths
+        // is kept for the final prune.
         for (const std::string& source : sources)
         {
           if (state->cancel.load(std::memory_order_acquire))
@@ -5933,8 +5915,8 @@ void Launcher::StartGameScan(std::vector<std::string> sources, bool replace)
 
         if (state->full && !state->cancel.load(std::memory_order_acquire))
         {
-          // AddOrGet already refreshed every discovered file. The final pass only prunes stale
-          // cache paths; re-statting every game (and Riivolution dependency) here doubled scan I/O.
+          // AddOrGet refreshed every file found: this pass only prunes stale paths, without a
+          // second stat of each game.
           state->cache_changed |= m_game_cache.Update(all_paths, {}, {}, state->cancel, false);
         }
         if (state->cache_changed && !state->cancel.load(std::memory_order_acquire))
@@ -5988,10 +5970,9 @@ void Launcher::StopGameScan()
   if (m_library_scan_thread.joinable())
     m_library_scan_thread.join();
   m_library_scan.reset();
-  // IDs are assigned as progressive results reach the UI.  A scan can be cancelled because the
-  // user launches a game, edits storage, or closes Dolphin before its normal completion path.
-  // Persist those already-published records so settings and generated shortcuts never reference
-  // an identity which only existed in memory.
+  // IDs are assigned as results reach the UI, and a scan can be cancelled (a launch, a storage
+  // edit, exit): save the published records, so settings and shortcuts never name an identity that
+  // only existed in memory.
   if (m_library_identities_dirty)
   {
     SaveLibraryIdentities();
@@ -6007,9 +5988,8 @@ void Launcher::PumpGameScan()
   std::deque<Game> ready;
   {
     std::lock_guard lock(state->mutex);
-    // Keep publication bounded so metadata insertion and list maintenance cannot monopolize an
-    // SDL frame. The worker wakes each first-page result, so the launcher becomes interactive
-    // immediately and fills that page progressively.
+    // Bounded per frame, so inserting metadata cannot take a whole frame; first-page results wake
+    // the UI, which fills that page as they come.
     constexpr std::size_t batch_limit = 2;
     const std::size_t count = std::min(state->ready.size(), batch_limit);
     for (std::size_t index = 0; index < count; ++index)
@@ -6217,8 +6197,8 @@ void Launcher::RenderMessage(std::string_view title, std::span<const std::string
 
 void Launcher::Toast(std::string message, int milliseconds)
 {
-  // Toasts are launcher-owned status messages. Translate here, at the semantic boundary, so
-  // arbitrary strings passed to the low-level text renderer are never treated as translation keys.
+  // Toasts are translated here, so text passed to the renderer is never taken for a translation
+  // key.
   message = std::string(m_localization.Translate(message));
   const Uint32 deadline = SDL_GetTicks() + milliseconds;
   do
@@ -6733,8 +6713,7 @@ CoverDecodeResult Launcher::DecodeCover(const CoverDecodeJob& job)
   result.background = job.background;
   SDL_Surface* surface = nullptr;
   bool custom_exists = RegularFileExists(job.custom_path);
-  // Finish an interrupted atomic import before loading the cover. The normal path performs only
-  // the existing cover stat; the backup check is needed solely when the active file is absent.
+  // Finish an interrupted import first (its backup is looked for only when the cover is missing).
   if (!custom_exists && RegularFileExists(job.custom_path + ".old"))
   {
     (void)RecoverAtomicFile(job.custom_path);
@@ -14126,9 +14105,8 @@ void Launcher::CreateHomeShortcut(Game* game)
           std::ranges::find(m_library_identities, game->key, &LibraryIdentityRecord::id);
       if (identity != m_library_identities.end())
         legacy_game_paths = identity->previous_paths;
-      // The installed shortcut immediately depends on this launcher.ini record. Commit it before
-      // making the external HOME Menu mutation so a crash or power loss cannot leave a shortcut
-      // referring to a progressive-scan identity which only existed in memory.
+      // Save the record before installing the shortcut that depends on it: a crash cannot leave a
+      // shortcut naming an identity that only existed in memory.
       if (m_library_identities_dirty)
         SaveLibraryIdentities();
       FlushPendingSaves();
@@ -15652,13 +15630,11 @@ bool Launcher::EditSmbShare(Storage::SmbShare* share, bool creating)
 
 void Launcher::NetworkSharesScreen()
 {
-  // Do not let an automatic mount worker replace a devoptab registration while this screen is
-  // editing it. The worker is joined once here; individual connect operations below remain
-  // asynchronous and keep the UI responsive.
+  // The auto-mount worker must not replace a registration this screen edits: it is joined once here
+  // (the connections below stay asynchronous).
   StopAutoMountShares();
-  // Stopping the startup worker here used to permanently abandon every share it had not reached
-  // yet.  Re-evaluate the saved auto-mount set on every exit path (including touch/back returns),
-  // after any edits made on this screen have been committed.
+  // Stopping the startup worker leaves out the shares it had not reached: mount the saved
+  // auto-mount set again on every way out (touch and back included), after this screen's edits.
   Common::ScopeGuard restart_auto_mounts([this] {
     if (!m_shutdown)
       StartAutoMountShares();
@@ -16377,15 +16353,15 @@ bool Launcher::ExecutePaste(const std::string& folder)
       SetTransferDetail(&state, FileName(m_clipboard_path));
       ok = CopyTree(m_clipboard_path, destination, &state);
     }
-    // A directory destination did not exist before the transfer, so always remove every partial
-    // result after failure or cancellation. Do not let the user's cancellation stop cleanup.
+    // The destination folder is new: remove every partial result on failure or cancellation (which
+    // must not stop the cleanup).
     if (!ok && S_ISDIR(source_info.st_mode) &&
         state.destination_created.load(std::memory_order_relaxed))
       cleanup_ok = DeleteTree(destination);
     if (ok && m_clipboard_move)
     {
-      // Once the destination is committed, deleting the source is the non-cancellable commit phase
-      // of a cross-device move. Stopping halfway would leave an ambiguous partial move.
+      // Once the copy is in place, deleting the source finishes the move and cannot be cancelled
+      // (half a move would be ambiguous).
       move_commit_started = true;
       SetTransferDetail(&state, FileName(m_clipboard_path), "Removing the original...");
       cleanup_ok = DeleteTree(m_clipboard_path);
@@ -16508,8 +16484,7 @@ std::string Launcher::FileBrowser(const std::string& start, bool select_folder, 
     std::string path;
     Kind kind = Kind::File;
     std::string value;
-    // Present only for USB roots on the Locations page.  This is the physical/volume identity,
-    // never the mutable umsN: alias shown in path.
+    // USB roots on the Locations page only: the volume's identity, not the umsN: alias in path.
     std::string usb_id;
   };
   const auto game_extension = [&](std::string_view name) {
@@ -17640,8 +17615,8 @@ void Launcher::ImportCoverFromFile(Game* game)
         if (was_cancelled())
           return;
 
-        // Re-open the generated PNG before replacing the active cover. This catches truncated or
-        // unsupported output while the previous cover is still untouched.
+        // Open the new PNG again before replacing the cover: a truncated or unsupported file leaves
+        // the old one in place.
         Surface verification{IMG_Load(temporary.c_str()), SDL_FreeSurface};
         if (!verification || verification->w <= 0 || verification->h <= 0)
         {
@@ -18709,10 +18684,8 @@ std::optional<LaunchRequest> Launcher::Run()
   }
   int selection = 0;
   bool launch = false;
-  // A fresh launcher must stay on page 1 while progressive scan batches are sorted in.  Without
-  // this guard, preserving the initially selected game's key can move the selection (and visible
-  // page) as games which sort before it arrive.  Stop pinning only after deliberate library
-  // navigation; normal in-session selection preservation then resumes.
+  // A fresh launcher stays on page 1 while scan results are sorted in (keeping the selected game
+  // would move the page as earlier games arrive), until the user moves in the library.
   bool pin_first_library_page = true;
   std::string desired_selection_key;
   const auto select_key = [&](std::string_view key) {
@@ -18846,8 +18819,8 @@ std::optional<LaunchRequest> Launcher::Run()
         m_unavailable_usb_ids.insert(id);
       m_usb_locations = current.locations;
       RefreshConfiguredUsbSources();
-      // A disconnect/reconnect can return with the same ID and alias. The callback generation
-      // still proves device activity, so refresh USB sources even when the topology looks equal.
+      // A reconnect can bring back the same ID and alias: the callback generation still changed, so
+      // refresh anyway.
       if (changed_ids.empty() && removed_ids.empty())
       {
         for (const auto& [source, binding] : m_usb_source_bindings)
@@ -18866,9 +18839,8 @@ std::optional<LaunchRequest> Launcher::Run()
           ReleaseGameArtwork(game);
           return true;
         });
-        // A removed volume may have produced a WAD candidate which is still in the worker's ready
-        // queue and therefore absent from m_games. Always reconcile NAND after physical removal;
-        // this also covers that progressive-scan race without requiring a visible WAD entry.
+        // A removed volume may have a WAD still in the worker's queue (not yet in m_games):
+        // reconcile the NAND after every removal.
         m_pending_nand_reconciliation |= !removed_ids.empty();
       }
       for (const std::string& source : m_sources)
@@ -19270,8 +19242,8 @@ bool ResolveLibraryLaunchPath(std::string_view library_id, const std::string& fa
     }
   }
 
-  // A stable shortcut must never fall back to its embedded mutable path when the ID is invalid,
-  // missing, or retired. In particular, a stale umsN: alias may now belong to another drive.
+  // A stable shortcut never falls back to its embedded path when the ID is invalid, missing or
+  // retired: its umsN: alias may belong to another drive now.
   if (!library_id.empty() && (!valid_id || !record_found || retired))
     return false;
 
@@ -19283,8 +19255,8 @@ bool ResolveLibraryLaunchPath(std::string_view library_id, const std::string& fa
     std::string relative =
         slash == std::string::npos ? std::string{} : canonical_path.substr(slash + 1);
 
-    // CurrentPath preserves case, whereas the canonical identity deliberately does not.  Reuse
-    // its path below the old umsN: root when it still describes the same relative name.
+    // CurrentPath keeps the case, the canonical identity does not: reuse its path under the old
+    // umsN: root when the relative name matches.
     const std::size_t current_colon = current_path.find(':');
     if (current_colon != std::string::npos)
     {
@@ -19295,8 +19267,8 @@ bool ResolveLibraryLaunchPath(std::string_view library_id, const std::string& fa
         relative = std::move(current_relative);
     }
 
-    // Do not fall back to the mutable embedded umsN: alias when a stable volume is known: another
-    // disk can later inherit that alias and contain an identically named file.
+    // No fallback to the embedded umsN: alias when the volume is known: another disk can inherit
+    // it, with a file of the same name.
     if (volume_id.empty() || relative.starts_with('/') ||
         relative.find("../") != std::string::npos || relative == ".." || !Storage::InitializeUsb())
       return false;
@@ -19333,7 +19305,7 @@ bool ResolveLibraryLaunchPath(std::string_view library_id, const std::string& fa
         relative == "..")
       return false;
 
-    // Preserve case from CurrentPath when possible.  The dsmb_<id>: mount name itself is stable.
+    // Keep CurrentPath's case when possible (dsmb_<id>: is stable).
     const std::size_t current_colon = current_path.find(':');
     if (current_colon != std::string::npos &&
         Lower(DeviceName(current_path)) == Lower(DeviceName(root)))
@@ -19348,8 +19320,8 @@ bool ResolveLibraryLaunchPath(std::string_view library_id, const std::string& fa
     return PathAtOrBelow(candidate, root) && try_path(candidate);
   }
 
-  // SD paths are stable but can be case-sensitive on non-FAT devoptabs.  Prefer the exact current
-  // path, then support launcher.ini records written before CurrentPath was introduced.
+  // SD paths are stable but can be case-sensitive: the current path first, then records from before
+  // CurrentPath.
   if (try_path(current_path) || try_path(canonical_path))
     return true;
   return try_path(fallback_path);

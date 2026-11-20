@@ -60,10 +60,8 @@ bool BootCore(Core::System& system, std::unique_ptr<BootParameters> boot,
 
   if (config_ready_callback && !config_ready_callback())
   {
-    // SetPathsAndGameMetadata installs these layers before Core::Init. A frontend may need to
-    // reject a launch after inspecting the final per-game configuration (for example when an
-    // external save location is unsafe). Do not let that aborted title leak configuration into
-    // the next launch.
+    // A frontend may reject the launch after reading the game's configuration (an unsafe save
+    // location): its layers must not leak into the next launch.
     Config::ClearCurrentRunLayer();
     Config::RemoveLayer(Config::LayerType::Movie);
     Config::RemoveLayer(Config::LayerType::Netplay);
@@ -74,9 +72,8 @@ bool BootCore(Core::System& system, std::unique_ptr<BootParameters> boot,
   }
 
 #ifdef __SWITCH__
-  // SetPathsAndGameMetadata installs the title-specific graphics layers. Select the GL driver and
-  // GLThread only now, before Core::Init creates Mesa's context, so global and per-game launcher
-  // choices have identical behavior. Main.cpp restores the launcher's NVC0 defaults afterward.
+  // Chosen once the game's layers are in, before Core::Init makes Mesa's context, so per-game
+  // choices apply; Main.cpp restores the launcher's nvc0 defaults afterwards.
   const std::string graphics_backend = Config::Get(Config::MAIN_GFX_BACKEND);
   const bool use_opengl = graphics_backend == "OGL";
   const bool use_zink = use_opengl && Config::Get(Config::GFX_SWITCH_USE_ZINK);

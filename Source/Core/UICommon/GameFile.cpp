@@ -268,9 +268,8 @@ bool GameFile::SourceFileChanged() const
 {
   const SourceFileStat current = GetSourceFileStat(m_file_path);
 
-  // A transiently unavailable source that was accessible when metadata was read must be treated as
-  // changed. If neither stat succeeded, there is no useful fingerprint to compare (for example for
-  // a platform-specific virtual path), so retain the cached metadata instead of reparsing forever.
+  // A source readable then but not now counts as changed; with neither stat (a virtual path), the
+  // cached metadata stays instead of being parsed again every time.
   if (!current.valid)
     return m_source_stat_valid;
   if (!m_source_stat_valid)

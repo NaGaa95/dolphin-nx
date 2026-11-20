@@ -291,9 +291,7 @@ std::unique_ptr<BootParameters> BootParameters::GenerateFromFile(std::vector<std
                                           apply_riivolution_patches);
       if (!boot_params)
       {
-        // The recursive call reports the precise error (missing file, invalid image, and so on).
-        // Do not add a second generic alert; frontends which collect alerts would otherwise show
-        // both messages concatenated.
+        // The recursive call already reported the error: a second alert would be shown after it.
         return nullptr;
       }
 

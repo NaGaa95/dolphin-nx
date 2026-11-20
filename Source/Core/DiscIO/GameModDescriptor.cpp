@@ -23,11 +23,8 @@ static bool HasExplicitRoot(std::string_view path)
   if (StringToPath(path).is_absolute())
     return true;
 
-  // On platforms using devoptab (notably the Switch), paths such as sdmc:/, ums0:/ and
-  // dsmb_<id>:/ are absolute even though std::filesystem applies POSIX path rules and considers
-  // them relative.  A bare device root such as "sdmc:" is also valid and is used as the virtual
-  // SD root by Riivolution.  URI-style paths (for example Android content:// paths) follow the
-  // same rooted syntax and must not be prefixed with the descriptor's directory either.
+  // devoptab paths (sdmc:/, ums0:/, dsmb_<id>:/, and a bare "sdmc:", Riivolution's SD root) and
+  // URIs (content://) are absolute, although std::filesystem's POSIX rules call them relative.
   const std::size_t colon = path.find(':');
   if (colon == std::string_view::npos || colon == 0)
     return false;

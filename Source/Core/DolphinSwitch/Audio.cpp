@@ -238,9 +238,8 @@ void ResumeSharedAudio()
 
 void ResetSharedAudioDevice()
 {
-  // The libnx audio output can become stale after it has served launcher sounds. Reopen only the
-  // device here: repeatedly quitting and reinitializing an SDL subsystem in the same Horizon
-  // process can disturb the other SDL platform drivers used by the launcher.
+  // The audio output can go stale after the launcher's sounds: reopen only the device (quitting and
+  // starting SDL's audio subsystem again disturbs its other drivers).
   CloseSharedDevice(false);
 }
 
@@ -257,8 +256,7 @@ SwitchStream::~SwitchStream()
     DetachTarget(this);
     m_attached = false;
   }
-  // Keep SDL's audio subsystem alive across game/launcher transitions. The process-level guard
-  // performs the matching SDL_QuitSubSystem once when Dolphin actually exits.
+  // SDL's audio subsystem stays up between games; the process guard quits it once at exit.
   CloseSharedDevice(false);
 }
 

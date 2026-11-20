@@ -69,8 +69,7 @@ Result ns_app_init()
         }
         g_nsAppServiceOwned = true;
     } else {
-        // This is a borrowed copy of the session owned by nsInitialize().  Closing it explicitly
-        // would close the same handle again when nsExit() tears down the global service.
+        // Borrowed from nsInitialize(): closing it here would close it a second time in nsExit().
         g_nsAppSrv = *nsGetServiceSession_ApplicationManagerInterface();
     }
     g_nsAppInitialized = true;
@@ -1447,9 +1446,8 @@ bool legacyGameConfigMatches(const std::string &nroPath, const std::string &argu
     if (position != arguments.size())
         return false;
 
-    // A matching explicit stable identity is definitive. A stable Entries/ config path is also
-    // unique to the library record. Older releases had neither, so use only the bounded path
-    // history persisted for this identity in that case.
+    // A matching stable identity or Entries/ config path settles it; shortcuts from older releases
+    // have neither and match only the record's saved path history.
     return (!stableId.empty() && configuredStableId == stableId) ||
            (!stableGameConfigPath.empty() && configuredGameConfig == stableGameConfigPath) ||
            gamePaths.contains(gamePath);
@@ -1519,10 +1517,9 @@ std::vector<LegacyForwarderConfig> findLegacyForwarders(
     return matches;
 }
 
-// Stable library IDs intentionally change the generated title ID used by older Dolphin-NX
-// releases. Remove an old shortcut only when its private configuration still exactly matches the
-// filename hash and arguments selected by findLegacyForwarders(). This collision/TOCTOU check keeps
-// cleanup scoped to Dolphin-owned shortcuts for the same persistent library identity.
+// Stable library IDs give shortcuts another title ID than older releases did: remove an old one
+// only while its configuration still matches the hash and arguments findLegacyForwarders() picked,
+// so only this game's Dolphin shortcuts go.
 void removeLegacyForwarder(NcmStorageId storageId, u64 currentTid,
                            const LegacyForwarderConfig &legacy)
 {

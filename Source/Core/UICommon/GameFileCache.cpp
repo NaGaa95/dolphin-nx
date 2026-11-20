@@ -181,10 +181,8 @@ bool GameFileCache::Update(std::span<const std::string> all_game_paths,
         *it = std::move(*end);
       }
     }
-    // Swap-removal leaves discarded/moved-from entries in [end, actual_end).  On a normal pass
-    // it == end, so erasing from either iterator is equivalent.  If cancellation interrupted the
-    // pass, however, [it, end) is the untouched cache tail and must survive for the next scan.
-    // Erasing from it in that case silently dropped every entry we had not processed yet.
+    // Swap-removal leaves the removed entries in [end, actual_end); a cancelled pass also leaves
+    // [it, end) unprocessed, which must survive for the next scan.
     m_cached_files.erase(processing_halted ? end : it, m_cached_files.end());
   }
 

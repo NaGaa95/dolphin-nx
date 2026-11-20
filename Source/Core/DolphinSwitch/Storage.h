@@ -25,8 +25,8 @@ struct SmbShare
 
 struct Location
 {
-  // Stable across umsN: renumbering.  When a disk has no serial number the
-  // identifier is best-effort and also incorporates its model and capacity.
+  // Stable across umsN: renumbering (best effort for a disk without a serial: from its model and
+  // capacity).
   std::string id;
   std::string path;
   std::string label;
@@ -60,10 +60,8 @@ using UsbStatusCallback = void (*)(void* user_data);
 
 bool InitializeUsb(std::string* error = nullptr);
 std::uint64_t UsbStatusGeneration();
-// Registers a lightweight wake callback for USB topology changes. The callback
-// runs on the libusbhsfs notification thread and must not block. Passing null
-// unregisters it; when this function returns, an old callback is no longer in
-// flight.
+// Sets the callback for USB topology changes (it runs on libusbhsfs's thread and must not block).
+// Null removes it; once this returns, an old callback is no longer running.
 void SetUsbStatusCallback(UsbStatusCallback callback, void* user_data = nullptr);
 // Returns the generation and volume list from one consistent callback snapshot.
 // Diff Location::id against the previous snapshot for targeted hotplug updates.

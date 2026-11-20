@@ -591,10 +591,8 @@ add_library(core
 if(DOLPHIN_SWITCH)
   get_target_property(_core_sources core SOURCES)
   list(FILTER _core_sources EXCLUDE REGEX "^NetPlay(Client|Common|Server)\\.(cpp|h)$")
-  # The native Wii socket devices use libnx's BSD-compatible socket service.
-  # GameCube BBA/modem support is also kept: the built-in BBA backend provides
-  # direct TCP/UDP access without requiring a privileged TAP device, while the
-  # tapserver and XLink backends can connect to a helper on the local network.
+  # Wii sockets use libnx's BSD sockets; the GameCube BBA uses its built-in socket backend (no TAP
+  # device), or tapserver and XLink over the network.
   list(FILTER _core_sources EXCLUDE REGEX "^HW/EXI/EXI_DeviceGecko\\.(cpp|h)$")
   list(FILTER _core_sources EXCLUDE REGEX "^HW/SI/SI_DeviceGBA\\.(cpp|h)$")
   set_property(TARGET core PROPERTY SOURCES "${_core_sources}")

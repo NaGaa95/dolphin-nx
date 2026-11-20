@@ -17,8 +17,8 @@ struct LaunchRequest
   unsigned revision = 0;
   std::optional<std::uint64_t> nand_title;
   std::string game_config_path;
-  // Persistent SDL-launcher identity embedded by generated HOME Menu shortcuts.  It lets a
-  // shortcut resolve the launcher's latest path after an image rename or USB mount renumbering.
+  // The launcher identity a HOME Menu shortcut carries: it finds the game's current path after a
+  // rename or a USB renumbering.
   std::string library_id;
 };
 
@@ -34,8 +34,8 @@ bool RecordInstalledReleaseTag(std::string_view tag);
 
 bool PrepareLaunchStorage(const std::string& path, std::string* resolved_path = nullptr);
 
-// Resolves a generated shortcut's persistent library identity to its current game path.  The
-// embedded path is retained as a compatibility fallback for older launcher.ini data.
+// Resolves a shortcut's library identity to the game's current path (the embedded path is the
+// fallback for older launcher.ini data).
 bool ResolveLibraryLaunchPath(std::string_view library_id, const std::string& fallback_path,
                               std::string* resolved_path = nullptr);
 
