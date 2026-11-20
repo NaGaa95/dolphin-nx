@@ -333,9 +333,9 @@ void RefreshAchievements()
   rc_client_user_game_summary_t summary{};
   rc_client_get_user_game_summary(manager.GetClient(), &summary);
   s_achievement_summary = std::to_string(summary.num_unlocked_achievements) + "/" +
-                          std::to_string(summary.num_core_achievements) + " achievements Ã‚Â· " +
+                          std::to_string(summary.num_core_achievements) + " achievements · " +
                           std::to_string(summary.points_unlocked) + "/" +
-                          std::to_string(summary.points_core) + " points Ã‚Â· " +
+                          std::to_string(summary.points_core) + " points · " +
                           (manager.IsHardcoreModeActive() ? "Hardcore" : "Softcore");
   const auto presence = manager.GetRichPresence();
   s_achievement_presence = presence.data();
@@ -1220,7 +1220,7 @@ void RenderAchievementsPage()
   for (const AchievementEntry& achievement : s_achievements)
   {
     SelectableRow(std::string(achievement.unlocked ? "[Unlocked] " : "[Locked]   ") +
-                      Shorten(achievement.title, 58) + " Ã‚Â· " +
+                      Shorten(achievement.title, 58) + " · " +
                       std::to_string(achievement.points) + " pts",
                   row++);
   }
@@ -1232,7 +1232,7 @@ void RenderAchievementsPage()
     const AchievementEntry& selected = s_achievements[s_selection];
     std::string detail = selected.description;
     if (!selected.unlocked && !selected.progress.empty())
-      detail += (detail.empty() ? "" : " Ã‚Â· ") + selected.progress;
+      detail += (detail.empty() ? "" : " · ") + selected.progress;
     ImGui::TextWrapped("%s", detail.c_str());
   }
   else
