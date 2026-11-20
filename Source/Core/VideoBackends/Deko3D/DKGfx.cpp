@@ -332,6 +332,8 @@ bool DKGfx::BindBackbuffer(const ClearColor& clear_color)
     return false;
 
   m_swap_chain->SetVSync(g_ActiveConfig.bVSyncActive);
+  // The frame's work so far (the EFB, frame generation) runs while acquiring waits for an image.
+  ExecuteCommandBuffer(false);
   m_current_slot = m_swap_chain->Acquire();
   if (m_current_slot < 0)
   {
