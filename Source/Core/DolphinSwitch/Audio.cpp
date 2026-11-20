@@ -23,7 +23,8 @@ constexpr std::size_t MAX_FRONTEND_QUEUED_SAMPLES = SAMPLE_RATE;
 
 using AudioTargetCallback = void (*)(void*, u8*, int);
 
-SDL_AudioDeviceID s_device = 0;
+// (the applet hook reads it on the host thread)
+std::atomic<SDL_AudioDeviceID> s_device{0};
 bool s_audio_subsystem_initialized = false;
 bool s_frontend_active = false;
 bool s_frontend_enabled = true;
