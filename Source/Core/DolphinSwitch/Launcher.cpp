@@ -15944,9 +15944,18 @@ bool Launcher::MeasureTree(const std::string& path, TransferState* state)
   bool ok = true;
   while (ok && !state->cancelled.load(std::memory_order_relaxed))
   {
+    errno = 0;
     dirent* entry = ::readdir(directory);
     if (!entry)
+    {
+      // (a read error, not the end of the folder: a move must not delete what it never copied)
+      if (errno != 0)
+      {
+        SetTransferDetail(state, {}, "Could not read a source folder");
+        ok = false;
+      }
       break;
+    }
     if (std::strcmp(entry->d_name, ".") == 0 || std::strcmp(entry->d_name, "..") == 0)
       continue;
     ok = MeasureTree(JoinPath(path, entry->d_name), state);
@@ -15985,9 +15994,17 @@ bool Launcher::CopyTree(const std::string& source, const std::string& destinatio
     bool ok = true;
     while (ok && !state->cancelled.load(std::memory_order_relaxed))
     {
+      errno = 0;
       dirent* entry = ::readdir(directory);
       if (!entry)
+      {
+        if (errno != 0)
+        {
+          SetTransferDetail(state, {}, "Could not read a source folder");
+          ok = false;
+        }
         break;
+      }
       if (std::strcmp(entry->d_name, ".") == 0 || std::strcmp(entry->d_name, "..") == 0)
         continue;
       ok = CopyTree(JoinPath(source, entry->d_name), JoinPath(destination, entry->d_name), state);
@@ -16358,6 +16375,13 @@ bool Launcher::ExecutePaste(const std::string& folder)
     if (!ok && S_ISDIR(source_info.st_mode) &&
         state.destination_created.load(std::memory_order_relaxed))
       cleanup_ok = DeleteTree(destination);
+    // (a move deletes the source only once every byte measured was copied)
+    if (ok && m_clipboard_move &&
+        state.done.load(std::memory_order_relaxed) != state.total.load(std::memory_order_relaxed))
+    {
+      SetTransferDetail(&state, {}, "The copy is incomplete");
+      ok = false;
+    }
     if (ok && m_clipboard_move)
     {
       // Once the copy is in place, deleting the source finishes the move and cannot be cancelled
