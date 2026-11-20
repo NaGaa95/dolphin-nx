@@ -352,6 +352,12 @@ bool IniFile::Save(const std::string& filename)
   }
 
   out.close();
+  // (a short write, on a full SD card for one, must not replace the file)
+  if (out.fail())
+  {
+    File::Delete(temp);
+    return false;
+  }
 
   return File::RenameSync(temp, filename);
 }
