@@ -25,7 +25,6 @@ std::unique_ptr<DKContext> DKContext::Create()
 
 bool DKContext::Initialize()
 {
-
   m_device = dk::DeviceMaker{}
                  .setCbDebug(&DKContext::DebugCallback)
                  .setFlags(DkDeviceFlags_DepthZeroToOne | DkDeviceFlags_OriginUpperLeft)
@@ -55,10 +54,8 @@ void DKContext::WaitIdle()
     m_queue.waitIdle();
 }
 
-void DKContext::DebugCallback(void*  , const char* context, DkResult result,
-                              const char* message)
+void DKContext::DebugCallback(void*, const char* context, DkResult result, const char* message)
 {
-
   if (result == DkResult_Success)
     WARN_LOG_FMT(VIDEO, "deko3d [{}]: {}", context, message);
   else

@@ -23,7 +23,6 @@ std::unique_ptr<DKCommandBufferManager> g_dk_command_buffer_mgr;
 
 void DKCommandBufferManager::CommandMemory::Rewind()
 {
-
   cmdbuf.clear();
   cmdbuf.addMemory(initial_block, initial_offset, initial_size);
   next_growth_chunk = 0;
@@ -89,75 +88,11 @@ bool DKCommandBufferManager::Initialize()
   if (!CreateCommandBuffers())
     return false;
 
-  CreateTimestampMemory();
-
   m_command_buffers[0].fence_counter = m_next_fence_counter++;
-  WriteBeginTimestamp(0);
   return true;
 }
 
-bool DKCommandBufferManager::CreateTimestampMemory()
-{
-  const u32 size = static_cast<u32>(
-      Common::AlignUp(sizeof(TimestampReport) * 2 * NUM_COMMAND_BUFFERS, DK_MEMBLOCK_ALIGNMENT));
-
-  m_timestamp_memory = dk::MemBlockMaker{g_dk_context->GetDevice(), size}
-                           .setFlags(DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuUncached)
-                           .create();
-  if (!m_timestamp_memory)
-  {
-    WARN_LOG_FMT(VIDEO, "deko3d: no memory for GPU timestamps");
-    return false;
-  }
-
-  MemoryTracker::RegisterMemBlock(m_timestamp_memory, "GPU timestamps");
-  m_timestamps = static_cast<const TimestampReport*>(m_timestamp_memory.getCpuAddr());
-  return true;
-}
-
-void DKCommandBufferManager::WriteBeginTimestamp(u32 index)
-{
-  if (!m_timestamp_memory)
-    return;
-
-  dkCmdBufReportCounter(m_command_buffers[index].draw.cmdbuf, DkCounter_TimestampPipelineTop,
-                        m_timestamp_memory.getGpuAddr() + index * 2 * sizeof(TimestampReport));
-  m_command_buffers[index].timestamps_written = false;
-}
-
-void DKCommandBufferManager::WriteEndTimestamp(u32 index)
-{
-  if (!m_timestamp_memory)
-    return;
-
-  dkCmdBufReportCounter(m_command_buffers[index].draw.cmdbuf, DkCounter_Timestamp,
-                        m_timestamp_memory.getGpuAddr() +
-                            (index * 2 + 1) * sizeof(TimestampReport));
-  m_command_buffers[index].timestamps_written = true;
-}
-
-void DKCommandBufferManager::CollectTimestamps(CmdBufferResources& resources, u32 index)
-{
-  if (!resources.timestamps_written)
-    return;
-  resources.timestamps_written = false;
-
-  const u64 begin = m_timestamps[index * 2].timestamp;
-  const u64 end = m_timestamps[index * 2 + 1].timestamp;
-  if (end <= begin)
-    return;
-
-  const u64 busy_ns = dkTimestampToNs(end - begin);
-  m_gpu_time_ns_since_present += busy_ns;
-}
-
-void DKCommandBufferManager::PublishFrameGpuTime()
-{
-  m_gpu_time_ns_since_present = 0;
-}
-
-void DKCommandBufferManager::AddMemoryCallback(void* user_data, DkCmdBuf  ,
-                                               size_t min_req_size)
+void DKCommandBufferManager::AddMemoryCallback(void* user_data, DkCmdBuf, size_t min_req_size)
 {
   static_cast<CommandMemory*>(user_data)->Grow(min_req_size);
 }
@@ -258,7 +193,6 @@ void DKCommandBufferManager::SubmitCommandBuffer(bool wait_for_completion,
     queue.submitCommands(resources.init.cmdbuf.finishList());
   }
 
-  WriteEndTimestamp(m_current_cmd_buffer);
   queue.submitCommands(resources.draw.cmdbuf.finishList());
 
   queue.signalFence(resources.fence, resources.needs_cpu_readback);
@@ -288,7 +222,6 @@ void DKCommandBufferManager::BeginCommandBuffer()
   resources.needs_cpu_readback = false;
   resources.fence_counter = m_next_fence_counter++;
   m_current_cmd_buffer = next_buffer_index;
-  WriteBeginTimestamp(next_buffer_index);
 }
 
 void DKCommandBufferManager::WaitForCommandBufferCompletion(u32 index)
@@ -306,7 +239,6 @@ void DKCommandBufferManager::WaitForCommandBufferCompletion(u32 index)
     if (retired.fence_counter > now_completed_counter)
       continue;
 
-    CollectTimestamps(retired, retired_index);
     for (auto& cleanup : retired.cleanup_resources)
       cleanup();
     retired.cleanup_resources.clear();
@@ -368,7 +300,6 @@ void DeferMemBlockDestruction(dk::UniqueMemBlock block)
 
   if (g_dk_command_buffer_mgr)
   {
-
     auto shared = std::make_shared<dk::UniqueMemBlock>(std::move(block));
     g_dk_command_buffer_mgr->DeferCleanup([shared]() {});
   }

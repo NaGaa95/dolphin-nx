@@ -72,7 +72,6 @@ bool DKStreamBuffer::ReserveMemory(u32 num_bytes, u32 alignment)
     const u32 remaining_bytes = m_size - m_current_offset;
     if (required_bytes <= remaining_bytes)
     {
-
       m_current_offset = Common::AlignUp(m_current_offset, alignment);
       m_last_allocation_size = num_bytes;
       return true;
@@ -80,7 +79,6 @@ bool DKStreamBuffer::ReserveMemory(u32 num_bytes, u32 alignment)
 
     if (required_bytes < m_current_gpu_position)
     {
-
       m_current_offset = 0;
       m_last_allocation_size = num_bytes;
       return true;
@@ -89,11 +87,9 @@ bool DKStreamBuffer::ReserveMemory(u32 num_bytes, u32 alignment)
 
   if (m_current_offset < m_current_gpu_position)
   {
-
     const u32 remaining_bytes = m_current_gpu_position - m_current_offset;
     if (required_bytes < remaining_bytes)
     {
-
       m_current_offset = Common::AlignUp(m_current_offset, alignment);
       m_last_allocation_size = num_bytes;
       return true;
@@ -120,14 +116,12 @@ void DKStreamBuffer::CommitMemory(u32 final_num_bytes)
 
 void DKStreamBuffer::UpdateCurrentFencePosition()
 {
-
   if (m_current_offset == m_current_gpu_position)
     return;
 
   const u64 counter = g_dk_command_buffer_mgr->GetCurrentFenceCounter();
   if (!m_tracked_fences.empty() && m_tracked_fences.back().first == counter)
   {
-
     m_tracked_fences.back().second = m_current_offset;
     return;
   }
@@ -160,7 +154,6 @@ bool DKStreamBuffer::WaitForClearSpace(u32 num_bytes)
   auto iter = m_tracked_fences.begin();
   for (; iter != m_tracked_fences.end(); ++iter)
   {
-
     u32 gpu_position = iter->second;
     if (m_current_offset == gpu_position)
     {
@@ -171,11 +164,9 @@ bool DKStreamBuffer::WaitForClearSpace(u32 num_bytes)
 
     if (m_current_offset > gpu_position)
     {
-
       const u32 remaining_space_after_offset = m_size - m_current_offset;
       if (remaining_space_after_offset >= num_bytes)
       {
-
         new_offset = m_current_offset;
         new_gpu_position = gpu_position;
         break;
@@ -190,11 +181,9 @@ bool DKStreamBuffer::WaitForClearSpace(u32 num_bytes)
     }
     else
     {
-
       u32 available_space_inbetween = gpu_position - m_current_offset;
       if (available_space_inbetween > num_bytes)
       {
-
         new_offset = m_current_offset;
         new_gpu_position = gpu_position;
         break;

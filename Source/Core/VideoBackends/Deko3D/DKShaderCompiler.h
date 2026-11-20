@@ -19,7 +19,6 @@ class ShaderIncluder;
 
 namespace Deko3D::ShaderCompiler
 {
-
 void Initialize();
 void Shutdown();
 

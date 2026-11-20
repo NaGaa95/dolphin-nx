@@ -25,7 +25,6 @@
 
 namespace DolphinSwitch::Forwarder
 {
-
 namespace {
 
 std::string s_self_path;

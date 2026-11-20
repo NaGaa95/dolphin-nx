@@ -21,12 +21,10 @@ namespace Deko3D
 {
 namespace
 {
-
 constexpr u32 MAX_CAPTURE_WORDS = 1024;
 
 u32 GetDkBlendFactorSetting(DkBlendFactor factor)
 {
-
   u32 result = static_cast<u32>(factor) & 0x1f;
   if ((static_cast<u32>(factor) & 0x20) != 0)
     result |= 0xc000;
@@ -84,7 +82,6 @@ DkMultisampleState GetMultisampleState(const FramebufferState& state)
 
 DkDepthStencilState GetDepthStencilState(const DepthState& state)
 {
-
   const bool inverted_depth = !g_backend_info.bSupportsReversedDepthRange;
   DkCompareOp compare_op;
   switch (state.func)

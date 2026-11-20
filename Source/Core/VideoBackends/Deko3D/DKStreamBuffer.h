@@ -15,7 +15,6 @@
 
 namespace Deko3D
 {
-
 class DKStreamBuffer
 {
 public:

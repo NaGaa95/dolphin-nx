@@ -472,7 +472,6 @@ void DKStagingTexture::CopyToTexture(const MathUtil::Rectangle<int>& src_rect, A
 
 bool DKStagingTexture::Map()
 {
-
   return true;
 }
 
@@ -505,7 +504,6 @@ DKFramebuffer::DKFramebuffer(AbstractTexture* color_attachment, AbstractTexture*
 
 DKFramebuffer::~DKFramebuffer()
 {
-
   if (DKGfx* gfx = DKGfx::GetInstance())
     gfx->OnFramebufferDestroyed(this);
   if (DKStateTracker* state_tracker = DKStateTracker::GetInstance())

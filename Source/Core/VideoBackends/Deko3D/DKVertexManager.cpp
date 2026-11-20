@@ -28,7 +28,6 @@ namespace Deko3D
 {
 namespace
 {
-
 u32 AlignUniformSize(size_t size)
 {
   return static_cast<u32>(Common::AlignUp(size, DK_UNIFORM_BUF_ALIGNMENT));
@@ -85,7 +84,6 @@ void DKVertexManager::ResetBuffer(u32 vertex_stride)
       m_index_stream_buffer->ReserveMemory(MAXIBUFFERSIZE * sizeof(u16), sizeof(u16));
   if (!has_vbuffer_allocation || !has_ibuffer_allocation)
   {
-
     WARN_LOG_FMT(VIDEO, "Executing command buffer while waiting for space in vertex/index buffer");
     DKGfx::GetInstance()->ExecuteCommandBuffer(false);
 

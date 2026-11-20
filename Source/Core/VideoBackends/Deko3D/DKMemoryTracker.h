@@ -13,7 +13,6 @@
 
 namespace Deko3D::MemoryTracker
 {
-
 void Register(u64 addr, u64 size, std::string label);
 void Unregister(u64 addr);
 

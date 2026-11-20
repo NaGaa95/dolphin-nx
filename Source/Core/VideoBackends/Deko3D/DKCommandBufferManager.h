@@ -42,8 +42,6 @@ public:
 
   void DeferCleanup(std::function<void()> cleanup);
 
-  void PublishFrameGpuTime();
-
 private:
   struct GrowthChunk
   {
@@ -75,7 +73,6 @@ private:
     u64 fence_counter = 0;
     bool init_cmdbuf_used = false;
     bool needs_cpu_readback = false;
-    bool timestamps_written = false;
 
     std::vector<std::function<void()>> cleanup_resources;
   };
@@ -87,11 +84,6 @@ private:
   void WaitForCommandBufferCompletion(u32 index);
   void ReleaseIdleGrowthChunks();
 
-  bool CreateTimestampMemory();
-  void WriteBeginTimestamp(u32 index);
-  void WriteEndTimestamp(u32 index);
-  void CollectTimestamps(CmdBufferResources& resources, u32 index);
-
   dk::UniqueMemBlock m_command_memory;
 
   u64 m_next_fence_counter = 1;
@@ -99,15 +91,6 @@ private:
 
   std::array<CmdBufferResources, NUM_COMMAND_BUFFERS> m_command_buffers;
   u32 m_current_cmd_buffer = 0;
-
-  struct TimestampReport
-  {
-    u64 value;
-    u64 timestamp;
-  };
-  dk::UniqueMemBlock m_timestamp_memory;
-  const TimestampReport* m_timestamps = nullptr;
-  u64 m_gpu_time_ns_since_present = 0;
 };
 
 extern std::unique_ptr<DKCommandBufferManager> g_dk_command_buffer_mgr;

@@ -15,7 +15,6 @@
 
 namespace Deko3D
 {
-
 class DKVertexFormat final : public ::NativeVertexFormat
 {
 public:

@@ -11,7 +11,6 @@
 
 namespace Deko3D
 {
-
 constexpr size_t NUM_COMMAND_BUFFERS = 8;
 
 constexpr u32 INIT_COMMAND_BUFFER_SIZE = 64 * 1024;

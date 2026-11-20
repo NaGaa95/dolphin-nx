@@ -9,7 +9,6 @@ namespace Deko3D
 {
 void VideoBackend::InitBackendInfo(const WindowSystemInfo& wsi)
 {
-
   g_backend_info.api_type = APIType::Vulkan;
   g_backend_info.MaxTextureSize = 16384;
   g_backend_info.bUsesLowerLeftOrigin = false;

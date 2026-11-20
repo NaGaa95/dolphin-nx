@@ -17,7 +17,6 @@
 
 namespace Deko3D
 {
-
 class DKShaderCode
 {
 public:

@@ -12,7 +12,6 @@
 
 namespace Deko3D
 {
-
 class DKContext
 {
 public:

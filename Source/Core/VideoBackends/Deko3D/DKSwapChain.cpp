@@ -117,7 +117,6 @@ bool DKSwapChain::Initialize()
 
 void DKSwapChain::Destroy()
 {
-
   if (g_dk_context)
     g_dk_context->WaitIdle();
   m_swapchain = nullptr;

@@ -35,7 +35,6 @@ namespace
 {
 DkScissor MakeScissor(const MathUtil::Rectangle<int>& rc)
 {
-
   const int left = std::max(rc.left, 0);
   const int top = std::max(rc.top, 0);
   return {static_cast<u32>(left), static_cast<u32>(top),
@@ -108,8 +107,7 @@ DKGfx::CreateNativeVertexFormat(const PortableVertexDeclaration& vtx_decl)
 }
 
 std::unique_ptr<AbstractPipeline> DKGfx::CreatePipeline(const AbstractPipelineConfig& config,
-                                                        const void*  ,
-                                                        size_t  )
+                                                        const void*, size_t)
 {
   return DKPipeline::Create(config);
 }
@@ -117,7 +115,6 @@ std::unique_ptr<AbstractPipeline> DKGfx::CreatePipeline(const AbstractPipelineCo
 void DKGfx::ClearRegion(const MathUtil::Rectangle<int>& target_rc, bool color_enable,
                         bool alpha_enable, bool z_enable, u32 color, u32 z)
 {
-
   u32 color_mask = 0;
   if (color_enable)
     color_mask |= DkColorMask_RGB;
@@ -204,10 +201,8 @@ void DKGfx::SetSamplerState(u32 index, const SamplerState& state)
   m_sampler_states[index] = state;
 }
 
-void DKGfx::SetComputeImageTexture(u32 index, AbstractTexture* texture, bool  ,
-                                   bool  )
+void DKGfx::SetComputeImageTexture(u32 index, AbstractTexture* texture, bool, bool)
 {
-
   DKStateTracker::GetInstance()->SetImageTexture(index, static_cast<DKTexture*>(texture));
 }
 
@@ -244,11 +239,9 @@ void DKGfx::DrawIndexed(u32 base_index, u32 num_indices, u32 base_vertex)
                       static_cast<s32>(base_vertex), 0);
 }
 
-void DKGfx::DispatchComputeShader(const AbstractShader* shader, u32  ,
-                                  u32  , u32  , u32 groups_x,
+void DKGfx::DispatchComputeShader(const AbstractShader* shader, u32, u32, u32, u32 groups_x,
                                   u32 groups_y, u32 groups_z)
 {
-
   DKStateTracker::GetInstance()->SetComputeShader(static_cast<const DKShader*>(shader));
   if (!DKStateTracker::GetInstance()->BindCompute())
     return;
@@ -261,7 +254,6 @@ void DKGfx::DispatchComputeShader(const AbstractShader* shader, u32  ,
 
 void DKGfx::ExecuteCommandBuffer(bool wait_for_completion)
 {
-
   g_dk_command_buffer_mgr->SubmitCommandBuffer(wait_for_completion);
 }
 
@@ -326,7 +318,6 @@ bool DKGfx::BindBackbuffer(const ClearColor& clear_color)
   }
   if (g_presenter->SurfaceResizedTestAndClear() && m_swap_chain)
   {
-
     ExecuteCommandBuffer(true);
     if (!m_swap_chain->Recreate())
     {
@@ -354,14 +345,12 @@ bool DKGfx::BindBackbuffer(const ClearColor& clear_color)
 
 void DKGfx::PresentBackbuffer()
 {
-
   if (m_swap_chain && m_current_slot >= 0)
     g_dk_command_buffer_mgr->SubmitCommandBuffer(false, m_swap_chain.get(), m_current_slot);
   else
     g_dk_command_buffer_mgr->SubmitCommandBuffer(false);
 
   m_current_slot = -1;
-  g_dk_command_buffer_mgr->PublishFrameGpuTime();
 }
 
 SurfaceInfo DKGfx::GetSurfaceInfo() const
