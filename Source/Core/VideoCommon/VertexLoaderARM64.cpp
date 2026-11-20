@@ -49,8 +49,8 @@ std::pair<u8*, u8*> AllocateVertexLoaderSlot()
   }
   else
   {
-    ASSERT_MSG(VIDEO, s_vertex_loader_pool_high_water < VERTEX_LOADER_SLOT_COUNT,
-               "Switch vertex-loader JIT pool exhausted");
+    if (s_vertex_loader_pool_high_water >= VERTEX_LOADER_SLOT_COUNT)
+      return {nullptr, nullptr};
     slot = s_vertex_loader_pool_high_water++;
   }
 
@@ -133,6 +133,8 @@ VertexLoaderARM64::VertexLoaderARM64(const TVtxDesc& vtx_desc, const VAT& vtx_at
 {
 #ifdef __SWITCH__
   const auto [rw, rx] = AllocateVertexLoaderSlot();
+  if (!rw)
+    return;
   region = rw;
   rx_region = rx;
   region_size = VERTEX_LOADER_SLOT_SIZE;

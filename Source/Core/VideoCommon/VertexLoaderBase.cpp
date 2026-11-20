@@ -248,6 +248,11 @@ std::unique_ptr<VertexLoaderBase> VertexLoaderBase::CreateVertexLoader(const TVt
   native_loader = std::make_unique<VertexLoaderX64>(vtx_desc, vtx_attr);
 #elif defined(_M_ARM_64)
   native_loader = std::make_unique<VertexLoaderARM64>(vtx_desc, vtx_attr);
+#ifdef __SWITCH__
+  // (the Switch's vertex-loader JIT pool has a fixed number of slots)
+  if (!static_cast<VertexLoaderARM64*>(native_loader.get())->HasCode())
+    native_loader.reset();
+#endif
 #endif
 
   // Use the software loader as a fallback

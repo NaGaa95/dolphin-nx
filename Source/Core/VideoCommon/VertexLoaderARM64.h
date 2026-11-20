@@ -22,6 +22,8 @@ public:
 #ifdef __SWITCH__
   ~VertexLoaderARM64() override;
   static void ShutdownSwitchJitPool();
+  // False when the JIT pool was full: the software loader is used instead.
+  bool HasCode() const { return region != nullptr; }
 #endif
 
 protected:
