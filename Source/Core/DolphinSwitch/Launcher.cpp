@@ -13071,10 +13071,20 @@ void Launcher::InstallWAD()
                                                               "This writes to emulated NAND."))}))
     return;
 
+  const std::optional<std::pair<u16, u16>> replaced = Tools::GetReplacedTitleVersions(path);
+  if (replaced &&
+      !Confirm("Replace the installed version?",
+               std::array<std::string, 2>{
+                   fmt::format("{} {}, {} {}", m_localization.Translate("Installed version:"),
+                               replaced->first, m_localization.Translate("WAD version:"),
+                               replaced->second),
+                   std::string(m_localization.Translate("Installing it replaces the other version."))}))
+    return;
+
   std::string error;
   Tools::Result result = Tools::Result::IoError;
   RunBusyTask("Installing Wii content", FileName(path),
-              [&] { result = Tools::InstallWAD(path, &error); });
+              [&] { result = Tools::InstallWAD(path, &error, replaced.has_value()); });
   if (result == Tools::Result::Success)
   {
     m_library_refresh_requested = true;

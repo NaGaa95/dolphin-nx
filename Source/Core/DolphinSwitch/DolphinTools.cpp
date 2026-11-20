@@ -39,9 +39,11 @@
 #include "Core/PatchEngine.h"
 #include "Core/TitleDatabase.h"
 #include "Core/WiiUtils.h"
+#include "DiscIO/Blob.h"
 #include "DiscIO/GameModDescriptor.h"
 #include "DiscIO/NANDImporter.h"
 #include "DiscIO/RiivolutionParser.h"
+#include "DiscIO/VolumeWad.h"
 #include "DiscIO/WiiSaveBanner.h"
 
 namespace DolphinSwitch::Tools
@@ -766,12 +768,39 @@ std::vector<InstalledTitle> ListInstalledWiiTitles()
   return result;
 }
 
-Result InstallWAD(const std::string& wad_path, std::string* error)
+namespace
+{
+thread_local bool t_answer_questions_yes = false;
+}
+
+bool AnswersQuestionsYes()
+{
+  return t_answer_questions_yes;
+}
+
+std::optional<std::pair<u16, u16>> GetReplacedTitleVersions(const std::string& wad_path)
+{
+  std::lock_guard nand_lock{s_nand_mutex};
+  const std::unique_ptr<DiscIO::VolumeWAD> wad = DiscIO::CreateWAD(wad_path);
+  if (!wad)
+    return std::nullopt;
+  IOS::HLE::Kernel ios;
+  const IOS::ES::TMDReader installed = ios.GetESCore().FindInstalledTMD(wad->GetTMD().GetTitleId());
+  if (!installed.IsValid() || installed.GetTitleVersion() == wad->GetTMD().GetTitleVersion())
+    return std::nullopt;
+  return std::pair{installed.GetTitleVersion(), wad->GetTMD().GetTitleVersion()};
+}
+
+Result InstallWAD(const std::string& wad_path, std::string* error, bool replace_other_version)
 {
   std::lock_guard nand_lock{s_nand_mutex};
   if (!File::IsFile(wad_path))
     return Result::NotFound;
-  if (!WiiUtils::InstallWAD(wad_path))
+  // WiiUtils asks before replacing another version (the alert handler answers no on its own).
+  t_answer_questions_yes = replace_other_version;
+  const bool installed = WiiUtils::InstallWAD(wad_path);
+  t_answer_questions_yes = false;
+  if (!installed)
   {
     SetError(error, "Dolphin rejected the WAD or could not write it to NAND.");
     return Result::InvalidData;

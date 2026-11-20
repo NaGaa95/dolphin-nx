@@ -63,6 +63,7 @@
 #include "DiscIO/RiivolutionParser.h"
 #include "DiscIO/RiivolutionPatcher.h"
 #include "DolphinSwitch/Audio.h"
+#include "DolphinSwitch/DolphinTools.h"
 #include "DolphinSwitch/EmbeddedRuntime.h"
 #include "DolphinSwitch/Forwarder.h"
 #include "DolphinSwitch/GBAOverlay.h"
@@ -237,6 +238,9 @@ std::optional<DolphinSwitch::LaunchRequest> GetDirectLaunchRequest(int argc, cha
 bool SwitchMsgAlertHandler(const char* caption, const char* text, bool yes_no,
                            Common::MsgType style)
 {
+  // (a question the launcher already asked the user, who said yes)
+  if (yes_no && style == Common::MsgType::Question && DolphinSwitch::Tools::AnswersQuestionsYes())
+    return true;
   const std::string safe_caption = caption && *caption ? caption : "Dolphin";
   const std::string safe_text = text ? text : "Unknown Dolphin error";
   {

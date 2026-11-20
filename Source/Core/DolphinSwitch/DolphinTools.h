@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <utility>
 #include <span>
 #include <string>
 #include <string_view>
@@ -108,7 +109,13 @@ struct InstalledTitle
 };
 
 std::vector<InstalledTitle> ListInstalledWiiTitles();
-Result InstallWAD(const std::string& wad_path, std::string* error = nullptr);
+// The installed and the WAD's title versions, when another version of the WAD's title is installed.
+std::optional<std::pair<u16, u16>> GetReplacedTitleVersions(const std::string& wad_path);
+// replace_other_version: the user agreed to replace another installed version.
+Result InstallWAD(const std::string& wad_path, std::string* error = nullptr,
+                  bool replace_other_version = false);
+// True while a tool answers Dolphin's own questions with yes on this thread (for the alert handler).
+bool AnswersQuestionsYes();
 Result UninstallWiiTitle(u64 title_id, std::string* error = nullptr);
 
 // Returns an empty string when no Wii Menu is installed.
