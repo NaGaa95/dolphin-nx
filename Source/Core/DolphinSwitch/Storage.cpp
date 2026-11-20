@@ -464,6 +464,13 @@ bool ConnectSmbUnlocked(SmbMount* mount, bool reconnect,
   {
     SetSmbError(mount, "Could not connect to the SMB share");
     mount->state.store(SmbConnectionState::Failed, std::memory_order_release);
+    if (!connection.complete)
+    {
+      // Its callback is still pending, with `connection` as its data: destroying the context
+      // runs it now, while `connection` is alive.
+      smb2_destroy_context(mount->context);
+      mount->context = nullptr;
+    }
     return false;
   }
 
