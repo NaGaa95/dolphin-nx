@@ -44,6 +44,10 @@ struct SessionState
   double source_interval_ns = 0.0;
   unsigned source_samples = 0;
   unsigned high_fps_slow_samples = 0;
+  // While generating for a game that slowed down: its frames without the presents' waits.
+  std::uint64_t last_generated_present_ns = 0;
+  std::uint64_t present_time_ns = 0;
+  unsigned high_fps_fast_samples = 0;
   bool previous_requested = false;
   std::atomic_int rate_decision{-1};
 };
@@ -80,16 +84,23 @@ void ResetRateTrackingLocked()
   s_state.source_interval_ns = 0.0;
   s_state.source_samples = 0;
   s_state.high_fps_slow_samples = 0;
+  s_state.last_generated_present_ns = 0;
+  s_state.present_time_ns = 0;
+  s_state.high_fps_fast_samples = 0;
   s_state.previous_requested = false;
   s_state.rate_decision = -1;
 }
 
+std::uint64_t NowNs()
+{
+  return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                        std::chrono::steady_clock::now().time_since_epoch())
+                                        .count());
+}
+
 std::uint64_t ObserveSourcePresentLocked()
 {
-  const std::uint64_t now = static_cast<std::uint64_t>(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
-          std::chrono::steady_clock::now().time_since_epoch())
-          .count());
+  const std::uint64_t now = NowNs();
   std::uint64_t interval = 0;
   if (s_state.last_source_present_ns != 0 && now > s_state.last_source_present_ns)
   {
@@ -304,6 +315,30 @@ VkResult Present(VkQueue queue, const VkPresentInfoKHR& present_info)
 
     s_state.rate_decision = 0;
     s_state.high_fps_slow_samples = 0;
+    s_state.last_generated_present_ns = 0;
+    s_state.high_fps_fast_samples = 0;
+  }
+  else if (s_state.rate_decision == 0 && !DisplayDoublesHighRate())
+  {
+    // Back to the game's own rate once it keeps up again for a second: measured without the time
+    // the doubled presents wait for the display, which a 30 FPS game spends waiting for its next
+    // frame instead.
+    const std::uint64_t now = NowNs();
+    if (s_state.last_generated_present_ns != 0 && now > s_state.last_generated_present_ns)
+    {
+      const std::uint64_t interval = now - s_state.last_generated_present_ns;
+      const std::uint64_t work =
+          interval > s_state.present_time_ns ? interval - s_state.present_time_ns : interval;
+      s_state.high_fps_fast_samples = work < 25'000'000 ? s_state.high_fps_fast_samples + 1 : 0;
+    }
+    s_state.last_generated_present_ns = now;
+    if (s_state.high_fps_fast_samples >= 60)
+    {
+      s_state.rate_decision = 1;
+      s_state.high_fps_fast_samples = 0;
+      s_state.status = "Frame generation On (native 50/60 FPS protected)";
+      return PresentNormally(queue, present_info);
+    }
   }
 
   if (s_state.rate_decision < 0)
@@ -353,7 +388,10 @@ VkResult Present(VkQueue queue, const VkPresentInfoKHR& present_info)
   }
 
   VkResult result = VK_ERROR_INITIALIZATION_FAILED;
-  if (!lsfg_nx_present(s_state.runtime, queue, &present_info, &result))
+  const std::uint64_t present_start = NowNs();
+  const bool presented = lsfg_nx_present(s_state.runtime, queue, &present_info, &result);
+  s_state.present_time_ns = NowNs() - present_start;
+  if (!presented)
   {
     s_state.status = "LSFG rejected the active swapchain";
     s_state.enabled.store(false, std::memory_order_release);
