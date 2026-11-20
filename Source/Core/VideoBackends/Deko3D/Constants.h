@@ -43,7 +43,10 @@ constexpr u32 TEXEL_BUFFER_BINDING_BASE = NUM_PIXEL_SHADER_SAMPLERS;
 constexpr u32 NUM_TEXEL_BUFFERS = 2;
 constexpr u32 NUM_FRAGMENT_TEXTURE_BINDINGS = TEXEL_BUFFER_BINDING_BASE + NUM_TEXEL_BUFFERS;
 
-constexpr u32 NUM_IMAGE_DESCRIPTORS = 64 * 1024;
+// A texture change writes every binding's descriptor (18, 576 bytes): the ring holds about 14,000,
+// so a draw-heavy frame does not wrap it and wait for the frames before it.
+constexpr u32 NUM_IMAGE_DESCRIPTORS = 256 * 1024;
 
-constexpr u32 NUM_SAMPLER_DESCRIPTORS = 1024;
+// (the most a texture handle's 12-bit sampler index reaches)
+constexpr u32 NUM_SAMPLER_DESCRIPTORS = 4096;
 }
