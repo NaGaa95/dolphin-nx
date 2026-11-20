@@ -579,11 +579,19 @@ public:
   bool Load(const std::string& path)
   {
     m_values.clear();
+    // A missing file starts from the defaults; one that could not be read must not be saved over.
+    m_read_only = false;
     if (!RecoverAtomicFile(path))
+    {
+      m_read_only = true;
       return false;
+    }
     FILE* file = std::fopen(path.c_str(), "rb");
     if (!file)
+    {
+      m_read_only = errno != ENOENT;
       return false;
+    }
     char line[4096];
     while (std::fgets(line, sizeof(line), file))
     {
@@ -597,12 +605,20 @@ public:
       if (!key.empty())
         m_values[std::move(key)] = Trim(text.substr(separator + 1));
     }
-    return std::fclose(file) == 0;
+    const bool read_error = std::ferror(file) != 0;
+    const bool closed = std::fclose(file) == 0;
+    if (read_error)
+    {
+      m_values.clear();
+      m_read_only = true;
+      return false;
+    }
+    return closed;
   }
 
   bool Save(const std::string& path) const
   {
-    if (!RecoverAtomicFile(path))
+    if (m_read_only || !RecoverAtomicFile(path))
       return false;
     const std::string temporary = path + ".tmp";
     FILE* file = std::fopen(temporary.c_str(), "wb");
@@ -696,6 +712,7 @@ public:
 
 private:
   std::map<std::string, std::string> m_values;
+  bool m_read_only = false;
 };
 
 std::string NormalizePath(std::string path)
