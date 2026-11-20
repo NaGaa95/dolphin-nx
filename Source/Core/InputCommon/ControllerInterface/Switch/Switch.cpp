@@ -30,6 +30,9 @@ namespace
 constexpr std::size_t PLAYER_COUNT = 4;
 constexpr std::chrono::seconds DEVICE_RETRY_INTERVAL{1};
 constexpr u64 RUNTIME_OVERLAY_CHORD = HidNpadButton_L | HidNpadButton_R | HidNpadButton_Plus;
+// (a GameCube controller's, as the quick menu reads it)
+constexpr u64 RUNTIME_OVERLAY_GAMECUBE_CHORD =
+    HidNpadButton_ZL | HidNpadButton_ZR | HidNpadButton_Plus;
 constexpr u32 NSO_CONTROLLER_STYLES =
     HidNpadStyleTag_NpadLagon | HidNpadStyleTag_NpadLucia | HidNpadStyleTag_NpadLager |
     HidNpadStyleTag_NpadLark;
@@ -406,19 +409,21 @@ public:
     if (!m_filter_runtime_overlay_chord)
       return buttons;
 
-    if ((buttons & RUNTIME_OVERLAY_CHORD) == RUNTIME_OVERLAY_CHORD)
+    const u64 chord = (m_pad.style_set & HidNpadStyleTag_NpadGc) ? RUNTIME_OVERLAY_GAMECUBE_CHORD :
+                                                                   RUNTIME_OVERLAY_CHORD;
+    if ((buttons & chord) == chord)
       m_runtime_overlay_chord_latched = true;
 
     if (!m_runtime_overlay_chord_latched)
       return buttons;
 
     // Release the chord after all three buttons are up.
-    if ((buttons & RUNTIME_OVERLAY_CHORD) == 0)
+    if ((buttons & chord) == 0)
     {
       m_runtime_overlay_chord_latched = false;
       return buttons;
     }
-    return buttons & ~RUNTIME_OVERLAY_CHORD;
+    return buttons & ~chord;
   }
 
   HidAnalogStickState GetStick(unsigned stick) const
