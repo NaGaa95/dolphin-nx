@@ -125,7 +125,7 @@ bool ScheduleLauncherRestart(const std::string& launcher_path)
     return false;
   }
 
-  const std::string arguments = launcher_path + " " + std::string(VULKAN_RETURN_ARGUMENT);
+  const std::string arguments = fmt::format("\"{}\" {}", launcher_path, VULKAN_RETURN_ARGUMENT);
   const Result result = envSetNextLoad(launcher_path.c_str(), arguments.c_str());
   if (R_FAILED(result))
     std::fprintf(stderr, "[Dolphin Switch] failed to schedule launcher restart: %08x\n",
