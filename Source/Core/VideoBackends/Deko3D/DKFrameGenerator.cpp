@@ -714,6 +714,8 @@ bool DKFrameGenerator::Generate(const AbstractTexture* frame, const MathUtil::Re
       static_cast<u32>(rect.left), static_cast<u32>(rect.top), 0, width, height, 1};
   const DkImageRect history_rect{0, 0, 0, width, height, 1};
 
+  // (the frame was drawn just before, by the XFB copy)
+  dkCmdBufBarrier(cmdbuf, DkBarrier_Full, DkInvalidateFlags_Image | DkInvalidateFlags_Shader);
   dkCmdBufBlitImage(cmdbuf, &source_view, &source_rect, &history_view, &history_rect,
                     DkBlitFlag_FilterNearest | DkBlitFlag_ModeBlit, 0);
 
