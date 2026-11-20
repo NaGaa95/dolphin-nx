@@ -17050,10 +17050,21 @@ void Launcher::DownloadCovers()
     }
   MarkStoreDirty();
   FlushPendingSaves();
+  // A translation is used as the format only with the same conversions (the catalogs, the SD card's
+  // i18n JSON among them, are not checked).
+  static constexpr const char* ARTWORK_FORMAT = "Artwork: %d updated, %d failed%s";
+  std::string format(m_localization.Translate(ARTWORK_FORMAT));
+  std::string conversions;
+  for (std::size_t i = 0; i + 1 < format.size(); ++i)
+  {
+    if (format[i] == '%')
+      conversions += format[++i];
+  }
+  if (conversions != "dds")
+    format = ARTWORK_FORMAT;
   char message[160];
-  std::snprintf(message, sizeof(message),
-                m_localization.Translate("Artwork: %d updated, %d failed%s").data(), updated,
-                failed_count, cancel.load() ? m_localization.Translate(" (cancelled)").data() : "");
+  std::snprintf(message, sizeof(message), format.c_str(), updated, failed_count,
+                cancel.load() ? m_localization.Translate(" (cancelled)").data() : "");
   Toast(message, 1800);
 }
 
