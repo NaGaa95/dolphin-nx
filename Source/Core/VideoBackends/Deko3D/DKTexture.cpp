@@ -373,13 +373,12 @@ std::unique_ptr<DKStagingTexture> DKStagingTexture::Create(StagingTextureType ty
 {
   const size_t buffer_size = config.GetStride() * static_cast<size_t>(config.height);
 
-  const u32 cpu_access =
-      type == StagingTextureType::Upload ? DkMemBlockFlags_CpuCached : DkMemBlockFlags_CpuUncached;
-
+  // CPU-cached for readbacks too (reading an EFB or XFB copy from uncached memory is slow): the
+  // copies clean and invalidate the lines they share with the GPU.
   dk::UniqueMemBlock memblock =
       dk::MemBlockMaker{g_dk_context->GetDevice(),
                         static_cast<u32>(Common::AlignUp(buffer_size, DK_MEMBLOCK_ALIGNMENT))}
-          .setFlags(cpu_access | DkMemBlockFlags_GpuCached)
+          .setFlags(DkMemBlockFlags_CpuCached | DkMemBlockFlags_GpuCached)
           .create();
   if (!memblock)
   {
@@ -412,6 +411,11 @@ void DKStagingTexture::CopyFromTexture(const AbstractTexture* src,
 
   const u32 offset = static_cast<u32>(static_cast<size_t>(dst_rect.top) * m_config.GetStride() +
                                       static_cast<size_t>(dst_rect.left) * m_texel_size);
+  const size_t end = static_cast<size_t>(dst_rect.bottom - 1) * m_config.GetStride() +
+                     static_cast<size_t>(dst_rect.right) * m_texel_size;
+  // (lines the CPU wrote must not be written back over the copy)
+  if (m_type == StagingTextureType::Mutable)
+    m_memblock.flushCpuCache(offset, static_cast<u32>(end - offset));
   const DkCopyBuf dst{m_memblock.getGpuAddr() + offset, static_cast<u32>(m_config.GetStride()), 0};
 
 #ifdef __SWITCH2__
@@ -429,6 +433,16 @@ void DKStagingTexture::CopyFromTexture(const AbstractTexture* src,
 #endif
   // The command buffer's fence then waits for the copy, before Flush() lets the CPU read it.
   g_dk_command_buffer_mgr->NotifyCpuReadback();
+  if (m_invalidate_end <= m_invalidate_begin)
+  {
+    m_invalidate_begin = offset;
+    m_invalidate_end = end;
+  }
+  else
+  {
+    m_invalidate_begin = std::min<size_t>(m_invalidate_begin, offset);
+    m_invalidate_end = std::max(m_invalidate_end, end);
+  }
 
   m_needs_flush = true;
   m_flush_fence_counter = g_dk_command_buffer_mgr->GetCurrentFenceCounter();
@@ -443,7 +457,7 @@ void DKStagingTexture::CopyToTexture(const MathUtil::Rectangle<int>& src_rect, A
   ASSERT(src_rect.GetWidth() == dst_rect.GetWidth() &&
          src_rect.GetHeight() == dst_rect.GetHeight());
 
-  if (m_type == StagingTextureType::Upload)
+  if (m_type != StagingTextureType::Readback)
     m_memblock.flushCpuCache(0, m_memblock.getSize());
 
   DkCmdBuf cmdbuf = g_dk_command_buffer_mgr->GetCurrentCommandBuffer();
@@ -489,6 +503,13 @@ void DKStagingTexture::Flush()
   else
     g_dk_command_buffer_mgr->WaitForFenceCounter(m_flush_fence_counter);
 
+  // (the CPU may hold lines of these bytes from before the GPU wrote them)
+  if (m_invalidate_end > m_invalidate_begin)
+  {
+    m_memblock.flushCpuCache(static_cast<u32>(m_invalidate_begin),
+                             static_cast<u32>(m_invalidate_end - m_invalidate_begin));
+    m_invalidate_begin = m_invalidate_end = 0;
+  }
   m_needs_flush = false;
 }
 

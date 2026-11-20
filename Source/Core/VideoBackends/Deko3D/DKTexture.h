@@ -81,6 +81,9 @@ public:
 private:
   dk::UniqueMemBlock m_memblock;
   u64 m_flush_fence_counter = 0;
+  // The bytes the GPU wrote since the last Flush(), whose CPU cache lines Flush() invalidates.
+  size_t m_invalidate_begin = 0;
+  size_t m_invalidate_end = 0;
 };
 
 class DKFramebuffer final : public AbstractFramebuffer
