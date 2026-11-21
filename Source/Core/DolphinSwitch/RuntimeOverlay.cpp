@@ -105,7 +105,26 @@ struct StateSaveMonitorRequest
 
 constexpr std::uint64_t MENU_CHORD =
     HidNpadButton_L | HidNpadButton_R | HidNpadButton_Plus;
-constexpr int MAIN_ITEM_COUNT = 14;
+// The main page's rows, in the order they are drawn.
+enum MainItem : int
+{
+  MAIN_SAVE_STATE,
+  MAIN_LOAD_STATE,
+  MAIN_DISC,
+  MAIN_CHEATS,
+  MAIN_ACHIEVEMENTS,
+  MAIN_CONTROLLERS,
+  MAIN_SCREEN_LAYOUT,
+  MAIN_FRAME_GENERATION,
+  MAIN_FPS,
+  MAIN_VBI_SKIP,
+  MAIN_SKYLANDERS,
+  MAIN_RESET,
+  MAIN_STOP,
+  // Only while a Game Boy Advance is connected.
+  MAIN_GBA,
+};
+constexpr int MAIN_ITEM_COUNT = MAIN_GBA;
 constexpr int DISC_ITEM_COUNT = 3;
 constexpr int CONTROLLER_ITEM_COUNT = 6;
 constexpr int CONTROLLER_CALIBRATE_ITEM = 4;
@@ -121,6 +140,8 @@ bool s_vbi_skip = false;
 bool s_is_wii = false;
 // The quick menu's scale for the frame being drawn (OverlayScale): row and list heights follow it.
 float s_ui_scale = 1.0f;
+// The room the status line takes at the bottom of the menu.
+float s_footer_height = 0.0f;
 Page s_page = Page::Main;
 int s_selection = 0;
 int s_controller_player = 0;
@@ -176,17 +197,6 @@ std::string Lower(std::string value)
 {
   std::ranges::transform(value, value.begin(),
                          [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  return value;
-}
-
-std::string Shorten(std::string value, std::size_t limit)
-{
-  if (value.size() <= limit)
-    return value;
-  if (limit <= 3)
-    return value.substr(0, limit);
-  value.resize(limit - 3);
-  value += "...";
   return value;
 }
 
@@ -700,11 +710,18 @@ bool ItemAvailable(int index)
     return s_is_wii;
   if (s_page != Page::Main)
     return true;
-  if (index == 2 && IsHardcoreActive())
-    return false;
-  if ((index == 6 || index == 11) && !s_is_wii)
-    return false;
-  return index != 8 || DolphinSwitch::FrameGeneration::IsAvailable();
+  switch (index)
+  {
+  case MAIN_LOAD_STATE:
+    return !IsHardcoreActive();
+  case MAIN_CONTROLLERS:
+  case MAIN_SKYLANDERS:
+    return s_is_wii;
+  case MAIN_FRAME_GENERATION:
+    return DolphinSwitch::FrameGeneration::IsAvailable();
+  default:
+    return true;
+  }
 }
 
 void HandleBack()
@@ -769,55 +786,52 @@ void ActivateSelection()
   case Page::Main:
     switch (s_selection)
     {
-    case 0:
-      CloseMenu();
-      break;
-    case 1:
+    case MAIN_SAVE_STATE:
       SetPage(Page::SaveStates);
       break;
-    case 2:
+    case MAIN_LOAD_STATE:
       SetPage(Page::LoadStates);
       break;
-    case 3:
+    case MAIN_DISC:
       SetPage(Page::Disc);
       break;
-    case 4:
+    case MAIN_CHEATS:
       SetPage(Page::Cheats);
       break;
-    case 5:
+    case MAIN_ACHIEVEMENTS:
       SetPage(Page::Achievements);
       RefreshAchievements();
       break;
-    case 6:
+    case MAIN_CONTROLLERS:
       if (s_is_wii)
         SetPage(Page::Controllers);
       break;
-    case 7:
+    case MAIN_SCREEN_LAYOUT:
       SetPage(Page::ScreenLayout);
       ScreenLayout::BeginEdit(s_gba_ports);
       break;
-    case 8:
+    case MAIN_FRAME_GENERATION:
       QueueAction({ActionType::ToggleFrameGeneration});
       break;
-    case 9:
+    case MAIN_FPS:
       QueueAction({ActionType::ToggleFPS});
       break;
-    case 10:
+    case MAIN_VBI_SKIP:
       QueueAction({ActionType::ToggleVBISkip});
       break;
-    case 11:
+    case MAIN_SKYLANDERS:
       if (s_is_wii)
         SetPage(Page::Skylanders);
       break;
-    case 12:
+    case MAIN_RESET:
       QueueAction({ActionType::Reset});
       CloseMenu();
       break;
-    case 13:
+    case MAIN_STOP:
       QueueAction({ActionType::StopToLauncher});
       CloseMenu();
       break;
-    case 14:
+    case MAIN_GBA:
       SetPage(Page::GBA);
       break;
     }
@@ -957,12 +971,39 @@ void ActivateSelection()
   }
 }
 
+constexpr ImU32 TEXT_COLOR = IM_COL32(235, 248, 255, 255);
+constexpr ImU32 VALUE_COLOR = IM_COL32(150, 205, 230, 255);
+constexpr ImU32 DIM_COLOR = IM_COL32(120, 145, 158, 255);
+constexpr ImU32 ACCENT_COLOR = IM_COL32(61, 183, 235, 255);
+constexpr ImU32 HIGHLIGHT_COLOR = IM_COL32(15, 89, 126, 245);
+
+// What a row shows on its right.
+enum class RowKind
+{
+  Action,
+  // A page: a chevron, after the value if there is one.
+  Submenu,
+  // A switch, after the value (a note) if there is one.
+  Toggle,
+  // The value between left and right chevrons.
+  Choice,
+  // The value alone.
+  Value,
+};
+
 void CenteredText(std::string_view text)
 {
   const float width = ImGui::CalcTextSize(text.data(), text.data() + text.size()).x;
-  ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(),
-                                (ImGui::GetWindowWidth() - width) * 0.5f));
+  ImGui::SetCursorPosX(
+      std::floor(std::max(ImGui::GetCursorPosX(), (ImGui::GetWindowWidth() - width) * 0.5f)));
   ImGui::TextUnformatted(text.data(), text.data() + text.size());
+}
+
+void DimCenteredText(std::string_view text)
+{
+  ImGui::PushStyleColor(ImGuiCol_Text, DIM_COLOR);
+  CenteredText(text);
+  ImGui::PopStyleColor();
 }
 
 // The overlay's sizes are laid out for 1080 lines: scaled to the output's height (2x on a 4K TV).
@@ -971,78 +1012,182 @@ float OverlayScale(const ImGuiIO& io)
   return std::max(0.72f, io.DisplaySize.y / 1080.0f);
 }
 
-void SelectableRow(const std::string& label, int index, float height = 48.0f)
+// The text, cut on a character boundary and ended with "..." when it is wider than max_width.
+std::string FitText(std::string text, float max_width)
 {
+  if (ImGui::CalcTextSize(text.c_str()).x <= max_width)
+    return text;
+  while (!text.empty())
+  {
+    do
+      text.pop_back();
+    while (!text.empty() && (static_cast<unsigned char>(text.back()) & 0xC0) == 0x80);
+    if (ImGui::CalcTextSize((text + "...").c_str()).x <= max_width)
+      break;
+  }
+  return text + "...";
+}
+
+void DrawChevron(ImDrawList* draw, float right, float center_y, float size, bool pointing_right,
+                 ImU32 color)
+{
+  const float half = size * 0.5f;
+  const float tip = pointing_right ? right : right - half;
+  const float back = pointing_right ? right - half : right;
+  const float thickness = std::max(2.0f, size / 6.0f);
+  draw->AddLine({back, center_y - half}, {tip, center_y}, color, thickness);
+  draw->AddLine({tip, center_y}, {back, center_y + half}, color, thickness);
+}
+
+// An On/Off switch, as the launcher draws it: an accent pill with its knob on the right when on.
+void DrawSwitch(ImDrawList* draw, float right, float center_y, float height, bool on, bool enabled)
+{
+  const float width = std::round(height * 1.8f);
+  const ImVec2 min{std::floor(right - width), std::floor(center_y - height * 0.5f)};
+  const ImVec2 max{min.x + width, min.y + height};
+  const ImU32 track = !enabled ? IM_COL32(44, 52, 62, 255) :
+                      on       ? ACCENT_COLOR :
+                                 IM_COL32(58, 68, 82, 255);
+  draw->AddRectFilled(min, max, track, height * 0.5f);
+  const float inset = std::max(2.0f, std::round(height / 8.0f));
+  const float radius = height * 0.5f - inset;
+  draw->AddCircleFilled({on ? max.x - inset - radius : min.x + inset + radius, min.y + height * 0.5f},
+                        radius,
+                        enabled ? IM_COL32(245, 250, 255, 255) : IM_COL32(140, 150, 160, 255), 32);
+}
+
+// A row of the menu: the selection highlight, the label on its left and, by kind, a value, a switch
+// or a chevron on its right, all centred on the highlight.
+void MenuRow(int index, std::string_view label, RowKind kind = RowKind::Action,
+             std::string_view value = {}, bool on = false, bool enabled = true,
+             float height = 46.0f)
+{
+  const float scale = s_ui_scale;
+  const float row_height = std::round(height * scale);
+  const ImVec2 origin{std::floor(ImGui::GetCursorScreenPos().x),
+                      std::floor(ImGui::GetCursorScreenPos().y)};
+  const float width = std::floor(ImGui::GetContentRegionAvail().x);
+  ImGui::Dummy({width, row_height});
   const bool selected = s_selection == index;
-  ImGui::Selectable((label + "##row" + std::to_string(index)).c_str(), selected,
-                    ImGuiSelectableFlags_None, {0.0f, height * s_ui_scale});
   if (selected)
     ImGui::SetScrollHereY(0.5f);
+
+  ImDrawList* const draw = ImGui::GetWindowDrawList();
+  if (selected)
+  {
+    draw->AddRectFilled(origin, {origin.x + width, origin.y + row_height}, HIGHLIGHT_COLOR,
+                        std::round(8.0f * scale));
+    draw->AddRectFilled({origin.x, std::floor(origin.y + row_height * 0.2f)},
+                        {origin.x + std::round(3.0f * scale),
+                         std::floor(origin.y + row_height * 0.8f)},
+                        ACCENT_COLOR);
+  }
+
+  const float padding = std::round(18.0f * scale);
+  const float gap = std::round(14.0f * scale);
+  const float center_y = origin.y + row_height * 0.5f;
+  const float text_y = std::floor(center_y - ImGui::GetFontSize() * 0.5f);
+  const float chevron = std::round(14.0f * scale);
+  const ImU32 value_color = enabled ? VALUE_COLOR : DIM_COLOR;
+  float right = origin.x + width - padding;
+
+  const auto draw_value = [&](std::string_view text) {
+    const std::string fitted = FitText(std::string(text), width * 0.45f);
+    const float text_width = ImGui::CalcTextSize(fitted.c_str()).x;
+    right -= text_width;
+    draw->AddText({std::floor(right), text_y}, value_color, fitted.c_str());
+    right -= gap;
+  };
+  switch (kind)
+  {
+  case RowKind::Action:
+    break;
+  case RowKind::Submenu:
+    DrawChevron(draw, right, center_y, chevron, true, value_color);
+    right -= chevron * 0.5f + gap;
+    if (!value.empty())
+      draw_value(value);
+    break;
+  case RowKind::Toggle:
+  {
+    const float switch_height = std::round(26.0f * scale);
+    DrawSwitch(draw, right, center_y, switch_height, on, enabled);
+    right -= std::round(switch_height * 1.8f) + gap;
+    if (!value.empty())
+      draw_value(value);
+    break;
+  }
+  case RowKind::Choice:
+    DrawChevron(draw, right, center_y, chevron, true, value_color);
+    right -= chevron * 0.5f + gap;
+    draw_value(value);
+    DrawChevron(draw, right, center_y, chevron, false, value_color);
+    right -= chevron * 0.5f + gap;
+    break;
+  case RowKind::Value:
+    draw_value(value);
+    break;
+  }
+
+  const float label_x = origin.x + padding;
+  const std::string fitted = FitText(std::string(label), right - label_x);
+  draw->AddText({label_x, text_y}, enabled ? TEXT_COLOR : DIM_COLOR, fitted.c_str());
 }
 
 void RenderMainPage()
 {
   const bool hardcore = IsHardcoreActive();
-  SelectableRow("Resume game", 0);
-  SelectableRow("Save state                                      >", 1);
+  MenuRow(MAIN_SAVE_STATE, "Save state", RowKind::Submenu);
   if (hardcore)
-    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(120, 145, 158, 255));
-  SelectableRow(hardcore ? "Load state                         Hardcore disabled" :
-                           "Load state                                      >",
-                2);
-  if (hardcore)
-    ImGui::PopStyleColor();
-  SelectableRow("Disc management                                 >", 3);
-  SelectableRow("Cheats                                          >", 4);
-  SelectableRow(std::string("RetroAchievements                 ") + AchievementStatus() + "  >",
-                5);
+    MenuRow(MAIN_LOAD_STATE, "Load state", RowKind::Value, "Hardcore disabled", false, false);
+  else
+    MenuRow(MAIN_LOAD_STATE, "Load state", RowKind::Submenu);
+  MenuRow(MAIN_DISC, "Disc management", RowKind::Submenu);
+  MenuRow(MAIN_CHEATS, "Cheats", RowKind::Submenu);
+  MenuRow(MAIN_ACHIEVEMENTS, "RetroAchievements", RowKind::Submenu, AchievementStatus());
   if (s_is_wii)
-    SelectableRow("Controller modes                                >", 6);
-  SelectableRow("Screen layout                                   >", 7);
-  if (!DolphinSwitch::FrameGeneration::IsAvailable())
-    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(120, 145, 158, 255));
-  SelectableRow(std::string("Frame Generation                 <  ") +
-                    (DolphinSwitch::FrameGeneration::IsAvailable() ?
-                         (DolphinSwitch::FrameGeneration::IsEnabled() ?
-                              (DolphinSwitch::FrameGeneration::IsHighFPSPassthrough() ?
-                                   "On (native FPS protected)" :
-                                   "On") :
-                              "Off") :
-                         "Disabled") +
-                    "  >",
-                8);
-  if (!DolphinSwitch::FrameGeneration::IsAvailable())
-    ImGui::PopStyleColor();
-  SelectableRow(std::string("Show FPS                         <  ") +
-                    (s_show_fps ? "Enabled" : "Disabled") + "  >",
-                9);
-  SelectableRow(std::string("VBI Skip                         <  ") +
-                    (s_vbi_skip ? "Enabled" : "Disabled") + "  >",
-                10);
+    MenuRow(MAIN_CONTROLLERS, "Controller modes", RowKind::Submenu);
+  MenuRow(MAIN_SCREEN_LAYOUT, "Screen layout", RowKind::Submenu);
+  if (DolphinSwitch::FrameGeneration::IsAvailable())
+  {
+    const bool enabled = DolphinSwitch::FrameGeneration::IsEnabled();
+    MenuRow(MAIN_FRAME_GENERATION, "Frame Generation", RowKind::Toggle,
+            enabled && DolphinSwitch::FrameGeneration::IsHighFPSPassthrough() ?
+                "Native FPS protected" :
+                "",
+            enabled);
+  }
+  else
+  {
+    MenuRow(MAIN_FRAME_GENERATION, "Frame Generation", RowKind::Value, "Unavailable", false, false);
+  }
+  MenuRow(MAIN_FPS, "Show FPS", RowKind::Toggle, {}, s_show_fps);
+  MenuRow(MAIN_VBI_SKIP, "VBI Skip", RowKind::Toggle, {}, s_vbi_skip);
   if (s_is_wii)
-    SelectableRow("Skylanders portal                               >", 11);
-  SelectableRow("Reset console", 12);
-  SelectableRow("Return to Dolphin launcher", 13);
+    MenuRow(MAIN_SKYLANDERS, "Skylanders portal", RowKind::Submenu);
+  MenuRow(MAIN_RESET, "Reset console");
+  MenuRow(MAIN_STOP, "Return to Dolphin launcher");
   if (HasGBA())
-    SelectableRow("Game Boy Advance                                >", 14);
+    MenuRow(MAIN_GBA, "Game Boy Advance", RowKind::Submenu);
 }
 
-// The rows RenderMainPage draws: 12, and up to 15 for a Wii game.
+// The rows RenderMainPage draws.
 int MainPageRowCount()
 {
-  return 12 + (s_is_wii ? 2 : 0) + (HasGBA() ? 1 : 0);
+  return 11 + (s_is_wii ? 2 : 0) + (HasGBA() ? 1 : 0);
 }
 
 void RenderSkylandersPage()
 {
-  SelectableRow(std::string("Emulated portal                         ") +
-                    (Config::Get(Config::MAIN_EMULATE_SKYLANDER_PORTAL) ? "On" : "Off"),
-                0);
+  MenuRow(0, "Emulated portal", RowKind::Toggle, {},
+          Config::Get(Config::MAIN_EMULATE_SKYLANDER_PORTAL));
   const auto slots = Skylanders::GetSlots();
   for (std::size_t slot = 0; slot < slots.size(); ++slot)
-    SelectableRow("Slot " + std::to_string(slot + 1) + "  " + Shorten(slots[slot].name, 42),
-                  static_cast<int>(slot + 1));
-  SelectableRow("Back", static_cast<int>(slots.size() + 1));
+  {
+    MenuRow(static_cast<int>(slot + 1), "Slot " + std::to_string(slot + 1), RowKind::Submenu,
+            slots[slot].name);
+  }
+  MenuRow(static_cast<int>(slots.size() + 1), "Back");
 }
 
 void RenderSkylanderFigures()
@@ -1055,10 +1200,10 @@ void RenderSkylanderFigures()
   else if (s_skylander_figures.empty())
     ImGui::TextWrapped("No figure files found. Import or create figures in the launcher's "
                        "Skylanders portal settings.");
-  SelectableRow("Remove current figure", 0);
+  MenuRow(0, "Remove current figure");
   for (std::size_t index = 0; index < s_skylander_figures.size(); ++index)
-    SelectableRow(Shorten(s_skylander_figures[index].name, 58), static_cast<int>(index + 1));
-  SelectableRow("Back", static_cast<int>(s_skylander_figures.size() + 1));
+    MenuRow(static_cast<int>(index + 1), s_skylander_figures[index].name);
+  MenuRow(static_cast<int>(s_skylander_figures.size() + 1), "Back");
 }
 
 void RenderGBAPage()
@@ -1069,35 +1214,28 @@ void RenderGBAPage()
   const int size = std::clamp(static_cast<int>(Config::Get(Config::MAIN_SWITCH_GBA_SCREENS)), 0, 2);
   const int corner =
       std::clamp(static_cast<int>(Config::Get(Config::MAIN_SWITCH_GBA_SCREEN_CORNER)), 0, 3);
-  SelectableRow("Screens                     <  " + std::string(sizes[size]) + "  >", 0);
-  SelectableRow("Position                    <  " + std::string(corners[corner]) + "  >", 1);
+  MenuRow(0, "Screens", RowKind::Choice, sizes[size]);
+  MenuRow(1, "Position", RowKind::Choice, corners[corner]);
   for (int port = 0; port < 4; ++port)
   {
-    if (!s_gba_ports[port])
-      ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(120, 145, 158, 255));
-    SelectableRow("Reset GBA " + std::to_string(port + 1), port + 2);
-    if (!s_gba_ports[port])
-      ImGui::PopStyleColor();
+    MenuRow(port + 2, "Reset GBA " + std::to_string(port + 1), RowKind::Action, {}, false,
+            s_gba_ports[port]);
   }
-  SelectableRow("Back", 6);
+  MenuRow(6, "Back");
 }
 
 void RenderControllersPage()
 {
   for (int player = 0; player < 4; ++player)
   {
-    SelectableRow("Player " + std::to_string(player + 1) + "                     " +
-                      std::string(ControllerModeName(s_controller_modes[player])) + "  >",
-                  player, 58.0f);
+    MenuRow(player, "Player " + std::to_string(player + 1), RowKind::Submenu,
+            ControllerModeName(s_controller_modes[player]));
   }
-  if (!s_is_wii)
-    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(120, 145, 158, 255));
-  SelectableRow("Calibrate touch pointer", CONTROLLER_CALIBRATE_ITEM, 58.0f);
-  if (!s_is_wii)
-    ImGui::PopStyleColor();
-  SelectableRow("Back", CONTROLLER_ITEM_COUNT - 1, 58.0f);
-  ImGui::Separator();
-  CenteredText("Changes apply only to the current game session");
+  MenuRow(CONTROLLER_CALIBRATE_ITEM, "Calibrate touch pointer", RowKind::Action, {}, false,
+          s_is_wii);
+  MenuRow(CONTROLLER_ITEM_COUNT - 1, "Back");
+  ImGui::Spacing();
+  DimCenteredText("Changes apply only to the current game session");
 }
 
 void RenderControllerModesPage()
@@ -1109,101 +1247,79 @@ void RenderControllerModesPage()
   for (int index = 0; index < static_cast<int>(modes.size()); ++index)
   {
     const bool active = s_controller_modes[s_controller_player] == modes[index];
-    SelectableRow(std::string(active ? "[Active]  " : "          ") +
-                      std::string(ControllerModeName(modes[index])),
-                  index, 54.0f);
+    MenuRow(index, ControllerModeName(modes[index]), active ? RowKind::Value : RowKind::Action,
+            active ? "Active" : "");
   }
-  SelectableRow("Back", CONTROLLER_MODE_ITEM_COUNT - 1, 54.0f);
-  ImGui::Separator();
-  CenteredText("A  Apply     B  Back");
+  MenuRow(CONTROLLER_MODE_ITEM_COUNT - 1, "Back");
 }
 
-void RenderStatePage(bool saving)
+// The height a page's scrolling list can take above the status line.
+float ListHeight(float minimum, float below = 0.0f)
 {
-  const float child_height =
-      std::max(220.0f * s_ui_scale, ImGui::GetContentRegionAvail().y - 58.0f * s_ui_scale);
-  ImGui::BeginChild("state slots", {0.0f, child_height}, false, ImGuiWindowFlags_NoInputs);
+  return std::max(minimum * s_ui_scale,
+                  ImGui::GetContentRegionAvail().y - s_footer_height - below * s_ui_scale);
+}
+
+void RenderStatePage()
+{
+  ImGui::BeginChild("state slots", {0.0f, ListHeight(220.0f)}, false, ImGuiWindowFlags_NoInputs);
   for (int slot = 0; slot < static_cast<int>(State::NUM_STATES); ++slot)
-  {
-    SelectableRow("Slot " + std::to_string(slot + 1) + "    " +
-                      Shorten(s_state_info[slot], 66),
-                  slot);
-  }
-  SelectableRow("Back", static_cast<int>(State::NUM_STATES));
+    MenuRow(slot, "Slot " + std::to_string(slot + 1), RowKind::Value, s_state_info[slot]);
+  MenuRow(static_cast<int>(State::NUM_STATES), "Back");
   ImGui::EndChild();
-  ImGui::Separator();
-  CenteredText(saving ? "A  Save     B  Back" : "A  Load     B  Back");
 }
 
 void RenderDiscPage()
 {
-  SelectableRow("Eject current disc", 0, 64.0f);
-  SelectableRow("Change disc from current game folder           >", 1, 64.0f);
-  SelectableRow("Back", 2, 64.0f);
-  ImGui::Separator();
-  CenteredText("Disc images: ISO, GCM, TGC, WBFS, CISO, GCZ, WIA and RVZ");
+  MenuRow(0, "Eject current disc");
+  MenuRow(1, "Change disc from current game folder", RowKind::Submenu);
+  MenuRow(2, "Back");
+  ImGui::Spacing();
+  DimCenteredText("Disc images: ISO, GCM, TGC, WBFS, CISO, GCZ, WIA and RVZ");
 }
 
 void RenderDiscBrowser()
 {
-  ImGui::TextUnformatted(Shorten(s_browser_directory, 88).c_str());
+  ImGui::PushStyleColor(ImGuiCol_Text, DIM_COLOR);
+  ImGui::TextUnformatted(FitText(s_browser_directory, ImGui::GetContentRegionAvail().x).c_str());
+  ImGui::PopStyleColor();
   ImGui::Separator();
-  const float child_height =
-      std::max(200.0f * s_ui_scale, ImGui::GetContentRegionAvail().y - 58.0f * s_ui_scale);
-  ImGui::BeginChild("disc files", {0.0f, child_height}, false, ImGuiWindowFlags_NoInputs);
+  ImGui::BeginChild("disc files", {0.0f, ListHeight(200.0f)}, false, ImGuiWindowFlags_NoInputs);
   if (s_browser_entries.empty())
   {
-    const std::string message =
-        s_browser_scanning ? "Scanning folder..." :
-                             (s_browser_error.empty() ? "No disc images in this folder" :
-                                                        s_browser_error);
-    SelectableRow(message, 0, 64.0f);
+    MenuRow(0,
+            s_browser_scanning ? "Scanning folder..." :
+                                 (s_browser_error.empty() ? "No disc images in this folder" :
+                                                            s_browser_error));
   }
   else
   {
     for (int index = 0; index < static_cast<int>(s_browser_entries.size()); ++index)
     {
       const BrowserEntry& entry = s_browser_entries[index];
-      SelectableRow(std::string(entry.directory ? "[Folder]  " : "[Disc]    ") +
-                        Shorten(entry.name, 70),
-                    index);
+      MenuRow(index, entry.name, entry.directory ? RowKind::Submenu : RowKind::Action);
     }
   }
   ImGui::EndChild();
-  ImGui::Separator();
-  CenteredText("A  Open / insert     B  Parent folder");
 }
 
 void RenderCheatsPage()
 {
-  const float child_height =
-      std::max(220.0f * s_ui_scale, ImGui::GetContentRegionAvail().y - 58.0f * s_ui_scale);
-  ImGui::BeginChild("cheat list", {0.0f, child_height}, false, ImGuiWindowFlags_NoInputs);
-  SelectableRow(std::string("Cheat engine                 <  ") +
-                    (s_cheats_enabled ? "Enabled" : "Disabled") + "  >",
-                0);
+  const bool no_codes = s_game_id.empty() || (s_ar_codes.empty() && s_gecko_codes.empty());
+  ImGui::BeginChild("cheat list", {0.0f, ListHeight(220.0f, no_codes ? 40.0f : 0.0f)}, false,
+                    ImGuiWindowFlags_NoInputs);
+  MenuRow(0, "Cheat engine", RowKind::Toggle, {}, s_cheats_enabled);
   int row = 1;
   for (const ActionReplay::ARCode& code : s_ar_codes)
-  {
-    SelectableRow(std::string(code.enabled ? "[On]  AR     " : "[Off] AR     ") +
-                      Shorten(code.name, 62),
-                  row++);
-  }
+    MenuRow(row++, code.name, RowKind::Toggle, "AR", code.enabled);
   for (const Gecko::GeckoCode& code : s_gecko_codes)
-  {
-    SelectableRow(std::string(code.enabled ? "[On]  Gecko  " : "[Off] Gecko  ") +
-                      Shorten(code.name, 59),
-                  row++);
-  }
-  SelectableRow("Back", row);
+    MenuRow(row++, code.name, RowKind::Toggle, "Gecko", code.enabled);
+  MenuRow(row, "Back");
   ImGui::EndChild();
-  ImGui::Separator();
   if (s_game_id.empty())
-    CenteredText("Cheat lists are unavailable for this executable.");
-  else if (s_ar_codes.empty() && s_gecko_codes.empty())
-    CenteredText("No AR or Gecko codes are installed for this game.");
-  else
-    CenteredText("A  Toggle     B  Back");
+    DimCenteredText("Cheat lists are unavailable for this executable.");
+  else if (no_codes)
+    DimCenteredText("No AR or Gecko codes are installed for this game.");
 }
 
 void RenderAchievementsPage()
@@ -1212,21 +1328,18 @@ void RenderAchievementsPage()
   if (!s_achievement_presence.empty())
     ImGui::TextColored({0.55f, 0.92f, 1.0f, 1.0f}, "%s", s_achievement_presence.c_str());
   ImGui::Separator();
-  const float child_height =
-      std::max(210.0f * s_ui_scale, ImGui::GetContentRegionAvail().y - 116.0f * s_ui_scale);
-  ImGui::BeginChild("achievement list", {0.0f, child_height}, false,
+  ImGui::BeginChild("achievement list", {0.0f, ListHeight(210.0f, 64.0f)}, false,
                     ImGuiWindowFlags_NoInputs);
   int row = 0;
   for (const AchievementEntry& achievement : s_achievements)
   {
-    SelectableRow(std::string(achievement.unlocked ? "[Unlocked] " : "[Locked]   ") +
-                      Shorten(achievement.title, 58) + " · " +
-                      std::to_string(achievement.points) + " pts",
-                  row++);
+    MenuRow(row++, achievement.title, RowKind::Value,
+            (achievement.unlocked ? "Unlocked · " : "") + std::to_string(achievement.points) +
+                " pts",
+            false, achievement.unlocked);
   }
-  SelectableRow("Back", row);
+  MenuRow(row, "Back");
   ImGui::EndChild();
-  ImGui::Separator();
   if (s_selection >= 0 && s_selection < static_cast<int>(s_achievements.size()))
   {
     const AchievementEntry& selected = s_achievements[s_selection];
@@ -1234,10 +1347,6 @@ void RenderAchievementsPage()
     if (!selected.unlocked && !selected.progress.empty())
       detail += (detail.empty() ? "" : " · ") + selected.progress;
     ImGui::TextWrapped("%s", detail.c_str());
-  }
-  else
-  {
-    CenteredText("B  Back");
   }
 }
 
@@ -1250,9 +1359,6 @@ void RenderAlert()
   ImGui::PushTextWrapPos(ImGui::GetWindowWidth() - 30.0f * s_ui_scale);
   ImGui::TextWrapped("%s", s_alert_message.c_str());
   ImGui::PopTextWrapPos();
-  ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 86.0f * s_ui_scale);
-  ImGui::Separator();
-  CenteredText("A / B  Close");
 }
 }  // namespace
 
@@ -1701,25 +1807,75 @@ void Draw()
                                                 IM_COL32(0, 0, 0, 132));
   const float scale = OverlayScale(io);
   s_ui_scale = scale;
-  ImGui::SetNextWindowPos({io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f}, ImGuiCond_Always,
-                          {0.5f, 0.5f});
-  // Tall enough for the main page and the button hints below it: padding, title, two separators, the hints, and
-  // 48-pixel rows with their spacing.
+  std::string title;
+  switch (s_page)
+  {
+  case Page::Main:
+    title = "Dolphin Quick Menu";
+    break;
+  case Page::SaveStates:
+    title = "Save State";
+    break;
+  case Page::LoadStates:
+    title = "Load State";
+    break;
+  case Page::Disc:
+  case Page::DiscBrowser:
+    title = "Disc Management";
+    break;
+  case Page::Cheats:
+    title = "Action Replay & Gecko Codes";
+    break;
+  case Page::Achievements:
+    title = "RetroAchievements";
+    break;
+  case Page::Controllers:
+    title = "Controller Modes";
+    break;
+  case Page::ControllerModes:
+    title = "Player " + std::to_string(s_controller_player + 1) + " Controller";
+    break;
+  case Page::Skylanders:
+  case Page::SkylanderFigures:
+    title = "Skylanders Portal";
+    break;
+  case Page::GBA:
+    title = "Game Boy Advance";
+    break;
+  case Page::Alert:
+  case Page::ScreenLayout:
+    break;
+  }
+
+  // Laid out in 1080-line units: the title and text sizes, the window padding, a row with the spacing
+  // below it, and the status line under the rows.
+  constexpr float TITLE_SIZE = 30.0f;
+  constexpr float TEXT_SIZE = 24.0f;
+  constexpr float PADDING_X = 24.0f;
+  constexpr float PADDING_Y = 22.0f;
+  constexpr float ROW_STEP = 46.0f + 4.0f;
+  constexpr float FOOTER = 8.0f + TEXT_SIZE + 4.0f;
+  s_footer_height = std::round(FOOTER * scale);
   const float main_page_height =
-      ((22.0f * 2 + (25.0f + 8.0f) * 2 + (1.0f + 8.0f) * 2 + 8.0f) + MainPageRowCount() * (48.0f + 8.0f)) *
-      scale;
-  ImGui::SetNextWindowSize({880.0f * scale, std::max(760.0f * scale, main_page_height)}, ImGuiCond_Always);
+      (PADDING_Y * 2 + TITLE_SIZE + 9.0f + MainPageRowCount() * ROW_STEP + FOOTER) * scale;
+  const float height = std::min(io.DisplaySize.y - 40.0f * scale,
+                                std::max(620.0f * scale, main_page_height));
+  const float width = std::round(720.0f * scale);
+  ImGui::SetNextWindowPos({std::floor((io.DisplaySize.x - width) * 0.5f),
+                           std::floor((io.DisplaySize.y - height) * 0.5f)},
+                          ImGuiCond_Always);
+  ImGui::SetNextWindowSize({width, std::round(height)}, ImGuiCond_Always);
   ImGui::SetNextWindowBgAlpha(0.96f);
 
   ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 16.0f * scale);
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {30.0f * scale, 22.0f * scale});
-  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {10.0f * scale, 8.0f * scale});
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
+                      {std::round(PADDING_X * scale), std::round(PADDING_Y * scale)});
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {10.0f * scale, std::round(4.0f * scale)});
   ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(7, 28, 44, 248));
-  ImGui::PushStyleColor(ImGuiCol_Border, IM_COL32(71, 190, 235, 255));
-  ImGui::PushStyleColor(ImGuiCol_Header, IM_COL32(15, 89, 126, 245));
-  ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_COL32(15, 89, 126, 245));
-  ImGui::PushStyleColor(ImGuiCol_HeaderActive, IM_COL32(15, 89, 126, 245));
-  ImGui::PushFont(nullptr, 25.0f * scale);
+  ImGui::PushStyleColor(ImGuiCol_Border, IM_COL32(71, 190, 235, 150));
+  ImGui::PushStyleColor(ImGuiCol_Separator, IM_COL32(255, 255, 255, 34));
+  ImGui::PushStyleColor(ImGuiCol_Text, TEXT_COLOR);
+  ImGui::PushFont(nullptr, TEXT_SIZE * scale);
 
   constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                                      ImGuiWindowFlags_NoResize |
@@ -1727,55 +1883,22 @@ void Draw()
                                      ImGuiWindowFlags_NoInputs;
   if (ImGui::Begin("Dolphin Switch quick menu", nullptr, flags))
   {
-    switch (s_page)
+    if (!title.empty())
     {
-    case Page::Main:
-      CenteredText("Dolphin Quick Menu");
-      break;
-    case Page::SaveStates:
-      CenteredText("Save State");
-      break;
-    case Page::LoadStates:
-      CenteredText("Load State");
-      break;
-    case Page::Disc:
-    case Page::DiscBrowser:
-      CenteredText("Disc Management");
-      break;
-    case Page::Cheats:
-      CenteredText("Action Replay & Gecko Codes");
-      break;
-    case Page::Achievements:
-      CenteredText("RetroAchievements");
-      break;
-    case Page::Controllers:
-      CenteredText("Controller Modes");
-      break;
-    case Page::ControllerModes:
-      CenteredText(("Player " + std::to_string(s_controller_player + 1) + " Controller").c_str());
-      break;
-    case Page::Skylanders:
-    case Page::SkylanderFigures:
-      CenteredText("Skylanders Portal");
-      break;
-    case Page::GBA:
-      CenteredText("Game Boy Advance");
-      break;
-    case Page::Alert:
-    case Page::ScreenLayout:
-      break;
+      ImGui::PushFont(nullptr, TITLE_SIZE * scale);
+      CenteredText(title);
+      ImGui::PopFont();
+      ImGui::Separator();
     }
-    ImGui::Separator();
 
     switch (s_page)
     {
     case Page::Main:
       RenderMainPage();
-      ImGui::Separator();
-      CenteredText("D-Pad  Navigate     A  Select     B  Close");
       break;
     case Page::SaveStates:
-      RenderStatePage(true);
+    case Page::LoadStates:
+      RenderStatePage();
       break;
     case Page::Skylanders:
       RenderSkylandersPage();
@@ -1785,9 +1908,6 @@ void Draw()
       break;
     case Page::GBA:
       RenderGBAPage();
-      break;
-    case Page::LoadStates:
-      RenderStatePage(false);
       break;
     case Page::Disc:
       RenderDiscPage();
@@ -1814,16 +1934,19 @@ void Draw()
       break;
     }
 
+    // The result of the last action, on its own line at the bottom.
     if (!s_status.empty() && std::chrono::steady_clock::now() < s_status_until)
     {
-      ImGui::SetCursorPosY(18.0f * scale);
-      ImGui::SetCursorPosX(20.0f * scale);
-      ImGui::TextColored({0.55f, 0.92f, 1.0f, 1.0f}, "%s", s_status.c_str());
+      ImGui::SetCursorPosY(
+          std::floor(ImGui::GetWindowHeight() - PADDING_Y * scale - ImGui::GetTextLineHeight()));
+      ImGui::PushStyleColor(ImGuiCol_Text, ACCENT_COLOR);
+      CenteredText(FitText(s_status, ImGui::GetWindowWidth() - 2.0f * PADDING_X * scale));
+      ImGui::PopStyleColor();
     }
   }
   ImGui::End();
   ImGui::PopFont();
-  ImGui::PopStyleColor(5);
+  ImGui::PopStyleColor(4);
   ImGui::PopStyleVar(3);
 }
 }  // namespace DolphinSwitch::RuntimeOverlay
