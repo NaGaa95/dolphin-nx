@@ -227,6 +227,8 @@
   "Gyro": "陀螺儀",
   "Touchscreen": "觸控螢幕",
   "Joy-Con mouse": "Joy-Con 滑鼠",
+  "CPU Boost": "CPU 加速",
+  "Higher CPU clock, lower GPU clock": "提高 CPU 時脈，降低 GPU 時脈",
   "Trigger dead zone": "板機死區",
   "Use global mapping": "使用全域對應",
   "VBI frequency percentage": "VBI 頻率百分比",

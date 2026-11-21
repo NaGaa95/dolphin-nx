@@ -1157,6 +1157,12 @@ struct UsbInitializationState
 constexpr SDL_Color STATUS_OK_COLOR{120, 220, 120, 255};
 constexpr SDL_Color STATUS_MISSING_COLOR{235, 125, 115, 255};
 
+enum class RowIcon
+{
+  None,
+  CpuBoost,
+};
+
 struct Row
 {
   std::string label;
@@ -1170,6 +1176,12 @@ struct Row
   bool section_heading = false;
   // Shows an On or Off value as text, not as a switch: the row has other values too.
   bool plain_value = false;
+  // An On/Off setting drawn as a large switch card over this row and the next, which has card_tail set.
+  bool card = false;
+  bool card_tail = false;
+  // The card's second line and icon.
+  std::string detail;
+  RowIcon icon = RowIcon::None;
 };
 
 struct SettingHelpEntry
@@ -1224,6 +1236,12 @@ static constexpr SettingHelpEntry SETTING_HELP[] = {
      "Manages Dolphin patches, Action Replay and Gecko codes, and the game's Riivolution patch "
      "settings."},
 
+#ifdef __SWITCH2__
+    {"CPU Boost", "Console clocks",
+     "Keeps the console's CPU boost mode on for the whole game instead of only while it boots: "
+     "a higher CPU clock and a lower GPU clock. Turn it off for a game that is held back by the "
+     "GPU."},
+#endif
     {"CPU engine", "CPU emulation",
      "Selects how Dolphin executes PowerPC code. JIT ARM64 is the normal high-performance choice; "
      "the interpreters are much slower and are mainly useful for diagnosis."},
@@ -2001,6 +2019,8 @@ private:
   void DrawProgressBar(int x, int y, int width, int height, double fraction);
   void DrawRowHighlight(int x, int y, int width, int height);
   void DrawSwitch(int right_x, int center_y, int height, bool on, bool enabled);
+  void DrawToggleCard(const Row& row, int x, int y, int width, int height, bool focused);
+  void DrawCpuBoostIcon(int center_x, int center_y, int size, bool lit);
   SDL_Texture* MakeGlyph(std::string_view label, bool pill);
   SDL_Texture* ButtonGlyph(std::string_view button) const;
   SDL_Texture* MakeFlagTexture(DiscIO::Region region, int width, int height);
@@ -3027,6 +3047,91 @@ void Launcher::DrawSwitch(int right_x, int center_y, int height, bool on, bool e
   const int knob = height - inset * 2;
   RoundedRect(on ? x + width - inset - knob : x + inset, y + inset, knob, knob, knob / 2,
               enabled ? SDL_Color{245, 250, 255, 255} : SDL_Color{140, 150, 160, 255});
+}
+
+void Launcher::DrawToggleCard(const Row& row, int x, int y, int width, int height, bool focused)
+{
+  const bool on = row.value == "On";
+  if (on)
+  {
+    RoundedRect(x - 4, y - 4, width + 8, height + 8, 20,
+                SDL_Color{m_selection.r, m_selection.g, m_selection.b, 44});
+  }
+  RoundedPanel(x, y, width, height, focused ? m_focus : m_panel,
+               focused ? m_selection : SDL_Color{255, 255, 255, 24}, 16, focused ? 3 : 1);
+
+  const int icon_size = std::clamp(height - 34, 32, 104);
+  const int icon_x = x + 28;
+  if (row.icon == RowIcon::CpuBoost)
+    DrawCpuBoostIcon(icon_x + icon_size / 2, y + height / 2, icon_size, on);
+  const int text_x = row.icon == RowIcon::None ? x + 32 : icon_x + icon_size + 28;
+
+  const int switch_height = std::clamp(height * 2 / 5, 24, 40);
+  const int switch_right = x + width - 32;
+  DrawSwitch(switch_right, y + height / 2, switch_height, on, true);
+  DrawTextRight(m_font, switch_right - switch_height * 9 / 5 - 18,
+                y + (height - FontHeight(m_font)) / 2, m_localization.Translate(on ? "On" : "Off"),
+                on ? m_value : m_dim);
+
+  // The largest title and line that fit inside the border with room around them.
+  constexpr int PADDING = 10;
+  constexpr int LINE_GAP = 2;
+  TTF_Font* title_font = m_font;
+  TTF_Font* detail_font = m_font_hint;
+  for (const auto& [title, detail] : {std::pair{m_font_large, m_font_small},
+                                      std::pair{m_font, m_font_small}, std::pair{m_font, m_font_hint}})
+  {
+    const int block = FontHeight(title) + (row.detail.empty() ? 0 : LINE_GAP + FontHeight(detail));
+    if (block <= height - 2 * PADDING)
+    {
+      title_font = title;
+      detail_font = detail;
+      break;
+    }
+  }
+  const int title_height = FontHeight(title_font);
+  const int detail_height = row.detail.empty() ? 0 : LINE_GAP + FontHeight(detail_font);
+  const int title_y = y + (height - title_height - detail_height) / 2;
+  DrawText(title_font, text_x, title_y, m_localization.Translate(row.label),
+           focused ? m_value : m_text);
+  if (!row.detail.empty())
+  {
+    DrawText(detail_font, text_x, title_y + title_height + LINE_GAP,
+             m_localization.Translate(row.detail), m_dim);
+  }
+}
+
+// A chip with a lightning bolt across it.
+void Launcher::DrawCpuBoostIcon(int center_x, int center_y, int size, bool lit)
+{
+  const SDL_Color chip = lit ? m_selection : m_dim;
+  const SDL_Color bolt = lit ? SDL_Color{255, 210, 72, 255} : m_dim;
+  const int body = size * 64 / 100;
+  const int left = center_x - body / 2;
+  const int top = center_y - body / 2;
+  const int pin_length = std::max(3, size * 12 / 100);
+  const int pin_width = std::max(2, size / 16);
+  for (int pin = -1; pin <= 1; ++pin)
+  {
+    const int offset = pin * body * 28 / 100 - pin_width / 2;
+    FillRect(center_x + offset, top - pin_length, pin_width, pin_length, chip);
+    FillRect(center_x + offset, top + body, pin_width, pin_length, chip);
+    FillRect(left - pin_length, center_y + offset, pin_length, pin_width, chip);
+    FillRect(left + body, center_y + offset, pin_length, pin_width, chip);
+  }
+  RoundedPanel(left, top, body, body, m_panel, chip, std::max(3, size / 10),
+               std::max(2, size / 22));
+
+  // Two offset triangles make the bolt.
+  const float scale = body * 0.36f;
+  const auto vertex = [&](float vx, float vy) {
+    return SDL_Vertex{{center_x + vx * scale, center_y + vy * scale}, bolt, {0.0f, 0.0f}};
+  };
+  const std::array<SDL_Vertex, 6> vertices = {
+      vertex(0.22f, -1.0f),  vertex(-0.58f, 0.14f), vertex(0.10f, 0.14f),
+      vertex(-0.10f, -0.14f), vertex(0.58f, -0.14f), vertex(-0.22f, 1.0f)};
+  SDL_RenderGeometry(m_renderer, nullptr, vertices.data(), static_cast<int>(vertices.size()),
+                     nullptr, 0);
 }
 
 SDL_Texture* Launcher::MakeGlyph(std::string_view label, bool pill)
@@ -6553,7 +6658,7 @@ int Launcher::RunRows(std::string_view title, std::string_view context,
       {
         if (touch_y < TopBarHeight() || touch_y >= m_height - 40)
           return finish(-1);
-        const int index = top + (touch_y - list_top) / row_height;
+        int index = top + (touch_y - list_top) / row_height;
         const int column_width = std::min(980, m_width - 180);
         const int column_x = (m_width - column_width) / 2;
         // Only taps on the visible rows count.
@@ -6561,10 +6666,13 @@ int Launcher::RunRows(std::string_view title, std::string_view context,
             touch_y < list_top + visible * row_height && index >= 0 &&
             index < static_cast<int>(rows.size()))
         {
+          if (rows[index].card_tail && index > 0)
+            --index;
           if (rows[index].section_heading)
             continue;
           selection = index;
-          if ((touch_activates_full_row || touch_x >= column_x + column_width / 2) &&
+          if ((touch_activates_full_row || rows[index].card ||
+               touch_x >= column_x + column_width / 2) &&
               rows[index].enabled && action(index, 0))
             return finish(index);
         }
@@ -6660,6 +6768,9 @@ int Launcher::RunRows(std::string_view title, std::string_view context,
       top = selection;
     if (selection >= top + visible)
       top = selection - visible + 1;
+    // A card's lower half never starts the list: the card shows whole or not at all.
+    if (top < static_cast<int>(rows.size()) && rows[top].card_tail)
+      top += selection < top - 1 + visible ? -1 : 1;
 
     ClearBackground();
     DrawHeader(title, context);
@@ -6668,29 +6779,41 @@ int Launcher::RunRows(std::string_view title, std::string_view context,
     const int label_x = column_x + 40;
     const int value_x = column_x + column_width - 40;
     const int last_visible = std::min(top + visible, static_cast<int>(rows.size()));
+    const auto breaks_panel = [&](int index) {
+      return rows[index].section_heading || rows[index].card;
+    };
     for (int first = top; first < last_visible;)
     {
-      if (rows[first].section_heading)
+      if (breaks_panel(first))
       {
         ++first;
         continue;
       }
       int end = first + 1;
-      while (end < last_visible && !rows[end].section_heading)
+      while (end < last_visible && !breaks_panel(end))
         ++end;
       GlassPanel(column_x - 12, list_top + (first - top) * row_height - 10, column_width + 24,
                  (end - first) * row_height + 18);
       first = end;
     }
     const float target_y = static_cast<float>(list_top + (selection - top) * row_height + 1);
-    m_highlight_y = (!m_animations || m_highlight_y < 0.0f) ?
+    m_highlight_y = (!m_animations || m_highlight_y < 0.0f || rows[selection].card) ?
                         target_y :
                         m_highlight_y + (target_y - m_highlight_y) * 0.30f;
-    DrawRowHighlight(column_x, static_cast<int>(m_highlight_y), column_width, row_height - 2);
+    if (!rows[selection].card)
+      DrawRowHighlight(column_x, static_cast<int>(m_highlight_y), column_width, row_height - 2);
     for (int row = 0; row < visible && top + row < static_cast<int>(rows.size()); ++row)
     {
       const int index = top + row;
       const int slot_y = list_top + row * row_height;
+      if (rows[index].card_tail)
+        continue;
+      if (rows[index].card && row + 1 < visible)
+      {
+        DrawToggleCard(rows[index], column_x - 12, slot_y - 6, column_width + 24,
+                       row_height * 2 - 12, index == selection);
+        continue;
+      }
       if (rows[index].section_heading)
       {
         DrawSectionHeading(rows[index].label, column_x,
@@ -7953,6 +8076,12 @@ void Launcher::EmulationSettings(bool per_game, Game* game)
       return std::string(global ? "On" : "Off");
     return PerGameBoolLabel(*game, "Core", key, global);
   };
+#ifdef __SWITCH2__
+  // The CPU Boost switch card heads the global page, over two rows.
+  const int card_rows = per_game ? 0 : 2;
+#else
+  constexpr int card_rows = 0;
+#endif
 
   RunRows(
       per_game ? "Game emulation settings" : "Emulation", game ? game->title : std::string{},
@@ -7979,18 +8108,47 @@ void Launcher::EmulationSettings(bool per_game, Game* game)
             if (std::abs(parsed - SPEED_VALUES[index]) < 0.01f)
               speed_label = SPEED_LABELS[index];
         }
-        return std::vector<Row>{
-            {"CPU engine", cpu_label, !per_game || (game && !game->game_id.empty())},
-            {"Dual Core", bool_label("CPUThread", Config::Get(Config::MAIN_CPU_THREAD))},
-            {"Enable cheats", bool_label("EnableCheats", Config::Get(Config::MAIN_ENABLE_CHEATS))},
-            {"Fast disc speed",
-             bool_label("FastDiscSpeed", Config::Get(Config::MAIN_FAST_DISC_SPEED))},
-            {"MMU emulation", bool_label("MMU", Config::Get(Config::MAIN_MMU))},
-            {"Emulation speed", speed_label},
-            {"Advanced CPU & timing", ">", true, false, false},
-        };
+        std::vector<Row> rows;
+#ifdef __SWITCH2__
+        if (card_rows != 0)
+        {
+          Row boost{"CPU Boost", Config::Get(Config::MAIN_SWITCH_KEEP_CPU_BOOST) ? "On" : "Off"};
+          boost.card = true;
+          boost.detail = "Higher CPU clock, lower GPU clock";
+          boost.icon = RowIcon::CpuBoost;
+          rows.push_back(std::move(boost));
+          Row tail{"", "", false, false, false};
+          tail.section_heading = true;
+          tail.card_tail = true;
+          rows.push_back(std::move(tail));
+        }
+#endif
+        rows.insert(
+            rows.end(),
+            {
+                {"CPU engine", cpu_label, !per_game || (game && !game->game_id.empty())},
+                {"Dual Core", bool_label("CPUThread", Config::Get(Config::MAIN_CPU_THREAD))},
+                {"Enable cheats",
+                 bool_label("EnableCheats", Config::Get(Config::MAIN_ENABLE_CHEATS))},
+                {"Fast disc speed",
+                 bool_label("FastDiscSpeed", Config::Get(Config::MAIN_FAST_DISC_SPEED))},
+                {"MMU emulation", bool_label("MMU", Config::Get(Config::MAIN_MMU))},
+                {"Emulation speed", speed_label},
+                {"Advanced CPU & timing", ">", true, false, false},
+            });
+        return rows;
       },
       [&](int index, int delta) {
+#ifdef __SWITCH2__
+        if (card_rows != 0 && index == 0)
+        {
+          Config::SetBase(Config::MAIN_SWITCH_KEEP_CPU_BOOST,
+                          !Config::Get(Config::MAIN_SWITCH_KEEP_CPU_BOOST));
+          MarkConfigDirty();
+          return false;
+        }
+#endif
+        index -= card_rows;
         if (index == 0)
         {
           const int global = global_cpu_index();
@@ -8082,6 +8240,14 @@ void Launcher::EmulationSettings(bool per_game, Game* game)
       },
       false,
       [&](int index) {
+#ifdef __SWITCH2__
+        if (card_rows != 0 && index == 0)
+        {
+          ResetConfigSetting(Config::MAIN_SWITCH_KEEP_CPU_BOOST);
+          return true;
+        }
+#endif
+        index -= card_rows;
         static constexpr std::array<std::string_view, 6> keys = {
             "CPUCore", "CPUThread", "EnableCheats", "FastDiscSpeed", "MMU", "EmulationSpeed"};
         if (index < 0 || index >= static_cast<int>(keys.size()))

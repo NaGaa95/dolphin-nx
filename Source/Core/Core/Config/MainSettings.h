@@ -126,6 +126,8 @@ extern const Info<bool> MAIN_SWITCH_TOUCHSCREEN_CLICK;
 #ifdef __SWITCH2__
 // The Joy-Con mouse aims the Wii pointer (it takes precedence over the touchscreen pointer).
 extern const Info<bool> MAIN_SWITCH_JOYCON_MOUSE_POINTER;
+// The boot's CPU boost (faster CPU, slower GPU) stays on for the whole game.
+extern const Info<bool> MAIN_SWITCH_KEEP_CPU_BOOST;
 #endif
 enum class GBAScreens
 {

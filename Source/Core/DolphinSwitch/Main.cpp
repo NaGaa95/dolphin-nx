@@ -1386,11 +1386,17 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
   std::optional<std::uint64_t> pause_after_render_generation;
   std::uint64_t handled_operation_mode_generation =
       s_operation_mode_generation.load(std::memory_order_acquire);
+#ifdef __SWITCH2__
+  // Keeps the boot's CPU boost (FastLoad: faster CPU, slower GPU) for the whole session.
+  const bool keep_cpu_boost = Config::Get(Config::MAIN_SWITCH_KEEP_CPU_BOOST);
+#else
+  constexpr bool keep_cpu_boost = false;
+#endif
   while (s_session_running.load(std::memory_order_acquire) && (applet_alive = appletMainLoop()))
   {
     Core::HostDispatchJobs(system);
 
-    if (boot_boost && ever_running.load(std::memory_order_acquire))
+    if (boot_boost && !keep_cpu_boost && ever_running.load(std::memory_order_acquire))
     {
       const std::uint64_t frames = DolphinSwitch::RuntimeOverlay::GetRenderFrameGeneration();
       if (!frames_when_running)
