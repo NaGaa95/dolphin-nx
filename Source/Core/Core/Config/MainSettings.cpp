@@ -224,8 +224,9 @@ const Info<bool> MAIN_WIIMOTE_ENABLE_SPEAKER{{System::Main, "Core", "WiimoteEnab
 const Info<bool> MAIN_CONNECT_WIIMOTES_FOR_CONTROLLER_INTERFACE{
     {System::Main, "Core", "WiimoteControllerInterface"}, false};
 #ifdef __SWITCH__
+// The touchscreen pointer replaces the gyro one, so the gyro aims by default.
 const Info<bool> MAIN_SWITCH_TOUCHSCREEN_POINTER{
-    {System::Main, "Core", "SwitchTouchscreenPointer"}, true};
+    {System::Main, "Core", "SwitchTouchscreenPointer"}, false};
 const Info<bool> MAIN_SWITCH_TOUCHSCREEN_CLICK{{System::Main, "Core", "SwitchTouchscreenClick"},
                                                true};
 #ifdef __SWITCH2__

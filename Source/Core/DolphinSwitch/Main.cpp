@@ -541,8 +541,10 @@ std::optional<ControllerEmu::Cursor::StateData> GetWiiPointerStickState()
 constexpr std::uint64_t TOUCH_POINTER_ACTIVE = 1ULL << 63;
 constexpr std::uint64_t TOUCH_POINTER_CLICK = 1ULL << 62;
 constexpr std::uint64_t TOUCH_POINTER_CALIBRATING = 1ULL << 61;
-// Set while a touch aims the pointer: the gyro is ignored and recentered on the touched spot.
-constexpr std::uint64_t TOUCH_POINTER_AIMING = 1ULL << 60;
+#ifdef __SWITCH2__
+// Set while the Joy-Con mouse aims: its motion sensors are ignored.
+constexpr std::uint64_t TOUCH_POINTER_MOUSE = 1ULL << 60;
+#endif
 
 // Maps a touch on the game image to the IR cursor: cursor = scale * touch + offset, per axis.
 struct TouchMapping
@@ -764,8 +766,7 @@ void UpdateWiiTouchPointerState(bool enabled, bool click_enabled, const TouchMap
     pointer.released.reset();
     pointer.held_stick.reset();
     pointer.position = *position;
-    s_wii_touch_pointer_state.store(TOUCH_POINTER_ACTIVE | TOUCH_POINTER_AIMING | *position,
-                                    std::memory_order_release);
+    s_wii_touch_pointer_state.store(TOUCH_POINTER_ACTIVE | *position, std::memory_order_release);
     return;
   }
 
@@ -780,8 +781,8 @@ void UpdateWiiTouchPointerState(bool enabled, bool click_enabled, const TouchMap
     if (click_enabled && now - *pointer.released < CLICK_END)
     {
       const bool click = now - *pointer.released >= CLICK_START;
-      s_wii_touch_pointer_state.store(TOUCH_POINTER_ACTIVE | TOUCH_POINTER_AIMING |
-                                          pointer.position | (click ? TOUCH_POINTER_CLICK : 0),
+      s_wii_touch_pointer_state.store(TOUCH_POINTER_ACTIVE | pointer.position |
+                                          (click ? TOUCH_POINTER_CLICK : 0),
                                       std::memory_order_release);
       return;
     }
@@ -802,19 +803,13 @@ void UpdateWiiTouchPointerState(bool enabled, bool click_enabled, const TouchMap
 }
 
 #ifdef __SWITCH2__
-// The Joy-Con mouse aims the pointer like a touch that is never lifted: the gyro is ignored and
-// recentered on it, and the stick does not move it. It aims while it moved on a surface in the
-// last 2 s (bit 1 of the flags: a Joy-Con in hand still reports, with it clear); otherwise the
-// pointer is the gyro and the stick's, from where the mouse left it.
+// While a Joy-Con mouse reports, it holds the pointer where it last moved it, like a touch that is
+// never lifted: the stick does not move it. With none reporting (Joy-Cons attached), the stick
+// aims. The gyro never does in this mode.
 void UpdateWiiMousePointerState(bool enabled, const TouchMapping& mapping)
 {
-  static u64 s_last_sample = 0;
-  static u64 s_moved_tick = 0;
-  static s32 s_last_x = 0;
-  static s32 s_last_y = 0;
   if (!enabled || !g_presenter)
   {
-    s_last_sample = s_moved_tick = 0;
     ResetWiiTouchPointerState();
     return;
   }
@@ -830,24 +825,10 @@ void UpdateWiiMousePointerState(bool enabled, const TouchMapping& mapping)
     ResetWiiTouchPointerState();
     return;
   }
-  if (state.sampling_number != s_last_sample)
-  {
-    if (s_last_sample != 0 && (state.flags & 2) && (state.x != s_last_x || state.y != s_last_y))
-      s_moved_tick = armGetSystemTick();
-    s_last_sample = state.sampling_number;
-    s_last_x = state.x;
-    s_last_y = state.y;
-  }
-  constexpr u64 IN_USE_NS = 2'000'000'000ULL;
-  if (s_moved_tick == 0 || armTicksToNs(armGetSystemTick() - s_moved_tick) >= IN_USE_NS)
-  {
-    ResetWiiTouchPointerState();
-    return;
-  }
   if (const std::optional<std::uint64_t> position =
           GetWiiPointerPosition(mapping, state.x, state.y, true))
   {
-    s_wii_touch_pointer_state.store(TOUCH_POINTER_ACTIVE | TOUCH_POINTER_AIMING | *position,
+    s_wii_touch_pointer_state.store(TOUCH_POINTER_ACTIVE | TOUCH_POINTER_MOUSE | *position,
                                     std::memory_order_release);
   }
 }
@@ -862,18 +843,37 @@ bool InstallWiiTouchPointerOverride()
   const auto state_lock = ControllerEmu::EmulatedController::GetStateLock();
   wiimote->SetInputOverrideFunction([](std::string_view group_name, std::string_view control_name,
                                        ControlState) -> std::optional<ControlState> {
-    const std::uint64_t packed = s_wii_touch_pointer_state.load(std::memory_order_acquire);
-    if ((packed & TOUCH_POINTER_CALIBRATING) != 0)
+    // The touchscreen and the Joy-Con mouse replace the gyro pointer.
+    if (group_name == WiimoteEmu::Wiimote::IR_GROUP &&
+        control_name == WiimoteEmu::Wiimote::GYRO_BYPASS_OVERRIDE)
     {
-      if (group_name == WiimoteEmu::Wiimote::IR_GROUP &&
-          control_name == WiimoteEmu::Wiimote::GYRO_BYPASS_OVERRIDE)
+      return 1.0;
+    }
+    const std::uint64_t packed = s_wii_touch_pointer_state.load(std::memory_order_acquire);
+    if ((packed & TOUCH_POINTER_CALIBRATING) != 0 || (packed & TOUCH_POINTER_ACTIVE) == 0 ||
+        Host_UIBlocksControllerState())
+    {
+      return std::nullopt;
+    }
+
+#ifdef __SWITCH2__
+    // A Joy-Con set down on its side as a mouse would read as a rolled Wii Remote, and turning it
+    // as a moving one: report the remote level and still.
+    if ((packed & TOUCH_POINTER_MOUSE) != 0 &&
+        (group_name == WiimoteEmu::Wiimote::ACCELEROMETER_GROUP ||
+         group_name == WiimoteEmu::Wiimote::GYROSCOPE_GROUP))
+    {
+      const bool gravity = group_name == WiimoteEmu::Wiimote::ACCELEROMETER_GROUP &&
+                           control_name == ControllerEmu::ReshapableInput::Z_INPUT_OVERRIDE;
+      if (control_name == ControllerEmu::ReshapableInput::X_INPUT_OVERRIDE ||
+          control_name == ControllerEmu::ReshapableInput::Y_INPUT_OVERRIDE ||
+          control_name == ControllerEmu::ReshapableInput::Z_INPUT_OVERRIDE)
       {
-        return 1.0;
+        return gravity ? MathUtil::GRAVITY_ACCELERATION : 0.0;
       }
       return std::nullopt;
     }
-    if ((packed & TOUCH_POINTER_ACTIVE) == 0 || Host_UIBlocksControllerState())
-      return std::nullopt;
+#endif
 
     if (group_name == WiimoteEmu::Wiimote::BUTTONS_GROUP)
     {
@@ -883,12 +883,6 @@ bool InstallWiiTouchPointerOverride()
     }
     if (group_name != WiimoteEmu::Wiimote::IR_GROUP)
       return std::nullopt;
-    if (control_name == WiimoteEmu::Wiimote::GYRO_BYPASS_OVERRIDE)
-    {
-      if ((packed & TOUCH_POINTER_AIMING) != 0)
-        return 1.0;
-      return std::nullopt;
-    }
 
     const auto decode = [](std::uint16_t value) {
       return static_cast<ControlState>(value) / 32767.5 - 1.0;

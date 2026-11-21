@@ -878,17 +878,6 @@ void Wiimote::StepDynamics()
   EmulateShake(&m_shake_state, m_shake, 1.f / ::Wiimote::UPDATE_FREQ);
   EmulateIMUCursor(&m_imu_cursor_state, m_imu_ir, m_imu_accelerometer, m_imu_gyroscope,
                    1.f / ::Wiimote::UPDATE_FREQ);
-#ifdef __SWITCH__
-  // While the touchscreen aims the pointer, recenter the gyro so it carries on from that spot.
-  if (m_input_override_function &&
-      m_input_override_function(IR_GROUP, GYRO_BYPASS_OVERRIDE, 0.0) &&
-      m_input_override_function(IR_GROUP, ControllerEmu::ReshapableInput::X_INPUT_OVERRIDE, 0.0))
-  {
-    m_imu_cursor_state.recentered_pitch = GetPitch(m_imu_cursor_state.rotation);
-    m_imu_cursor_state.rotation *=
-        Common::Quaternion::RotateZ(-GetYaw(m_imu_cursor_state.rotation));
-  }
-#endif
 }
 
 Common::Vec3 Wiimote::GetAcceleration(Common::Vec3 extra_acceleration) const
@@ -1013,7 +1002,7 @@ Common::Vec3 Wiimote::GetTotalAngularVelocity() const
 Common::Matrix44 Wiimote::GetTotalTransformation() const
 {
 #ifdef __SWITCH__
-  // Touch aiming and touch calibration replace the gyro pointer.
+  // The touchscreen and Joy-Con mouse pointers replace the gyro pointer.
   if (m_input_override_function && m_input_override_function(IR_GROUP, GYRO_BYPASS_OVERRIDE, 0.0))
     return GetTransformation();
 #endif
