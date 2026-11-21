@@ -1168,6 +1168,8 @@ struct Row
   bool localize_value = true;
   std::optional<SDL_Color> value_color;
   bool section_heading = false;
+  // Shows an On or Off value as text, not as a switch: the row has other values too.
+  bool plain_value = false;
 };
 
 struct SettingHelpEntry
@@ -1998,6 +2000,7 @@ private:
   void DrawButtonPanel(int x, int y, int width, int height, bool selected);
   void DrawProgressBar(int x, int y, int width, int height, double fraction);
   void DrawRowHighlight(int x, int y, int width, int height);
+  void DrawSwitch(int right_x, int center_y, int height, bool on, bool enabled);
   SDL_Texture* MakeGlyph(std::string_view label, bool pill);
   SDL_Texture* ButtonGlyph(std::string_view button) const;
   SDL_Texture* MakeFlagTexture(DiscIO::Region region, int width, int height);
@@ -2033,7 +2036,7 @@ private:
   void DrawSettingsRowText(std::string_view label, std::string_view value, int slot_y,
                            int column_width, int label_x, int value_x, bool current,
                            SDL_Color label_color, SDL_Color value_color, bool scroll_value = false,
-                           int row_height = 0);
+                           int row_height = 0, bool value_switch = true);
   GameDetailLayout ComputeGameDetailLayout() const;
   void DrawArtworkPreview(SDL_Texture* texture, const SDL_Rect& rect, bool selected = false,
                           std::string_view placeholder = "NO COVER");
@@ -3010,6 +3013,22 @@ void Launcher::DrawRowHighlight(int x, int y, int width, int height)
   FillRect(x, y + height / 5, 3, height * 3 / 5, m_selection);
 }
 
+// An On/Off switch: a pill, accent-filled when on, with its knob on the active side.
+void Launcher::DrawSwitch(int right_x, int center_y, int height, bool on, bool enabled)
+{
+  const int width = height * 9 / 5;
+  const int x = right_x - width;
+  const int y = center_y - height / 2;
+  const SDL_Color track = !enabled ? SDL_Color{44, 52, 62, 255} :
+                          on       ? m_selection :
+                                     SDL_Color{58, 68, 82, 255};
+  RoundedRect(x, y, width, height, height / 2, track);
+  const int inset = std::max(2, height / 8);
+  const int knob = height - inset * 2;
+  RoundedRect(on ? x + width - inset - knob : x + inset, y + inset, knob, knob, knob / 2,
+              enabled ? SDL_Color{245, 250, 255, 255} : SDL_Color{140, 150, 160, 255});
+}
+
 SDL_Texture* Launcher::MakeGlyph(std::string_view label, bool pill)
 {
   if (!m_font_small || !m_font_large)
@@ -3770,7 +3789,7 @@ int Launcher::SettingsFooterReserve() const
 void Launcher::DrawSettingsRowText(std::string_view label, std::string_view value, int slot_y,
                                    int column_width, int label_x, int value_x, bool current,
                                    SDL_Color label_color, SDL_Color value_color, bool scroll_value,
-                                   int row_height)
+                                   int row_height, bool value_switch)
 {
   const int actual_row_height = row_height > 0 ? row_height : SettingsRowHeight();
   if (!current)
@@ -3779,8 +3798,13 @@ void Launcher::DrawSettingsRowText(std::string_view label, std::string_view valu
              SDL_Color{255, 255, 255, 10});
   }
   const bool submenu = value == ">";
-  const int value_width =
-      submenu ? 16 : std::min(TextWidth(m_font_small, value), column_width / 2 - 32);
+  // An On or Off value is drawn as a switch.
+  const bool on = value == m_localization.Translate("On");
+  const bool toggle = value_switch && (on || value == m_localization.Translate("Off"));
+  const int switch_height = std::min(22, actual_row_height - 12);
+  const int value_width = submenu ? 16 :
+                          toggle  ? switch_height * 9 / 5 :
+                                    std::min(TextWidth(m_font_small, value), column_width / 2 - 32);
   const int label_width = std::max(40, value_x - label_x - value_width - 24);
   const int y = slot_y + (actual_row_height - FontHeight(m_font)) / 2;
   if (current)
@@ -3793,6 +3817,14 @@ void Launcher::DrawSettingsRowText(std::string_view label, std::string_view valu
     SDL_SetRenderDrawColor(m_renderer, value_color.r, value_color.g, value_color.b, value_color.a);
     SDL_RenderDrawLine(m_renderer, value_x - 10, center_y - 6, value_x - 4, center_y);
     SDL_RenderDrawLine(m_renderer, value_x - 4, center_y, value_x - 10, center_y + 6);
+    return;
+  }
+  if (toggle)
+  {
+    // (callers dim the label of a disabled row)
+    const bool enabled =
+        label_color.r != m_dim.r || label_color.g != m_dim.g || label_color.b != m_dim.b;
+    DrawSwitch(value_x, slot_y + actual_row_height / 2, switch_height, on, enabled);
     return;
   }
   const int value_y = slot_y + (actual_row_height - FontHeight(m_font_small)) / 2;
@@ -6681,7 +6713,8 @@ int Launcher::RunRows(std::string_view title, std::string_view context,
                                                    m_localization.Translate(rows[index].value) :
                                                    std::string_view(rows[index].value);
       DrawSettingsRowText(localized_label, displayed_value, slot_y, column_width, label_x, value_x,
-                          current, label_color, value_color, false, row_height);
+                          current, label_color, value_color, false, row_height,
+                          !rows[index].plain_value);
     }
     if (static_cast<int>(rows.size()) > visible)
     {
@@ -9138,8 +9171,10 @@ void Launcher::GraphicsEnhancementsSettings(bool per_game, Game* game)
              choice_label("Video_Enhancements", "OutputResampling", global_resampling,
                           RESAMPLING_LABELS),
              g_backend_info.bSupportsPostProcessing},
-            {"Post-processing effect", (shader_label.empty() ? std::string("Off") : shader_label),
-             g_backend_info.bSupportsPostProcessing},
+            {.label = "Post-processing effect",
+             .value = shader_label.empty() ? std::string("Off") : shader_label,
+             .enabled = g_backend_info.bSupportsPostProcessing,
+             .plain_value = true},
             {"Scaled EFB copy", bool_label("Video_Hacks", "EFBScaledCopy",
                                            Config::Get(Config::GFX_HACK_COPY_EFB_SCALED))},
             {"Per-pixel lighting", bool_label("Video_Settings", "EnablePixelLighting",
@@ -9192,9 +9227,11 @@ void Launcher::GraphicsEnhancementsSettings(bool per_game, Game* game)
                             " nits",
                         g_backend_info.bSupportsHDROutput && hdr_enabled});
         rows.push_back(
-            {"Stereoscopic 3D mode",
-             choice_label("Video_Stereoscopy", "StereoMode", global_stereo, STEREO_MODE_LABELS),
-             g_backend_info.bSupportsGeometryShaders});
+            {.label = "Stereoscopic 3D mode",
+             .value = choice_label("Video_Stereoscopy", "StereoMode", global_stereo,
+                                   STEREO_MODE_LABELS),
+             .enabled = g_backend_info.bSupportsGeometryShaders,
+             .plain_value = true});
         rows.push_back({"Stereoscopic depth",
                         float_label("Video_Stereoscopy", "StereoDepth",
                                     Config::Get(Config::GFX_STEREO_DEPTH), 1),
@@ -11623,7 +11660,9 @@ void Launcher::WiiMotionSettings(int port, bool per_game, Game* game)
         const int total_yaw = std::clamp(read_int("IMUIR/Total Yaw", 70), 10, 180);
         const int sensitivity = std::clamp(7000 / total_yaw, 40, 200);
         return std::vector<Row>{
-            {"Motion controls", sensors_enabled() ? "Sensors" : "Off"},
+            {.label = "Motion controls",
+             .value = sensors_enabled() ? "Sensors" : "Off",
+             .plain_value = true},
             {"Sideways Wii Remote", read_bool("Options/Sideways Wiimote", false) ? "On" : "Off"},
             {"Upright Wii Remote", read_bool("Options/Upright Wiimote", false) ? "On" : "Off"},
             {"Attach MotionPlus", read_bool("Extension/Attach MotionPlus", true) ? "On" : "Off"},
@@ -18088,9 +18127,10 @@ void Launcher::SettingsRoot()
                                       Config::Get(Config::RA_ENABLED);
       const std::string_view displayed_value =
           value_is_user_text ? std::string_view(value) : m_localization.Translate(value);
+      // (summaries: RetroAchievements reads Off next to a user name or Not signed in)
       DrawSettingsRowText(m_localization.Translate(labels[index]), displayed_value, slot,
                           column_width, label_x, value_x, current, current ? m_value : m_text,
-                          current ? m_value : m_dim, false, row_height);
+                          current ? m_value : m_dim, false, row_height, false);
     }
     DrawSettingsFooter("A  Choose       X  Info       B  Back");
     DrawFadeIn();
