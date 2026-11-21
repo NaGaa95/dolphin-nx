@@ -38,6 +38,10 @@
 #include <imgui.h>
 #ifndef __SWITCH__
 #include <implot.h>
+#else
+#include <climits>
+
+#include <switch.h>
 #endif
 
 namespace VideoCommon
@@ -102,17 +106,43 @@ bool OnScreenUI::Initialize(u32 width, u32 height, float scale)
   std::string file = File::GetUserPath(D_LOAD_IDX) + "OSD_Font.ttf";
 
   bool font_exists = File::Exists(file);
-  if (!font_exists)
+  bool font_loaded = false;
+#ifdef __SWITCH__
+  // Glyphs rasterized at the size they are drawn and placed on whole pixels, so the text stays sharp
+  // under the point sampler (the default 2x horizontal oversampling dropped every other column).
+  ImFontConfig font_config;
+  font_config.OversampleH = 1;
+  font_config.OversampleV = 1;
+  font_config.PixelSnapH = true;
+  const ImFontConfig* const config = &font_config;
+  // Without a user font, the console's own UI font, which the launcher draws with too. Its memory
+  // stays mapped while the pl service is open, and the service is never closed here.
+  PlFontData shared_font{};
+  if (!font_exists && R_SUCCEEDED(plInitialize(PlServiceType_User)) &&
+      R_SUCCEEDED(plGetSharedFontByType(&shared_font, PlSharedFontType_Standard)) &&
+      shared_font.address && shared_font.size > 0 && shared_font.size <= INT_MAX)
+  {
+    font_config.FontDataOwnedByAtlas = false;
+    io.Fonts->Clear();
+    io.Fonts->AddFontFromMemoryTTF(shared_font.address, static_cast<int>(shared_font.size), 0.0f,
+                                   &font_config);
+    font_config.FontDataOwnedByAtlas = true;
+    font_loaded = true;
+  }
+#else
+  const ImFontConfig* const config = nullptr;
+#endif
+  if (!font_loaded && !font_exists)
   {
     // Default supplied font
     file = File::GetSysDirectory() + DIR_SEP + RESOURCES_DIR + DIR_SEP + "OSD_Font.ttf";
     font_exists = File::Exists(file);
   }
 
-  if (font_exists)
+  if (!font_loaded && font_exists)
   {
     io.Fonts->Clear();
-    io.Fonts->AddFontFromFileTTF(file.c_str());
+    io.Fonts->AddFontFromFileTTF(file.c_str(), 0.0f, config);
   }
 
   // Setup new font management behavior
