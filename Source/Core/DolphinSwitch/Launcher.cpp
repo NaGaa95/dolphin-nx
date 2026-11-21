@@ -2096,6 +2096,19 @@ private:
   bool RestoreRiivolutionProfile(Game& game);
   int Dropdown(std::string_view title, const std::vector<std::string>& choices, int current,
                bool localize_title = true, bool localize_choices = true);
+  int DropdownFromRow(const std::vector<std::string>& choices, int current, bool localize_choices);
+  // The next choice list drops down from row, over the page draw_page draws, instead of filling the
+  // screen.
+  void SetDropdownAnchor(const SDL_Rect& row, std::function<void()> draw_page)
+  {
+    m_dropdown_anchor = row;
+    m_dropdown_background = std::move(draw_page);
+  }
+  void ClearDropdownAnchor()
+  {
+    m_dropdown_anchor.reset();
+    m_dropdown_background = {};
+  }
   int SelectChoice(std::string_view title, std::span<const std::string_view> choices, int current,
                    int delta);
   bool PromptText(std::string_view header, std::string_view initial, std::string* output,
@@ -2228,7 +2241,8 @@ private:
   void PerGameMenu(Game* game, bool* launch, bool* rescan);
   void CoverSettings(Game* game);
   void ImportCoverFromFile(Game* game);
-  void DownloadCover(Game* game);
+  void DownloadCover(Game* game, const std::function<void()>& draw_page = {},
+                     const SDL_Rect& anchor = {});
   int ChooseCoverArtwork(const std::vector<CoverDownload::Artwork>& artwork,
                          std::string_view game_name, bool background = false);
 
@@ -2370,6 +2384,11 @@ private:
   Uint32 m_usb_refresh_at = 0;
   Uint32 m_screen_fx_start = 0;
   float m_highlight_y = -1.0f;
+  // Set while a settings row's action runs, or just before an item's menu opens: where the row or
+  // item is and how to draw its page, so a choice list drops down from it instead of filling the
+  // screen (SetDropdownAnchor).
+  std::optional<SDL_Rect> m_dropdown_anchor;
+  std::function<void()> m_dropdown_background;
   float m_last_frame_highlight_y = -1.0f;
   Uint32 m_next_frame_deadline = 0;
   Uint32 m_frame_interval = 0;
@@ -6491,7 +6510,12 @@ int Launcher::Dropdown(std::string_view title, const std::vector<std::string>& c
                        bool localize_title, bool localize_choices)
 {
   if (choices.empty())
+  {
+    ClearDropdownAnchor();
     return -1;
+  }
+  if (m_dropdown_anchor && m_dropdown_background)
+    return DropdownFromRow(choices, current, localize_choices);
   const int count = static_cast<int>(choices.size());
   int selection = std::clamp(current, 0, count - 1);
   int top = 0;
@@ -6592,6 +6616,122 @@ int Launcher::Dropdown(std::string_view title, const std::vector<std::string>& c
   return current;
 }
 
+// A choice list that drops down from the item that opened it (or opens upward near the bottom of
+// the screen), over that item's page. Returns the chosen index, or current when cancelled; a
+// current outside the list (an action menu's -1) marks no item.
+int Launcher::DropdownFromRow(const std::vector<std::string>& choices, int current,
+                              bool localize_choices)
+{
+  const SDL_Rect row = *m_dropdown_anchor;
+  const std::function<void()> draw_page = std::move(m_dropdown_background);
+  ClearDropdownAnchor();
+
+  const int count = static_cast<int>(choices.size());
+  int selection = std::clamp(current, 0, count - 1);
+  const auto label = [&](int index) {
+    return localize_choices ? m_localization.Translate(choices[index]) :
+                              std::string_view(choices[index]);
+  };
+
+  constexpr int ITEM_HEIGHT = 40;
+  constexpr int PADDING = 8;
+  constexpr int TEXT_INSET = 20;
+  constexpr int MARK_SPACE = 28;
+  constexpr int MAX_VISIBLE = 8;
+  int widest = 0;
+  for (int index = 0; index < count; ++index)
+    widest = std::max(widest, TextWidth(m_font, label(index)));
+  const int width =
+      std::clamp(widest + TEXT_INSET * 2 + MARK_SPACE, 220, std::max(220, row.w / 2));
+  const int x = row.x + row.w - width;
+  const int space_below = m_height - SettingsFooterReserve() - (row.y + row.h) - 4;
+  const int space_above = row.y - TopBarHeight() - 4;
+  const int wanted = std::min(count, MAX_VISIBLE) * ITEM_HEIGHT + 2 * PADDING;
+  const bool below = space_below >= wanted || space_below >= space_above;
+  const int visible =
+      std::clamp(((below ? space_below : space_above) - 2 * PADDING) / ITEM_HEIGHT, 1,
+                 std::min(count, MAX_VISIBLE));
+  const int height = visible * ITEM_HEIGHT + 2 * PADDING;
+  const int y = below ? row.y + row.h + 2 : row.y - height - 2;
+  int top = std::clamp(selection - visible / 2, 0, std::max(0, count - visible));
+
+  while (BeginFrame())
+  {
+    SDL_Event event{};
+    while (PollEvent(&event))
+    {
+      int touch_x = 0;
+      int touch_y = 0;
+      const TouchKind touch = FeedTouch(event, &touch_x, &touch_y);
+      if (TouchScrollList(touch, &selection, &top, count, visible))
+        continue;
+      if (touch == TouchKind::Tap)
+      {
+        // A tap outside the list closes it.
+        if (touch_x < x || touch_x >= x + width || touch_y < y + PADDING ||
+            touch_y >= y + height - PADDING)
+          return current;
+        return std::min(count - 1, top + (touch_y - y - PADDING) / ITEM_HEIGHT);
+      }
+      const int direction = EventNavigation(event);
+      if (direction)
+        selection = (selection + direction + count) % count;
+      if (event.type == SDL_CONTROLLERBUTTONDOWN)
+      {
+        if (event.cbutton.button == BUTTON_CONFIRM)
+          return selection;
+        if (event.cbutton.button == BUTTON_CANCEL)
+          return current;
+      }
+      else if (event.type == SDL_KEYDOWN)
+      {
+        if (event.key.keysym.sym == SDLK_RETURN)
+          return selection;
+        if (event.key.keysym.sym == SDLK_ESCAPE)
+          return current;
+      }
+      if (selection < top)
+        top = selection;
+      if (selection >= top + visible)
+        top = selection - visible + 1;
+    }
+
+    draw_page();
+    FillRect(0, 0, m_width, m_height, SDL_Color{0, 0, 0, 70});
+    RoundedRect(x + 3, y + 6, width, height, 14, SDL_Color{0, 0, 0, 110});
+    RoundedPanel(x, y, width, height, m_panel, m_selection, 14, 2);
+    for (int item = 0; item < visible && top + item < count; ++item)
+    {
+      const int index = top + item;
+      const int item_y = y + PADDING + item * ITEM_HEIGHT;
+      const bool selected = index == selection;
+      if (selected)
+        RoundedRect(x + 6, item_y + 2, width - 12, ITEM_HEIGHT - 4, 8, m_focus);
+      DrawText(m_font, x + TEXT_INSET, item_y + (ITEM_HEIGHT - FontHeight(m_font)) / 2,
+               Ellipsize(m_font, label(index), width - TEXT_INSET * 2 - MARK_SPACE),
+               selected ? m_value : m_text);
+      // The current value carries an accent dot.
+      if (index == current)
+      {
+        RoundedRect(x + width - TEXT_INSET - 10, item_y + ITEM_HEIGHT / 2 - 5, 10, 10, 5,
+                    m_selection);
+      }
+    }
+    if (count > visible)
+    {
+      const int track_height = visible * ITEM_HEIGHT;
+      const int thumb_height = std::max(12, track_height * visible / count);
+      FillRect(x + width - 7, y + PADDING, 3, track_height, m_card);
+      FillRect(x + width - 7,
+               y + PADDING + (track_height - thumb_height) * top / std::max(1, count - visible), 3,
+               thumb_height, m_selection);
+    }
+    PresentFrame();
+    WaitForNextFrame();
+  }
+  return current;
+}
+
 int Launcher::SelectChoice(std::string_view title, std::span<const std::string_view> choices,
                            int current, int delta)
 {
@@ -6637,6 +6777,114 @@ int Launcher::RunRows(std::string_view title, std::string_view context,
         selection = (selection + direction + static_cast<int>(rows.size())) % rows.size();
     };
     skip_heading();
+    // Draws this page, also behind a choice list that drops down from one of its rows.
+    const auto draw_page = [&] {
+      ClearBackground();
+      DrawHeader(title, context);
+      const int column_width = std::min(980, m_width - 180);
+      const int column_x = (m_width - column_width) / 2;
+      const int label_x = column_x + 40;
+      const int value_x = column_x + column_width - 40;
+      const int last_visible = std::min(top + visible, static_cast<int>(rows.size()));
+      const auto breaks_panel = [&](int index) {
+        return rows[index].section_heading || rows[index].card;
+      };
+      for (int first = top; first < last_visible;)
+      {
+        if (breaks_panel(first))
+        {
+          ++first;
+          continue;
+        }
+        int end = first + 1;
+        while (end < last_visible && !breaks_panel(end))
+          ++end;
+        GlassPanel(column_x - 12, list_top + (first - top) * row_height - 10, column_width + 24,
+                   (end - first) * row_height + 18);
+        first = end;
+      }
+      const float target_y = static_cast<float>(list_top + (selection - top) * row_height + 1);
+      m_highlight_y = (!m_animations || m_highlight_y < 0.0f || rows[selection].card) ?
+                          target_y :
+                          m_highlight_y + (target_y - m_highlight_y) * 0.30f;
+      if (!rows[selection].card)
+        DrawRowHighlight(column_x, static_cast<int>(m_highlight_y), column_width, row_height - 2);
+      for (int row = 0; row < visible && top + row < static_cast<int>(rows.size()); ++row)
+      {
+        const int index = top + row;
+        const int slot_y = list_top + row * row_height;
+        if (rows[index].card_tail)
+          continue;
+        if (rows[index].card && row + 1 < visible)
+        {
+          DrawToggleCard(rows[index], column_x - 12, slot_y - 6, column_width + 24,
+                         row_height * 2 - 12, index == selection);
+          continue;
+        }
+        if (rows[index].section_heading)
+        {
+          DrawSectionHeading(rows[index].label, column_x,
+                             slot_y + (row_height - FontHeight(m_font_small)) / 2, column_width);
+          continue;
+        }
+        const bool current = index == selection;
+        const SDL_Color label_color = !rows[index].enabled    ? m_dim :
+                                      rows[index].destructive ? SDL_Color{255, 120, 120, 255} :
+                                      current                 ? m_value :
+                                                                m_text;
+        const SDL_Color value_color = rows[index].value_color ? *rows[index].value_color :
+                                      !rows[index].enabled    ? m_dim :
+                                      current                 ? m_value :
+                                                                m_dim;
+        const std::string_view localized_label = rows[index].localize_label ?
+                                                     m_localization.Translate(rows[index].label) :
+                                                     std::string_view(rows[index].label);
+        const std::string_view displayed_value = rows[index].localize_value ?
+                                                     m_localization.Translate(rows[index].value) :
+                                                     std::string_view(rows[index].value);
+        DrawSettingsRowText(localized_label, displayed_value, slot_y, column_width, label_x, value_x,
+                            current, label_color, value_color, false, row_height,
+                            !rows[index].plain_value);
+      }
+      if (static_cast<int>(rows.size()) > visible)
+      {
+        const int track_height = visible * row_height;
+        const int track_x = column_x + column_width + 16;
+        const int track_y = list_top - 2;
+        FillRect(track_x, track_y, 4, track_height, SDL_Color{40, 44, 54, 255});
+        const int thumb_height = std::max(16, track_height * visible / static_cast<int>(rows.size()));
+        const int denominator = std::max(1, static_cast<int>(rows.size()) - visible);
+        FillRect(track_x, track_y + (track_height - thumb_height) * top / denominator, 4,
+                 thumb_height, m_selection);
+      }
+      // Only show hints that apply to the selected row.
+      const bool can_adjust = rows[selection].enabled && rows[selection].adjustable;
+      const bool can_reset = reset && rows[selection].enabled &&
+                             (rows[selection].adjustable || (resettable && resettable(selection)));
+      std::array<std::pair<std::string_view, std::string_view>, 6> footer{};
+      int hint_count = 0;
+      if (can_adjust)
+      {
+        footer[hint_count++] = {"Left / Right", "Change"};
+      }
+      if (rows[selection].enabled)
+        footer[hint_count++] = {"A", "Choose"};
+      footer[hint_count++] = {"X", "Info"};
+      if (can_reset)
+        footer[hint_count++] = {"Y", "Reset"};
+      footer[hint_count++] = {"B", "Back"};
+      DrawFooter(std::span(footer).first(hint_count));
+    };
+    // Runs a row's action: a choice list it opens drops down from the row, over the page.
+    const auto act = [&](int index, int delta) {
+      const int column_width = std::min(980, m_width - 180);
+      SetDropdownAnchor(SDL_Rect{(m_width - column_width) / 2,
+                                 list_top + (index - top) * row_height, column_width, row_height},
+                        draw_page);
+      const bool result = action(index, delta);
+      ClearDropdownAnchor();
+      return result;
+    };
     SDL_Event event{};
     while (PollEvent(&event))
     {
@@ -6651,7 +6899,7 @@ int Launcher::RunRows(std::string_view title, std::string_view context,
       if ((touch == TouchKind::SwipeLeft || touch == TouchKind::SwipeRight) &&
           rows[selection].enabled && rows[selection].adjustable)
       {
-        action(selection, touch == TouchKind::SwipeLeft ? -1 : 1);
+        act(selection, touch == TouchKind::SwipeLeft ? -1 : 1);
         continue;
       }
       if (touch == TouchKind::Tap)
@@ -6673,7 +6921,7 @@ int Launcher::RunRows(std::string_view title, std::string_view context,
           selection = index;
           if ((touch_activates_full_row || rows[index].card ||
                touch_x >= column_x + column_width / 2) &&
-              rows[index].enabled && action(index, 0))
+              rows[index].enabled && act(index, 0))
             return finish(index);
         }
         continue;
@@ -6693,10 +6941,10 @@ int Launcher::RunRows(std::string_view title, std::string_view context,
       {
         if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_LEFT && rows[selection].enabled &&
             rows[selection].adjustable)
-          action(selection, -1);
+          act(selection, -1);
         else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT &&
                  rows[selection].enabled && rows[selection].adjustable)
-          action(selection, 1);
+          act(selection, 1);
         else if (event.cbutton.button == BUTTON_X)
         {
           const SettingHelpInfo info = SettingHelpFor(title, rows[selection]);
@@ -6720,7 +6968,7 @@ int Launcher::RunRows(std::string_view title, std::string_view context,
         }
         else if (event.cbutton.button == BUTTON_CONFIRM && rows[selection].enabled)
         {
-          if (action(selection, 0))
+          if (act(selection, 0))
             return finish(selection);
         }
         else if (event.cbutton.button == BUTTON_CANCEL)
@@ -6730,10 +6978,10 @@ int Launcher::RunRows(std::string_view title, std::string_view context,
       {
         if (event.key.keysym.sym == SDLK_LEFT && rows[selection].enabled &&
             rows[selection].adjustable)
-          action(selection, -1);
+          act(selection, -1);
         else if (event.key.keysym.sym == SDLK_RIGHT && rows[selection].enabled &&
                  rows[selection].adjustable)
-          action(selection, 1);
+          act(selection, 1);
         else if (event.key.keysym.sym == SDLK_x)
         {
           const SettingHelpInfo info = SettingHelpFor(title, rows[selection]);
@@ -6757,7 +7005,7 @@ int Launcher::RunRows(std::string_view title, std::string_view context,
         }
         else if (event.key.keysym.sym == SDLK_RETURN && rows[selection].enabled)
         {
-          if (action(selection, 0))
+          if (act(selection, 0))
             return finish(selection);
         }
         else if (event.key.keysym.sym == SDLK_ESCAPE)
@@ -6772,101 +7020,7 @@ int Launcher::RunRows(std::string_view title, std::string_view context,
     if (top < static_cast<int>(rows.size()) && rows[top].card_tail)
       top += selection < top - 1 + visible ? -1 : 1;
 
-    ClearBackground();
-    DrawHeader(title, context);
-    const int column_width = std::min(980, m_width - 180);
-    const int column_x = (m_width - column_width) / 2;
-    const int label_x = column_x + 40;
-    const int value_x = column_x + column_width - 40;
-    const int last_visible = std::min(top + visible, static_cast<int>(rows.size()));
-    const auto breaks_panel = [&](int index) {
-      return rows[index].section_heading || rows[index].card;
-    };
-    for (int first = top; first < last_visible;)
-    {
-      if (breaks_panel(first))
-      {
-        ++first;
-        continue;
-      }
-      int end = first + 1;
-      while (end < last_visible && !breaks_panel(end))
-        ++end;
-      GlassPanel(column_x - 12, list_top + (first - top) * row_height - 10, column_width + 24,
-                 (end - first) * row_height + 18);
-      first = end;
-    }
-    const float target_y = static_cast<float>(list_top + (selection - top) * row_height + 1);
-    m_highlight_y = (!m_animations || m_highlight_y < 0.0f || rows[selection].card) ?
-                        target_y :
-                        m_highlight_y + (target_y - m_highlight_y) * 0.30f;
-    if (!rows[selection].card)
-      DrawRowHighlight(column_x, static_cast<int>(m_highlight_y), column_width, row_height - 2);
-    for (int row = 0; row < visible && top + row < static_cast<int>(rows.size()); ++row)
-    {
-      const int index = top + row;
-      const int slot_y = list_top + row * row_height;
-      if (rows[index].card_tail)
-        continue;
-      if (rows[index].card && row + 1 < visible)
-      {
-        DrawToggleCard(rows[index], column_x - 12, slot_y - 6, column_width + 24,
-                       row_height * 2 - 12, index == selection);
-        continue;
-      }
-      if (rows[index].section_heading)
-      {
-        DrawSectionHeading(rows[index].label, column_x,
-                           slot_y + (row_height - FontHeight(m_font_small)) / 2, column_width);
-        continue;
-      }
-      const bool current = index == selection;
-      const SDL_Color label_color = !rows[index].enabled    ? m_dim :
-                                    rows[index].destructive ? SDL_Color{255, 120, 120, 255} :
-                                    current                 ? m_value :
-                                                              m_text;
-      const SDL_Color value_color = rows[index].value_color ? *rows[index].value_color :
-                                    !rows[index].enabled    ? m_dim :
-                                    current                 ? m_value :
-                                                              m_dim;
-      const std::string_view localized_label = rows[index].localize_label ?
-                                                   m_localization.Translate(rows[index].label) :
-                                                   std::string_view(rows[index].label);
-      const std::string_view displayed_value = rows[index].localize_value ?
-                                                   m_localization.Translate(rows[index].value) :
-                                                   std::string_view(rows[index].value);
-      DrawSettingsRowText(localized_label, displayed_value, slot_y, column_width, label_x, value_x,
-                          current, label_color, value_color, false, row_height,
-                          !rows[index].plain_value);
-    }
-    if (static_cast<int>(rows.size()) > visible)
-    {
-      const int track_height = visible * row_height;
-      const int track_x = column_x + column_width + 16;
-      const int track_y = list_top - 2;
-      FillRect(track_x, track_y, 4, track_height, SDL_Color{40, 44, 54, 255});
-      const int thumb_height = std::max(16, track_height * visible / static_cast<int>(rows.size()));
-      const int denominator = std::max(1, static_cast<int>(rows.size()) - visible);
-      FillRect(track_x, track_y + (track_height - thumb_height) * top / denominator, 4,
-               thumb_height, m_selection);
-    }
-    // Only show hints that apply to the selected row.
-    const bool can_adjust = rows[selection].enabled && rows[selection].adjustable;
-    const bool can_reset = reset && rows[selection].enabled &&
-                           (rows[selection].adjustable || (resettable && resettable(selection)));
-    std::array<std::pair<std::string_view, std::string_view>, 6> footer{};
-    int hint_count = 0;
-    if (can_adjust)
-    {
-      footer[hint_count++] = {"Left / Right", "Change"};
-    }
-    if (rows[selection].enabled)
-      footer[hint_count++] = {"A", "Choose"};
-    footer[hint_count++] = {"X", "Info"};
-    if (can_reset)
-      footer[hint_count++] = {"Y", "Reset"};
-    footer[hint_count++] = {"B", "Back"};
-    DrawFooter(std::span(footer).first(hint_count));
+    draw_page();
     DrawFadeIn();
     PresentFrame();
     WaitForNextFrame();
@@ -15133,6 +15287,81 @@ void Launcher::AppearanceSettings()
     const int button_y =
         std::min(m_height - button_height - 104, list_top + visible * row_height + 24);
 
+    // Draws this page, also behind a choice list that drops down from one of its items.
+    const auto draw_page = [&] {
+      ClearBackground();
+      DrawHeader("Launcher", {});
+      const int label_x = column_x + 40;
+      const int value_x = column_x + column_width - 40;
+      GlassPanel(column_x - 12, list_top - 10, column_width + 24,
+                 std::min(visible, option_count - top) * row_height + 18);
+      if (selection < option_count)
+      {
+        const float target_y = static_cast<float>(list_top + (selection - top) * row_height + 1);
+        m_highlight_y = (!m_animations || m_highlight_y < 0.0f) ?
+                            target_y :
+                            m_highlight_y + (target_y - m_highlight_y) * 0.30f;
+        DrawRowHighlight(column_x, static_cast<int>(m_highlight_y), column_width, row_height - 2);
+      }
+      for (int row = 0; row < visible && top + row < option_count; ++row)
+      {
+        const int index = top + row;
+        const bool current = index == selection;
+        const std::string_view displayed_label = rows[index].localize_label ?
+                                                     m_localization.Translate(rows[index].label) :
+                                                     std::string_view(rows[index].label);
+        const std::string_view displayed_value = rows[index].localize_value ?
+                                                     m_localization.Translate(rows[index].value) :
+                                                     std::string_view(rows[index].value);
+        DrawSettingsRowText(displayed_label, displayed_value, list_top + row * row_height,
+                            column_width, label_x, value_x, current, current ? m_value : m_text,
+                            current ? m_value : m_dim, false, row_height);
+      }
+      if (option_count > visible)
+      {
+        const int track_height = visible * row_height;
+        const int track_x = column_x + column_width + 16;
+        const int track_y = list_top - 2;
+        FillRect(track_x, track_y, 4, track_height, SDL_Color{40, 44, 54, 255});
+        const int thumb_height = std::max(16, track_height * visible / option_count);
+        FillRect(track_x,
+                 track_y + (track_height - thumb_height) * top / std::max(1, option_count - visible),
+                 4, thumb_height, m_selection);
+      }
+
+      const bool update_selected = selection == update_row;
+      DrawButtonPanel(button_x, button_y, button_width, button_height, update_selected);
+      DrawTextCentered(m_font, m_width / 2, button_y + (button_height - FontHeight(m_font)) / 2,
+                       m_localization.Translate("Check for Updates"),
+                       update_selected ? m_value : m_text);
+      DrawTextCentered(m_font_small, m_width / 2, button_y + button_height + 8,
+                       Ellipsize(m_font_small, UpdateStatusText(), std::min(m_width - 80, 720)),
+                       update_selected ? m_value : m_dim);
+      // selection past the option rows is the Check for Updates button.
+      std::array<std::pair<std::string_view, std::string_view>, 6> footer{};
+      int hint_count = 0;
+      if (selection < option_count && rows[selection].adjustable)
+      {
+        footer[hint_count++] = {"Left / Right", "Change"};
+      }
+      footer[hint_count++] = {"A", "Choose"};
+      if (selection < option_count)
+      {
+        footer[hint_count++] = {"X", "Info"};
+        footer[hint_count++] = {"Y", "Reset"};
+      }
+      footer[hint_count++] = {"B", "Back"};
+      DrawFooter(std::span(footer).first(hint_count));
+      DrawFadeIn();
+    };
+    // Applies an option: a choice list it opens drops down from the option's row.
+    const auto apply = [&](int index, int delta) {
+      SetDropdownAnchor(
+          SDL_Rect{column_x, list_top + (index - top) * row_height, column_width, row_height},
+          draw_page);
+      apply_option(index, delta);
+      ClearDropdownAnchor();
+    };
     SDL_Event event{};
     while (PollEvent(&event))
     {
@@ -15144,7 +15373,7 @@ void Launcher::AppearanceSettings()
       if ((touch == TouchKind::SwipeLeft || touch == TouchKind::SwipeRight) &&
           selection < option_count && rows[selection].adjustable)
       {
-        apply_option(selection, touch == TouchKind::SwipeLeft ? -1 : 1);
+        apply(selection, touch == TouchKind::SwipeLeft ? -1 : 1);
         continue;
       }
       if (touch == TouchKind::Tap)
@@ -15169,7 +15398,7 @@ void Launcher::AppearanceSettings()
           if (index >= 0 && index < option_count)
           {
             selection = index;
-            apply_option(index, 0);
+            apply(index, 0);
           }
         }
         continue;
@@ -15186,12 +15415,12 @@ void Launcher::AppearanceSettings()
       if ((button == SDL_CONTROLLER_BUTTON_DPAD_LEFT || key == SDLK_LEFT) &&
           selection < option_count && rows[selection].adjustable)
       {
-        apply_option(selection, -1);
+        apply(selection, -1);
       }
       else if ((button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT || key == SDLK_RIGHT) &&
                selection < option_count && rows[selection].adjustable)
       {
-        apply_option(selection, 1);
+        apply(selection, 1);
       }
       else if ((button == BUTTON_X || key == SDLK_x) && selection < option_count)
       {
@@ -15218,7 +15447,7 @@ void Launcher::AppearanceSettings()
         }
         else
         {
-          apply_option(selection, 0);
+          apply(selection, 0);
         }
       }
       else if (button == BUTTON_CANCEL || key == SDLK_ESCAPE)
@@ -15236,70 +15465,7 @@ void Launcher::AppearanceSettings()
         top = selection - visible + 1;
     }
 
-    ClearBackground();
-    DrawHeader("Launcher", {});
-    const int label_x = column_x + 40;
-    const int value_x = column_x + column_width - 40;
-    GlassPanel(column_x - 12, list_top - 10, column_width + 24,
-               std::min(visible, option_count - top) * row_height + 18);
-    if (selection < option_count)
-    {
-      const float target_y = static_cast<float>(list_top + (selection - top) * row_height + 1);
-      m_highlight_y = (!m_animations || m_highlight_y < 0.0f) ?
-                          target_y :
-                          m_highlight_y + (target_y - m_highlight_y) * 0.30f;
-      DrawRowHighlight(column_x, static_cast<int>(m_highlight_y), column_width, row_height - 2);
-    }
-    for (int row = 0; row < visible && top + row < option_count; ++row)
-    {
-      const int index = top + row;
-      const bool current = index == selection;
-      const std::string_view displayed_label = rows[index].localize_label ?
-                                                   m_localization.Translate(rows[index].label) :
-                                                   std::string_view(rows[index].label);
-      const std::string_view displayed_value = rows[index].localize_value ?
-                                                   m_localization.Translate(rows[index].value) :
-                                                   std::string_view(rows[index].value);
-      DrawSettingsRowText(displayed_label, displayed_value, list_top + row * row_height,
-                          column_width, label_x, value_x, current, current ? m_value : m_text,
-                          current ? m_value : m_dim, false, row_height);
-    }
-    if (option_count > visible)
-    {
-      const int track_height = visible * row_height;
-      const int track_x = column_x + column_width + 16;
-      const int track_y = list_top - 2;
-      FillRect(track_x, track_y, 4, track_height, SDL_Color{40, 44, 54, 255});
-      const int thumb_height = std::max(16, track_height * visible / option_count);
-      FillRect(track_x,
-               track_y + (track_height - thumb_height) * top / std::max(1, option_count - visible),
-               4, thumb_height, m_selection);
-    }
-
-    const bool update_selected = selection == update_row;
-    DrawButtonPanel(button_x, button_y, button_width, button_height, update_selected);
-    DrawTextCentered(m_font, m_width / 2, button_y + (button_height - FontHeight(m_font)) / 2,
-                     m_localization.Translate("Check for Updates"),
-                     update_selected ? m_value : m_text);
-    DrawTextCentered(m_font_small, m_width / 2, button_y + button_height + 8,
-                     Ellipsize(m_font_small, UpdateStatusText(), std::min(m_width - 80, 720)),
-                     update_selected ? m_value : m_dim);
-    // selection past the option rows is the Check for Updates button.
-    std::array<std::pair<std::string_view, std::string_view>, 6> footer{};
-    int hint_count = 0;
-    if (selection < option_count && rows[selection].adjustable)
-    {
-      footer[hint_count++] = {"Left / Right", "Change"};
-    }
-    footer[hint_count++] = {"A", "Choose"};
-    if (selection < option_count)
-    {
-      footer[hint_count++] = {"X", "Info"};
-      footer[hint_count++] = {"Y", "Reset"};
-    }
-    footer[hint_count++] = {"B", "Back"};
-    DrawFooter(std::span(footer).first(hint_count));
-    DrawFadeIn();
+    draw_page();
     PresentFrame();
     WaitForNextFrame();
   }
@@ -15325,6 +15491,33 @@ void Launcher::GameSourcesScreen()
     if (selection >= top + visible)
       top = selection - visible + 1;
     bool rebuild = false;
+    // Draws this page, also behind a choice list that drops down from one of its items.
+    const auto draw_page = [&] {
+      ClearBackground();
+      const std::string summary =
+          std::to_string(m_sources.size()) + " " +
+          std::string(m_localization.Translate(m_sources.size() == 1 ? "folder" : "folders"));
+      DrawPageHeader(m_localization.Translate("Game folders"), "Dolphin", summary,
+                     m_localization.Translate("Scanned recursively"));
+      GlassPanel(44, list_y - 13, m_width - 88,
+                 std::min(visible, count - top) * row_height + 18);
+      for (int row = 0; row < visible && top + row < count; ++row)
+      {
+        const int index = top + row;
+        const int y = list_y + row * row_height;
+        const bool current = index == selection;
+        if (current)
+        {
+          DrawRowHighlight(56, y - 3, m_width - 112, 46);
+        }
+        const std::string label = index == 0 ?
+                                      std::string(m_localization.Translate("[ Add game folder ]")) :
+                                      m_sources[index - 1];
+        DrawText(m_font, 82, y, Ellipsize(m_font, label, m_width - 170),
+                 current ? m_value : (index == 0 ? m_highlight : m_text));
+      }
+      DrawSettingsFooter("A  Select       B  Back");
+    };
     SDL_Event event{};
     while (PollEvent(&event))
     {
@@ -15396,6 +15589,9 @@ void Launcher::GameSourcesScreen()
       else
       {
         std::size_t source_index = static_cast<std::size_t>(selection - 1);
+        SetDropdownAnchor(
+            SDL_Rect{56, list_y + (selection - top) * row_height - 3, m_width - 112, 46},
+            draw_page);
         const int choice =
             Dropdown("Game folder", {"Change folder", "Move up", "Move down", "Remove"}, -1);
         if (choice == 0)
@@ -15460,30 +15656,7 @@ void Launcher::GameSourcesScreen()
       continue;
     }
 
-    ClearBackground();
-    const std::string summary =
-        std::to_string(m_sources.size()) + " " +
-        std::string(m_localization.Translate(m_sources.size() == 1 ? "folder" : "folders"));
-    DrawPageHeader(m_localization.Translate("Game folders"), "Dolphin", summary,
-                   m_localization.Translate("Scanned recursively"));
-    GlassPanel(44, list_y - 13, m_width - 88,
-               std::min(visible, count - top) * row_height + 18);
-    for (int row = 0; row < visible && top + row < count; ++row)
-    {
-      const int index = top + row;
-      const int y = list_y + row * row_height;
-      const bool current = index == selection;
-      if (current)
-      {
-        DrawRowHighlight(56, y - 3, m_width - 112, 46);
-      }
-      const std::string label = index == 0 ?
-                                    std::string(m_localization.Translate("[ Add game folder ]")) :
-                                    m_sources[index - 1];
-      DrawText(m_font, 82, y, Ellipsize(m_font, label, m_width - 170),
-               current ? m_value : (index == 0 ? m_highlight : m_text));
-    }
-    DrawSettingsFooter("A  Select       B  Back");
+    draw_page();
     PresentFrame();
     WaitForNextFrame();
   }
@@ -15863,6 +16036,52 @@ void Launcher::NetworkSharesScreen()
     if (selection >= top + visible)
       top = selection - visible + 1;
     bool rebuild = false;
+    // Draws this page, also behind a choice list that drops down from one of its items.
+    const auto draw_page = [&] {
+      ClearBackground();
+      const std::string summary = std::to_string(m_shares.size()) + " " +
+                                  std::string(m_localization.Translate(
+                                      m_shares.size() == 1 ? "saved share" : "saved shares"));
+      DrawHeader("SMB network shares", summary);
+      GlassPanel(44, list_y - 13, m_width - 88,
+                 std::min(visible, count - top) * row_height + 18);
+      for (int row = 0; row < visible && top + row < count; ++row)
+      {
+        const int index = top + row;
+        const int y = list_y + row * row_height;
+        const bool current = index == selection;
+        if (current)
+        {
+          DrawRowHighlight(56, y - 3, m_width - 112, row_height - 4);
+        }
+        if (index == 0)
+        {
+          DrawText(m_font, 82, y + (row_height - FontHeight(m_font)) / 2 - 2,
+                   m_localization.Translate("[ Add SMB share ]"), current ? m_value : m_highlight);
+        }
+        else
+        {
+          const Storage::SmbShare& item = m_shares[index - 1];
+          const bool mounted = Storage::IsSmbMounted(item.id);
+          DrawText(m_font, 82, y, item.name, current ? m_value : m_text);
+          const Storage::SmbConnectionState connection_state =
+              Storage::GetSmbConnectionState(item.id);
+          const std::string status =
+              connection_state == Storage::SmbConnectionState::Connecting   ? "Connecting..." :
+              connection_state == Storage::SmbConnectionState::Reconnecting ? "Reconnecting..." :
+              connection_state == Storage::SmbConnectionState::Failed       ? "Connection failed" :
+              mounted                                                       ? "Connected" :
+                        (item.auto_mount ? "Disconnected - auto" : "Disconnected");
+          DrawTextRight(m_font_small, m_width - 82, y + 4, m_localization.Translate(status),
+                        mounted ? SDL_Color{120, 220, 120, 255} : m_dim);
+          const std::string address = "smb://" + item.server + "/" + item.share +
+                                      (item.path.empty() ? std::string{} : "/" + item.path);
+          DrawText(m_font_small, 82, y + 31, Ellipsize(m_font_small, address, m_width - 340), m_dim);
+        }
+      }
+      DrawSettingsFooter("A  Select       B  Back");
+      DrawFadeIn();
+    };
     SDL_Event event{};
     while (PollEvent(&event))
     {
@@ -15941,6 +16160,9 @@ void Launcher::NetworkSharesScreen()
         const int share_index = selection - 1;
         Storage::SmbShare& selected_share = m_shares[share_index];
         const bool mounted = Storage::IsSmbMounted(selected_share.id);
+        SetDropdownAnchor(SDL_Rect{56, list_y + (selection - top) * row_height - 3,
+                                   m_width - 112, row_height - 4},
+                          draw_page);
         const int choice = Dropdown(
             selected_share.name.empty() ? selected_share.share : selected_share.name,
             {mounted ? "Disconnect" : "Connect", "Edit", "Toggle connect at startup", "Remove"}, -1,
@@ -16043,49 +16265,7 @@ void Launcher::NetworkSharesScreen()
       continue;
     }
 
-    ClearBackground();
-    const std::string summary = std::to_string(m_shares.size()) + " " +
-                                std::string(m_localization.Translate(
-                                    m_shares.size() == 1 ? "saved share" : "saved shares"));
-    DrawHeader("SMB network shares", summary);
-    GlassPanel(44, list_y - 13, m_width - 88,
-               std::min(visible, count - top) * row_height + 18);
-    for (int row = 0; row < visible && top + row < count; ++row)
-    {
-      const int index = top + row;
-      const int y = list_y + row * row_height;
-      const bool current = index == selection;
-      if (current)
-      {
-        DrawRowHighlight(56, y - 3, m_width - 112, row_height - 4);
-      }
-      if (index == 0)
-      {
-        DrawText(m_font, 82, y + (row_height - FontHeight(m_font)) / 2 - 2,
-                 m_localization.Translate("[ Add SMB share ]"), current ? m_value : m_highlight);
-      }
-      else
-      {
-        const Storage::SmbShare& item = m_shares[index - 1];
-        const bool mounted = Storage::IsSmbMounted(item.id);
-        DrawText(m_font, 82, y, item.name, current ? m_value : m_text);
-        const Storage::SmbConnectionState connection_state =
-            Storage::GetSmbConnectionState(item.id);
-        const std::string status =
-            connection_state == Storage::SmbConnectionState::Connecting   ? "Connecting..." :
-            connection_state == Storage::SmbConnectionState::Reconnecting ? "Reconnecting..." :
-            connection_state == Storage::SmbConnectionState::Failed       ? "Connection failed" :
-            mounted                                                       ? "Connected" :
-                      (item.auto_mount ? "Disconnected - auto" : "Disconnected");
-        DrawTextRight(m_font_small, m_width - 82, y + 4, m_localization.Translate(status),
-                      mounted ? SDL_Color{120, 220, 120, 255} : m_dim);
-        const std::string address = "smb://" + item.server + "/" + item.share +
-                                    (item.path.empty() ? std::string{} : "/" + item.path);
-        DrawText(m_font_small, 82, y + 31, Ellipsize(m_font_small, address, m_width - 340), m_dim);
-      }
-    }
-    DrawSettingsFooter("A  Select       B  Back");
-    DrawFadeIn();
+    draw_page();
     PresentFrame();
     WaitForNextFrame();
   }
@@ -16858,6 +17038,79 @@ std::string Launcher::FileBrowser(const std::string& start, bool select_folder, 
     }
     selection = std::clamp(selection, 0, static_cast<int>(entries.size()) - 1);
     bool rebuild = false;
+    // Draws this page, also behind a choice list that drops down from one of its items.
+    const auto draw_page = [&] {
+      ClearBackground();
+      const std::string_view screen_title = !selection_title.empty() ? selection_title :
+                                            manage                   ? "File manager" :
+                                            select_game              ? "Select game" :
+                                                                       "Select game folder";
+      DrawHeader(screen_title, current.empty() ? m_localization.Translate("Locations") :
+                                                 std::string_view(current));
+      constexpr int x = 54;
+      const int width = m_width - 108;
+      const int shown_rows =
+          std::min(visible, std::max(0, static_cast<int>(entries.size()) - top));
+      if (shown_rows > 0)
+        GlassPanel(x - 10, list_top - 16, width + 20, shown_rows * row_height + 18);
+      for (int row = 0; row < visible && top + row < static_cast<int>(entries.size()); ++row)
+      {
+        const int index = top + row;
+        const int y = list_top + row * row_height;
+        if (index == selection)
+        {
+          DrawRowHighlight(x, y - 3, width, 42);
+        }
+        const bool action_row =
+            entries[index].kind == Kind::UseFolder || entries[index].kind == Kind::Paste;
+        const SDL_Color color = action_row                        ? m_highlight :
+                                entries[index].kind == Kind::File ? SDL_Color{120, 220, 120, 255} :
+                                                                    m_text;
+        if (index == selection)
+          DrawScrollingTextLeft(m_font, 80, y, m_width - 180, entries[index].label, m_value);
+        else
+          DrawText(m_font, 80, y, Ellipsize(m_font, entries[index].label, m_width - 180), color);
+      }
+      const bool usb_root_selected = manage && current.empty() && selection >= 0 &&
+                                     selection < static_cast<int>(entries.size()) &&
+                                     entries[selection].kind == Kind::Location &&
+                                     !entries[selection].usb_id.empty();
+      if (manage)
+      {
+        if (usb_root_selected)
+        {
+          static constexpr std::array<std::pair<std::string_view, std::string_view>, 3> hints = {
+              std::pair{"A", "Open"}, std::pair{"+", "Safely eject"}, std::pair{"B", "Back"}};
+          DrawFooter(hints);
+        }
+        else if (current.empty())
+        {
+          static constexpr std::array<std::pair<std::string_view, std::string_view>, 2> hints = {
+              std::pair{"A", "Open"}, std::pair{"B", "Back"}};
+          DrawFooter(hints);
+        }
+        else
+        {
+          const Kind kind = entries[selection].kind;
+          std::array<std::pair<std::string_view, std::string_view>, 4> hints{};
+          int hint_count = 0;
+          if (kind == Kind::Paste)
+            hints[hint_count++] = {"A", "Paste"};
+          else if (kind != Kind::File)
+            hints[hint_count++] = {"A", "Open"};
+          if (kind == Kind::Directory || kind == Kind::File)
+            hints[hint_count++] = {"X", "Actions"};
+          if (!m_clipboard_path.empty())
+            hints[hint_count++] = {"Y", "Paste"};
+          hints[hint_count++] = {"B", "Back"};
+          DrawFooter(std::span(hints).first(hint_count));
+        }
+      }
+      else
+      {
+        DrawSettingsFooter("A  Open / Select       B  Back");
+      }
+    };
     SDL_Event event{};
     while (PollEvent(&event))
     {
@@ -16937,7 +17190,12 @@ std::string Launcher::FileBrowser(const std::string& start, bool select_folder, 
                              entries[selection].kind == Kind::UseFolder))
         {
           if (manage)
+          {
+            SetDropdownAnchor(SDL_Rect{54, list_top + (selection - top) * row_height - 3,
+                                       m_width - 108, 42},
+                              draw_page);
             FileActions(entries[selection].path);
+          }
           rebuild = true;
         }
         else if (paste && manage && !current.empty() && !m_clipboard_path.empty())
@@ -17018,76 +17276,7 @@ std::string Launcher::FileBrowser(const std::string& start, bool select_folder, 
       top = selection;
     if (selection >= top + visible)
       top = selection - visible + 1;
-    ClearBackground();
-    const std::string_view screen_title = !selection_title.empty() ? selection_title :
-                                          manage                   ? "File manager" :
-                                          select_game              ? "Select game" :
-                                                                     "Select game folder";
-    DrawHeader(screen_title, current.empty() ? m_localization.Translate("Locations") :
-                                               std::string_view(current));
-    constexpr int x = 54;
-    const int width = m_width - 108;
-    const int shown_rows =
-        std::min(visible, std::max(0, static_cast<int>(entries.size()) - top));
-    if (shown_rows > 0)
-      GlassPanel(x - 10, list_top - 16, width + 20, shown_rows * row_height + 18);
-    for (int row = 0; row < visible && top + row < static_cast<int>(entries.size()); ++row)
-    {
-      const int index = top + row;
-      const int y = list_top + row * row_height;
-      if (index == selection)
-      {
-        DrawRowHighlight(x, y - 3, width, 42);
-      }
-      const bool action_row =
-          entries[index].kind == Kind::UseFolder || entries[index].kind == Kind::Paste;
-      const SDL_Color color = action_row                        ? m_highlight :
-                              entries[index].kind == Kind::File ? SDL_Color{120, 220, 120, 255} :
-                                                                  m_text;
-      if (index == selection)
-        DrawScrollingTextLeft(m_font, 80, y, m_width - 180, entries[index].label, m_value);
-      else
-        DrawText(m_font, 80, y, Ellipsize(m_font, entries[index].label, m_width - 180), color);
-    }
-    const bool usb_root_selected = manage && current.empty() && selection >= 0 &&
-                                   selection < static_cast<int>(entries.size()) &&
-                                   entries[selection].kind == Kind::Location &&
-                                   !entries[selection].usb_id.empty();
-    if (manage)
-    {
-      if (usb_root_selected)
-      {
-        static constexpr std::array<std::pair<std::string_view, std::string_view>, 3> hints = {
-            std::pair{"A", "Open"}, std::pair{"+", "Safely eject"}, std::pair{"B", "Back"}};
-        DrawFooter(hints);
-      }
-      else if (current.empty())
-      {
-        static constexpr std::array<std::pair<std::string_view, std::string_view>, 2> hints = {
-            std::pair{"A", "Open"}, std::pair{"B", "Back"}};
-        DrawFooter(hints);
-      }
-      else
-      {
-        const Kind kind = entries[selection].kind;
-        std::array<std::pair<std::string_view, std::string_view>, 4> hints{};
-        int hint_count = 0;
-        if (kind == Kind::Paste)
-          hints[hint_count++] = {"A", "Paste"};
-        else if (kind != Kind::File)
-          hints[hint_count++] = {"A", "Open"};
-        if (kind == Kind::Directory || kind == Kind::File)
-          hints[hint_count++] = {"X", "Actions"};
-        if (!m_clipboard_path.empty())
-          hints[hint_count++] = {"Y", "Paste"};
-        hints[hint_count++] = {"B", "Back"};
-        DrawFooter(std::span(hints).first(hint_count));
-      }
-    }
-    else
-    {
-      DrawSettingsFooter("A  Open / Select       B  Back");
-    }
+    draw_page();
     PresentFrame();
     WaitForNextFrame();
   }
@@ -17587,7 +17776,8 @@ int Launcher::ChooseCoverArtwork(const std::vector<CoverDownload::Artwork>& artw
   return -1;
 }
 
-void Launcher::DownloadCover(Game* game)
+void Launcher::DownloadCover(Game* game, const std::function<void()>& draw_page,
+                             const SDL_Rect& anchor)
 {
   if (!game)
     return;
@@ -17650,6 +17840,8 @@ void Launcher::DownloadCover(Game* game)
     names.reserve(matches.size() + 1);
     for (const auto& match : matches)
       names.push_back(match.name);
+    if (draw_page)
+      SetDropdownAnchor(anchor, draw_page);
     const int match_index = Dropdown("Choose matching title", names, -1, true, false);
     if (match_index < 0)
       return;
@@ -17953,9 +18145,10 @@ void Launcher::CoverSettings(Game* game)
                  "Per-game setting", true, true);
     BeginScreenFx();
   };
-  const auto activate = [&] {
+  // (draw_page draws this page, behind the list of matching titles)
+  const auto activate = [&](const std::function<void()>& draw_page) {
     if (selection == 0)
-      DownloadCover(game);
+      DownloadCover(game, draw_page, cards[0]);
     else
       ImportCoverFromFile(game);
     BeginScreenFx();
@@ -17995,6 +18188,46 @@ void Launcher::CoverSettings(Game* game)
   BeginScreenFx();
   while (BeginFrame())
   {
+    // Draws this page, also behind a choice list that drops down from one of its items.
+    const auto draw_page = [&] {
+      ClearBackground();
+      DrawHeader("Cover settings", game->title);
+      DrawGamePreview(game, layout.preview);
+      for (int index = 0; index < static_cast<int>(cards.size()); ++index)
+      {
+        const SDL_Rect& card = cards[index];
+        const bool selected = index == selection;
+        GlassPanel(card.x, card.y, card.w, card.h);
+        if (selected)
+          DrawRowHighlight(card.x + 8, card.y + 8, card.w - 16, card.h - 16);
+        const int x = card.x + 28;
+        const int width = card.w - 56;
+        const SettingHelpInfo info = SettingHelpFor("Cover settings", actions[index]);
+        DrawText(m_font_small, x, card.y + 24, m_localization.Translate(info.kind), m_highlight);
+        DrawScrollingTextLeft(m_font, x, card.y + 62, width,
+                              m_localization.Translate(actions[index].label),
+                              selected ? m_value : m_text);
+        const int description_line_height = FontHeight(m_font_small) + 7;
+        DrawWrapped(m_font_small, x, card.y + 112, width, description_line_height,
+                    std::max(1, (card.h - 132) / description_line_height),
+                    m_localization.Translate(info.description), m_dim);
+      }
+
+      if (has_custom_cover)
+      {
+        static constexpr std::array<std::pair<std::string_view, std::string_view>, 4> hints = {
+            std::pair{"A", "Choose"}, std::pair{"X", "Info"}, std::pair{"Y", "Remove custom cover"},
+            std::pair{"B", "Back"}};
+        DrawFooter(hints);
+      }
+      else
+      {
+        static constexpr std::array<std::pair<std::string_view, std::string_view>, 3> hints = {
+            std::pair{"A", "Choose"}, std::pair{"X", "Info"}, std::pair{"B", "Back"}};
+        DrawFooter(hints);
+      }
+      DrawFadeIn();
+    };
     SDL_Event event{};
     while (PollEvent(&event))
     {
@@ -18071,48 +18304,12 @@ void Launcher::CoverSettings(Game* game)
       }
       else if (choose)
       {
-        activate();
+        activate(draw_page);
         has_custom_cover = RegularFileExists(cover_path);
       }
     }
 
-    ClearBackground();
-    DrawHeader("Cover settings", game->title);
-    DrawGamePreview(game, layout.preview);
-    for (int index = 0; index < static_cast<int>(cards.size()); ++index)
-    {
-      const SDL_Rect& card = cards[index];
-      const bool selected = index == selection;
-      GlassPanel(card.x, card.y, card.w, card.h);
-      if (selected)
-        DrawRowHighlight(card.x + 8, card.y + 8, card.w - 16, card.h - 16);
-      const int x = card.x + 28;
-      const int width = card.w - 56;
-      const SettingHelpInfo info = SettingHelpFor("Cover settings", actions[index]);
-      DrawText(m_font_small, x, card.y + 24, m_localization.Translate(info.kind), m_highlight);
-      DrawScrollingTextLeft(m_font, x, card.y + 62, width,
-                            m_localization.Translate(actions[index].label),
-                            selected ? m_value : m_text);
-      const int description_line_height = FontHeight(m_font_small) + 7;
-      DrawWrapped(m_font_small, x, card.y + 112, width, description_line_height,
-                  std::max(1, (card.h - 132) / description_line_height),
-                  m_localization.Translate(info.description), m_dim);
-    }
-
-    if (has_custom_cover)
-    {
-      static constexpr std::array<std::pair<std::string_view, std::string_view>, 4> hints = {
-          std::pair{"A", "Choose"}, std::pair{"X", "Info"}, std::pair{"Y", "Remove custom cover"},
-          std::pair{"B", "Back"}};
-      DrawFooter(hints);
-    }
-    else
-    {
-      static constexpr std::array<std::pair<std::string_view, std::string_view>, 3> hints = {
-          std::pair{"A", "Choose"}, std::pair{"X", "Info"}, std::pair{"B", "Back"}};
-      DrawFooter(hints);
-    }
-    DrawFadeIn();
+    draw_page();
     PresentFrame();
     WaitForNextFrame();
   }
