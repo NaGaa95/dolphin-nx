@@ -18671,7 +18671,7 @@ void Launcher::DrawGameMenu(Game* game, int selection)
                                                            m_text;
     DrawSettingsRowText(
         m_localization.Translate(label),
-        index == 3 ? m_localization.Translate(m_favorites.contains(game->key) ? "Yes" : "No") :
+        index == 3 ? m_localization.Translate(m_favorites.contains(game->key) ? "On" : "Off") :
                      std::string_view(submenu ? ">" : ""),
         layout.RowY(index), menu.w, menu.x + 24, menu.x + menu.w - 24, current, color,
         current ? m_value : m_dim, false, layout.row_height);
