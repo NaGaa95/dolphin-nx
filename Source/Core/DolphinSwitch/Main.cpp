@@ -1387,8 +1387,10 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
   std::uint64_t handled_operation_mode_generation =
       s_operation_mode_generation.load(std::memory_order_acquire);
 #ifdef __SWITCH2__
-  // Keeps the boot's CPU boost (FastLoad: faster CPU, slower GPU) for the whole session.
-  const bool keep_cpu_boost = Config::Get(Config::MAIN_SWITCH_KEEP_CPU_BOOST);
+  // Keeps the boot's CPU boost (FastLoad: faster CPU, slower GPU) for the whole session; the quick
+  // menu turns it on and off.
+  bool keep_cpu_boost = Config::Get(Config::MAIN_SWITCH_KEEP_CPU_BOOST);
+  DolphinSwitch::RuntimeOverlay::SetCpuBoost(keep_cpu_boost, false);
 #else
   constexpr bool keep_cpu_boost = false;
 #endif
@@ -1523,6 +1525,16 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
         break;
       case DolphinSwitch::RuntimeOverlay::ActionType::ToggleVBISkip:
         DolphinSwitch::RuntimeOverlay::ToggleVBISkipForSession();
+        break;
+      case DolphinSwitch::RuntimeOverlay::ActionType::ToggleCpuBoost:
+#ifdef __SWITCH2__
+        keep_cpu_boost = !keep_cpu_boost;
+        if (!keep_cpu_boost)
+          boot_boost.reset();
+        else if (!boot_boost)
+          boot_boost.emplace();
+        DolphinSwitch::RuntimeOverlay::SetCpuBoost(keep_cpu_boost, true);
+#endif
         break;
       case DolphinSwitch::RuntimeOverlay::ActionType::ToggleSkylandersPortal:
       {

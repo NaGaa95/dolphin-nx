@@ -118,6 +118,7 @@ enum MainItem : int
   MAIN_FRAME_GENERATION,
   MAIN_FPS,
   MAIN_VBI_SKIP,
+  MAIN_CPU_BOOST,
   MAIN_SKYLANDERS,
   MAIN_RESET,
   MAIN_STOP,
@@ -137,6 +138,9 @@ std::atomic<std::uint64_t> s_render_frame_generation{0};
 bool s_initialized = false;
 bool s_show_fps = false;
 bool s_vbi_skip = false;
+#ifdef __SWITCH2__
+bool s_cpu_boost = false;
+#endif
 bool s_is_wii = false;
 // The quick menu's scale for the frame being drawn (OverlayScale): row and list heights follow it.
 float s_ui_scale = 1.0f;
@@ -719,6 +723,12 @@ bool ItemAvailable(int index)
     return s_is_wii;
   case MAIN_FRAME_GENERATION:
     return DolphinSwitch::FrameGeneration::IsAvailable();
+  case MAIN_CPU_BOOST:
+#ifdef __SWITCH2__
+    return true;
+#else
+    return false;
+#endif
   default:
     return true;
   }
@@ -818,6 +828,11 @@ void ActivateSelection()
       break;
     case MAIN_VBI_SKIP:
       QueueAction({ActionType::ToggleVBISkip});
+      break;
+    case MAIN_CPU_BOOST:
+#ifdef __SWITCH2__
+      QueueAction({ActionType::ToggleCpuBoost});
+#endif
       break;
     case MAIN_SKYLANDERS:
       if (s_is_wii)
@@ -1163,6 +1178,9 @@ void RenderMainPage()
   }
   MenuRow(MAIN_FPS, "Show FPS", RowKind::Toggle, {}, s_show_fps);
   MenuRow(MAIN_VBI_SKIP, "VBI Skip", RowKind::Toggle, {}, s_vbi_skip);
+#ifdef __SWITCH2__
+  MenuRow(MAIN_CPU_BOOST, "CPU Boost", RowKind::Toggle, {}, s_cpu_boost);
+#endif
   if (s_is_wii)
     MenuRow(MAIN_SKYLANDERS, "Skylanders portal", RowKind::Submenu);
   MenuRow(MAIN_RESET, "Reset console");
@@ -1174,7 +1192,11 @@ void RenderMainPage()
 // The rows RenderMainPage draws.
 int MainPageRowCount()
 {
-  return 11 + (s_is_wii ? 2 : 0) + (HasGBA() ? 1 : 0);
+  int rows = 11 + (s_is_wii ? 2 : 0) + (HasGBA() ? 1 : 0);
+#ifdef __SWITCH2__
+  ++rows;
+#endif
+  return rows;
 }
 
 void RenderSkylandersPage()
@@ -1682,6 +1704,18 @@ void ToggleVBISkipForSession()
                           "VBI Skip disabled for this session";
   s_status_until = std::chrono::steady_clock::now() + std::chrono::seconds(4);
 }
+
+#ifdef __SWITCH2__
+void SetCpuBoost(bool on, bool announce)
+{
+  std::lock_guard lock{s_mutex};
+  s_cpu_boost = on;
+  if (!announce)
+    return;
+  s_status = on ? "CPU Boost on for this session" : "CPU Boost off for this session";
+  s_status_until = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+}
+#endif
 
 void ToggleFrameGenerationForSession()
 {

@@ -34,6 +34,7 @@ enum class ActionType
   ToggleFrameGeneration,
   ToggleFPS,
   ToggleVBISkip,
+  ToggleCpuBoost,
   SetControllerMode,
   ResetGBA,
   ToggleSkylandersPortal,
@@ -82,6 +83,10 @@ void ToggleCheatForSession(int flat_index);
 void ToggleFrameGenerationForSession();
 void ToggleFPSForSession();
 void ToggleVBISkipForSession();
+#ifdef __SWITCH2__
+// Shows whether the CPU boost is held for the session, announcing a change made from the menu.
+void SetCpuBoost(bool on, bool announce);
+#endif
 void SetControllerModeResult(int player, ControllerMode mode, bool success);
 
 void Draw();
