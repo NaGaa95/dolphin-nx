@@ -14,7 +14,7 @@ export PATH="/usr/bin:/bin:${PATH:-}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BUILD_DIR="${DOLPHIN_SWITCH2_BUILD_DIR:-${ROOT}/build-switch2}"
-MESA_SDK_ZIP="${1:-${DOLPHIN_SWITCH2_MESA_SDK_ZIP:-${ROOT}/../mesa-nx/dist/mesa-26.2.7-switch2-horizon-sdk.zip}}"
+MESA_SDK_ZIP="${1:-${DOLPHIN_SWITCH2_MESA_SDK_ZIP:-${ROOT}/../mesa-nx/dist/mesa-26.3.1-switch2-horizon-sdk.zip}}"
 DEVKITPRO="${DEVKITPRO:-/opt/devkitpro}"
 DEVKITA64="${DEVKITA64:-${DEVKITPRO}/devkitA64}"
 JOBS="${DOLPHIN_SWITCH2_JOBS:-${DOLPHIN_SWITCH_JOBS:-18}}"
