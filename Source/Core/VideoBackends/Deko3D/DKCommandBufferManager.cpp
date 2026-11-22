@@ -218,6 +218,9 @@ void DKCommandBufferManager::BeginCommandBuffer()
 
   resources.init.Rewind();
   resources.draw.Rewind();
+  // The image descriptor ring is rewritten in place, and binding a descriptor set does not invalidate the texture
+  // header and sampler caches: a stale header could point at a freed texture.
+  dkCmdBufBarrier(resources.draw.cmdbuf, DkBarrier_None, DkInvalidateFlags_Descriptors);
   resources.init_cmdbuf_used = false;
   resources.needs_cpu_readback = false;
   resources.fence_counter = m_next_fence_counter++;
