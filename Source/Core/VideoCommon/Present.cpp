@@ -18,6 +18,7 @@
 #include "VideoCommon/FrameDumper.h"
 #include "VideoCommon/FrameGeneration.h"
 #ifdef __SWITCH__
+#include "DolphinSwitch/GameShare.h"
 #include "DolphinSwitch/ScreenLayout.h"
 #include "Common/SwitchSaltyNX.h"
 #endif
@@ -999,6 +1000,12 @@ void Presenter::PresentFrame(const AbstractTexture* texture,
     if (backbuffer_bound)
       m_onscreen_ui->DrawImGui();
   }
+
+#ifdef __SWITCH2__
+  // GameShare's guest screen gets each real frame, quick menu included (or the guest's GBA screen)
+  if (backbuffer_bound && present_info)
+    DolphinSwitch::GameShare::CopyFrameToGuest();
+#endif
 
   // Present to the window system.
   {

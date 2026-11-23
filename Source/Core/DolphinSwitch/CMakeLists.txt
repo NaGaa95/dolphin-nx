@@ -16,6 +16,8 @@ add_executable(dolphin-switch
   ForwarderStructs.h
   FrameGeneration.cpp
   FrameGeneration.h
+  GameShare.cpp
+  GameShare.h
   GBAOverlay.cpp
   GBAOverlay.h
   GciSync.cpp

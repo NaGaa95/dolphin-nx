@@ -39,6 +39,8 @@ public:
   u32 GetHeight() const { return m_height; }
   u32 GetCurrentImageIndex() const { return m_current_swap_chain_image_index; }
   bool IsCurrentImageValid() const { return m_current_swap_chain_image_is_valid; }
+  // The images can be copied from (GameShare's guest screen)
+  bool CanCopyImages() const { return m_images_copyable; }
   size_t GetSwapChainImageCount() const { return m_swap_chain_images.size(); }
   VkImage GetCurrentImage() const
   {
@@ -73,6 +75,7 @@ public:
   bool SetFullscreenState(bool state);
 
 private:
+  bool m_images_copyable = false;
   bool SelectSurfaceFormat();
   bool SelectPresentMode();
 

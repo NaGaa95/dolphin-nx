@@ -11,6 +11,9 @@
 #include <vector>
 
 #include "AudioCommon/Mixer.h"
+#ifdef __SWITCH2__
+#include "Common/nx2_gameshare.h"
+#endif
 #include "Common/Logging/Log.h"
 #include "Common/Thread.h"
 
@@ -299,5 +302,9 @@ void SwitchStream::AudioCallback(void* userdata, u8* stream, int length)
   constexpr int bytes_per_stereo_frame = sizeof(s16) * 2;
   const unsigned int frames = static_cast<unsigned int>(length / bytes_per_stereo_frame);
   self->GetMixer()->Mix(reinterpret_cast<s16*>(stream), frames);
+#ifdef __SWITCH2__
+  // GameShare's guest with a screen of its own hears the game too
+  nx2GameShareWriteGuestAudio(reinterpret_cast<const s16*>(stream), frames);
+#endif
 }
 }  // namespace DolphinSwitch::Audio

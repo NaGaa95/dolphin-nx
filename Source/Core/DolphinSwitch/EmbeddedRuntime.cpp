@@ -281,6 +281,7 @@ bool Launch(const std::string& launcher_path, const LaunchRequest& game, std::st
   section->Set("Revision", game.revision);
   section->Set("GameConfig", Encode(game.game_config_path));
   section->Set("LibraryID", Encode(game.library_id));
+  section->Set("GameShare", game.gameshare);
   if (game.nand_title)
     section->Set("NandTitle", fmt::format("0x{:016x}", *game.nand_title));
   if (!SaveAtomic(ini, HANDOFF))
@@ -322,6 +323,7 @@ std::optional<Request> ReadRequest()
       !ReadString(*section, "LibraryID", &game.library_id))
     return std::nullopt;
   section->Get("Revision", &game.revision, 0u);
+  section->Get("GameShare", &game.gameshare, false);
   u64 title = 0;
   if (section->Get("NandTitle", &title) && title != 0)
     game.nand_title = title;

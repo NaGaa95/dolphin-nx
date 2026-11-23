@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <mutex>
 #include <span>
 #include <utility>
@@ -45,6 +46,7 @@ struct Slot
 };
 
 std::array<Slot, SLOT_COUNT> s_slots;
+std::atomic_int s_guest_port{-1};
 
 class Host final : public GBAHostInterface
 {
@@ -196,7 +198,7 @@ void Draw()
   for (size_t port = 0; port < SLOT_COUNT; ++port)
   {
     AbstractTexture* texture = textures[port];
-    if (!texture)
+    if (!texture || static_cast<int>(port) == s_guest_port.load(std::memory_order_relaxed))
       continue;
 
     const float width = texture->GetWidth() * scale;
@@ -223,5 +225,18 @@ void ReleaseTextures()
 {
   for (Slot& slot : s_slots)
     slot.texture.reset();
+}
+
+void SetGuestPort(int port)
+{
+  s_guest_port.store(port, std::memory_order_relaxed);
+}
+
+const AbstractTexture* GetTexture(int port)
+{
+  if (port < 0 || static_cast<size_t>(port) >= SLOT_COUNT)
+    return nullptr;
+  // (the presenter's thread, which uploads them in Draw)
+  return s_slots[port].texture.get();
 }
 }

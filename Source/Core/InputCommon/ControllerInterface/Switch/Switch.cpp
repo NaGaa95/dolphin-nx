@@ -23,6 +23,10 @@
 #include "InputCommon/ControllerInterface/CoreDevice.h"
 #include "InputCommon/ControllerInterface/InputBackend.h"
 
+#ifdef __SWITCH2__
+#include "Common/nx2_gameshare.h"
+#endif
+
 namespace ciface::Switch
 {
 namespace
@@ -350,7 +354,20 @@ private:
   Clock::time_point m_next_hold_probe{};
 };
 
-class ControllerState final
+// What a device's inputs and motor read and drive: a console controller, or GameShare's guest
+class InputState
+{
+public:
+  virtual ~InputState() = default;
+  virtual bool IsConnected() const = 0;
+  virtual u64 GetButtons() const = 0;
+  virtual HidAnalogStickState GetStick(unsigned stick) const = 0;
+  virtual ControlState GetTrigger(unsigned trigger) const = 0;
+  virtual ControlState GetMotion(bool gyro, bool nunchuk, std::size_t axis) const = 0;
+  virtual void SetRumble(ControlState state) = 0;
+};
+
+class ControllerState final : public InputState
 {
 public:
   void Initialize(HidNpadIdType npad_id, bool use_handheld)
@@ -396,13 +413,13 @@ public:
     UpdateMotionLocked();
   }
 
-  bool IsConnected() const
+  bool IsConnected() const override
   {
     std::lock_guard lock{m_mutex};
     return padIsConnected(&m_pad);
   }
 
-  u64 GetButtons() const
+  u64 GetButtons() const override
   {
     std::lock_guard lock{m_mutex};
     u64 buttons = padGetButtons(&m_pad);
@@ -426,19 +443,19 @@ public:
     return buttons & ~chord;
   }
 
-  HidAnalogStickState GetStick(unsigned stick) const
+  HidAnalogStickState GetStick(unsigned stick) const override
   {
     std::lock_guard lock{m_mutex};
     return padGetStickPos(&m_pad, stick);
   }
 
-  ControlState GetTrigger(unsigned trigger) const
+  ControlState GetTrigger(unsigned trigger) const override
   {
     std::lock_guard lock{m_mutex};
     return static_cast<ControlState>(padGetGcTriggerPos(&m_pad, trigger)) / 0x7fff;
   }
 
-  ControlState GetMotion(bool gyro, bool nunchuk, std::size_t axis) const
+  ControlState GetMotion(bool gyro, bool nunchuk, std::size_t axis) const override
   {
     std::lock_guard lock{m_mutex};
     if (nunchuk)
@@ -446,7 +463,7 @@ public:
     return gyro ? m_gyro[axis] : m_accel[axis];
   }
 
-  void SetRumble(ControlState state)
+  void SetRumble(ControlState state) override
   {
     const float amplitude = std::clamp(static_cast<float>(state), 0.0f, 1.0f);
     std::lock_guard lock{m_mutex};
@@ -823,10 +840,105 @@ private:
       0.0f, 0.0f, -static_cast<float>(MathUtil::GRAVITY_ACCELERATION)};
 };
 
+#ifdef __SWITCH2__
+// GameShare's guest console (Common/nx2_gameshare): its controllers, merged, its six-axis sensor and
+// its rumble, read once per input update. The quick menu's chord is kept from the game, as on the
+// console's first controller.
+class GuestState final : public InputState
+{
+public:
+  void Update()
+  {
+    Nx2GameShareInput input{};
+    const bool connected = nx2GameShareGetGuestInput(&input);
+    std::lock_guard lock{m_mutex};
+    m_connected = connected;
+    m_buttons = connected ? input.buttons : 0;
+    for (std::size_t i = 0; i < m_sticks.size(); ++i)
+      m_sticks[i] = connected ? input.stick[i] : 0;
+    m_accel = {};
+    m_gyro = {};
+    if (connected && input.has_motion && std::isfinite(input.accel[0]) &&
+        std::isfinite(input.accel[1]) && std::isfinite(input.accel[2]) &&
+        std::isfinite(input.gyro[0]) && std::isfinite(input.gyro[1]) && std::isfinite(input.gyro[2]))
+    {
+      // (the units of a console controller's samples, HidSixAxisSensorState's)
+      constexpr float gravity = static_cast<float>(MathUtil::GRAVITY_ACCELERATION);
+      constexpr float tau = static_cast<float>(MathUtil::TAU);
+      for (std::size_t axis = 0; axis < 3; ++axis)
+      {
+        m_accel[axis] = input.accel[axis] * gravity;
+        m_gyro[axis] = input.gyro[axis] * tau;
+      }
+    }
+  }
+
+  bool IsConnected() const override
+  {
+    std::lock_guard lock{m_mutex};
+    return m_connected;
+  }
+
+  u64 GetButtons() const override
+  {
+    std::lock_guard lock{m_mutex};
+    if ((m_buttons & RUNTIME_OVERLAY_CHORD) == RUNTIME_OVERLAY_CHORD)
+      m_chord_latched = true;
+    if (!m_chord_latched)
+      return m_buttons;
+    if ((m_buttons & RUNTIME_OVERLAY_CHORD) == 0)
+    {
+      m_chord_latched = false;
+      return m_buttons;
+    }
+    return m_buttons & ~RUNTIME_OVERLAY_CHORD;
+  }
+
+  HidAnalogStickState GetStick(unsigned stick) const override
+  {
+    std::lock_guard lock{m_mutex};
+    return {m_sticks[stick * 2], m_sticks[stick * 2 + 1]};
+  }
+
+  // (a guest controller's triggers are buttons)
+  ControlState GetTrigger(unsigned) const override { return 0.0; }
+
+  ControlState GetMotion(bool gyro, bool nunchuk, std::size_t axis) const override
+  {
+    std::lock_guard lock{m_mutex};
+    if (nunchuk)
+      return axis == 2 ? -MathUtil::GRAVITY_ACCELERATION : 0.0;
+    return gyro ? m_gyro[axis] : m_accel[axis];
+  }
+
+  void SetRumble(ControlState state) override
+  {
+    const float amplitude = std::clamp(static_cast<float>(state), 0.0f, 1.0f);
+    {
+      std::lock_guard lock{m_mutex};
+      if (std::abs(m_rumble - amplitude) < 0.0001f)
+        return;
+      m_rumble = amplitude;
+    }
+    nx2GameShareSetGuestRumble(amplitude, amplitude);
+  }
+
+private:
+  mutable std::mutex m_mutex;
+  bool m_connected = false;
+  u64 m_buttons = 0;
+  mutable bool m_chord_latched = false;
+  std::array<s32, 4> m_sticks{};
+  std::array<float, 3> m_accel{};
+  std::array<float, 3> m_gyro{};
+  float m_rumble = 0.0f;
+};
+#endif
+
 class Button final : public Core::Device::Input
 {
 public:
-  Button(const ControllerState* state, u64 mask, std::string name)
+  Button(const InputState* state, u64 mask, std::string name)
       : m_state(state), m_mask(mask), m_name(std::move(name))
   {
   }
@@ -838,7 +950,7 @@ public:
   }
 
 private:
-  const ControllerState* m_state;
+  const InputState* m_state;
   u64 m_mask;
   std::string m_name;
 };
@@ -846,7 +958,7 @@ private:
 class Axis final : public Core::Device::Input
 {
 public:
-  Axis(const ControllerState* state, unsigned stick, bool y_axis, s32 range, std::string name)
+  Axis(const InputState* state, unsigned stick, bool y_axis, s32 range, std::string name)
       : m_state(state), m_stick(stick), m_y_axis(y_axis), m_range(range),
         m_name(std::move(name))
   {
@@ -861,7 +973,7 @@ public:
   }
 
 private:
-  const ControllerState* m_state;
+  const InputState* m_state;
   unsigned m_stick;
   bool m_y_axis;
   s32 m_range;
@@ -871,7 +983,7 @@ private:
 class Trigger final : public Core::Device::Input
 {
 public:
-  Trigger(const ControllerState* state, unsigned trigger, std::string name)
+  Trigger(const InputState* state, unsigned trigger, std::string name)
       : m_state(state), m_trigger(trigger), m_name(std::move(name))
   {
   }
@@ -880,7 +992,7 @@ public:
   ControlState GetState() const override { return m_state->GetTrigger(m_trigger); }
 
 private:
-  const ControllerState* m_state;
+  const InputState* m_state;
   unsigned m_trigger;
   std::string m_name;
 };
@@ -888,7 +1000,7 @@ private:
 class MotionInput final : public Core::Device::Input
 {
 public:
-  MotionInput(const ControllerState* state, bool gyro, bool nunchuk, std::size_t axis,
+  MotionInput(const InputState* state, bool gyro, bool nunchuk, std::size_t axis,
               ControlState scale, std::string name)
       : m_state(state), m_gyro(gyro), m_nunchuk(nunchuk), m_axis(axis), m_scale(scale),
         m_name(std::move(name))
@@ -903,7 +1015,7 @@ public:
   }
 
 private:
-  const ControllerState* m_state;
+  const InputState* m_state;
   bool m_gyro;
   bool m_nunchuk;
   std::size_t m_axis;
@@ -914,19 +1026,20 @@ private:
 class Motor final : public Core::Device::Output
 {
 public:
-  explicit Motor(ControllerState* state) : m_state(state) {}
+  explicit Motor(InputState* state) : m_state(state) {}
 
   std::string GetName() const override { return "Motor"; }
   void SetState(ControlState state) override { m_state->SetRumble(state); }
 
 private:
-  ControllerState* m_state;
+  InputState* m_state;
 };
 
 class Device final : public Core::Device
 {
 public:
-  Device(ControllerState* state, unsigned player) : m_state(state), m_player(player)
+  Device(InputState* state, unsigned player, const char* source = "Switch")
+      : m_state(state), m_player(player), m_source(source)
   {
     AddInput(new Button(m_state, HidNpadButton_A, "A"));
     AddInput(new Button(m_state, HidNpadButton_B, "B"));
@@ -988,14 +1101,15 @@ public:
   }
 
   std::string GetName() const override { return "Joypad"; }
-  std::string GetSource() const override { return "Switch"; }
+  std::string GetSource() const override { return m_source; }
   std::optional<int> GetPreferredId() const override { return static_cast<int>(m_player); }
   int GetSortPriority() const override { return DEFAULT_DEVICE_SORT_PRIORITY - m_player; }
   bool IsValid() const override { return m_state->IsConnected(); }
 
 private:
-  ControllerState* m_state;
+  InputState* m_state;
   unsigned m_player;
+  const char* m_source;
 };
 
 class Backend final : public ciface::InputBackend
@@ -1040,6 +1154,10 @@ public:
     for (std::size_t player = 0; player < m_controllers.size(); ++player)
       GetControllerInterface().AddDevice(
           std::make_shared<Device>(&m_controllers[player], player));
+#ifdef __SWITCH2__
+    // "GameShare/0/Joypad": GameShare's guest, connected while a guest plays
+    GetControllerInterface().AddDevice(std::make_shared<Device>(&m_guest, 0, "GameShare"));
+#endif
   }
 
   void UpdateInput(std::vector<std::weak_ptr<Core::Device>>& devices_to_remove) override
@@ -1050,11 +1168,17 @@ public:
     UpdateTouchscreenState();
     for (ControllerState& controller : m_controllers)
       controller.Update();
+#ifdef __SWITCH2__
+    m_guest.Update();
+#endif
   }
 
 private:
   JoyConAssignmentManager m_joycon_assignments;
   std::array<ControllerState, PLAYER_COUNT> m_controllers{};
+#ifdef __SWITCH2__
+  GuestState m_guest;
+#endif
   bool m_hid_initialized = false;
 };
 }  // namespace

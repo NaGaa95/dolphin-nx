@@ -78,6 +78,12 @@ public:
                              u32 groupsize_z, u32 groups_x, u32 groups_y, u32 groups_z) override;
   bool BindBackbuffer(const ClearColor& clear_color = {}) override;
   void PresentBackbuffer() override;
+#ifdef __SWITCH2__
+  bool SupportsGuestScreen() const override { return true; }
+  bool OpenGuestScreen(void* window) override;
+  void CloseGuestScreen() override;
+  void CopyToGuestScreen(const AbstractTexture* source) override;
+#endif
   void SetFullscreen(bool enable_fullscreen) override;
   bool IsFullscreen() const override;
 
@@ -97,6 +103,21 @@ private:
   void BindFramebuffer(VKFramebuffer* fb);
 
   std::unique_ptr<SwapChain> m_swap_chain;
+#ifdef __SWITCH2__
+  // GameShare's guest screen: CopyToGuestScreen scales into one of its images (when one is free),
+  // presented with the frame's submission
+  struct GuestScreen
+  {
+    VkSurfaceKHR surface = VK_NULL_HANDLE;
+    VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+    VkExtent2D extent = {};
+    std::vector<VkImage> images;
+    std::vector<VkSemaphore> rendered;  // per image, signaled by the submission that fills it
+    std::array<VkSemaphore, 8> acquired = {};
+    u32 next_acquired = 0;
+  };
+  GuestScreen m_guest;
+#endif
   float m_backbuffer_scale;
 
   // Keep a copy of sampler states to avoid cache lookups every draw

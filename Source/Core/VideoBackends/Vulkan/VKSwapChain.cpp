@@ -397,6 +397,12 @@ bool SwapChain::CreateSwapChain()
   }
 #endif
 
+#ifdef __SWITCH2__
+  // GameShare's guest screen copies the presented image
+  if (surface_capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT)
+    image_usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+#endif
+
   // Select the number of image layers for Quad-Buffered stereoscopy
   uint32_t image_layers = g_ActiveConfig.stereo_mode == StereoMode::QuadBuffer ? 2 : 1;
 
@@ -506,6 +512,7 @@ bool SwapChain::CreateSwapChain()
   m_width = size.width;
   m_height = size.height;
   m_layers = image_layers;
+  m_images_copyable = (swap_chain_info.imageUsage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
 
 #ifdef __SWITCH2__
   // (Mesa's WSI set the window's swap interval, which withdraws the 120 Hz request)

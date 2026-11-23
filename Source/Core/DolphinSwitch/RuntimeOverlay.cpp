@@ -119,6 +119,8 @@ enum MainItem : int
   MAIN_FPS,
   MAIN_VBI_SKIP,
   MAIN_CPU_BOOST,
+  // Only during a GameShare session (Switch 2).
+  MAIN_GAMESHARE,
   MAIN_SKYLANDERS,
   MAIN_RESET,
   MAIN_STOP,
@@ -140,6 +142,8 @@ bool s_show_fps = false;
 bool s_vbi_skip = false;
 #ifdef __SWITCH2__
 bool s_cpu_boost = false;
+bool s_gameshare = false;
+std::string s_gameshare_player;
 #endif
 bool s_is_wii = false;
 // The quick menu's scale for the frame being drawn (OverlayScale): row and list heights follow it.
@@ -729,6 +733,12 @@ bool ItemAvailable(int index)
 #else
     return false;
 #endif
+  case MAIN_GAMESHARE:
+#ifdef __SWITCH2__
+    return s_gameshare;
+#else
+    return false;
+#endif
   default:
     return true;
   }
@@ -832,6 +842,11 @@ void ActivateSelection()
     case MAIN_CPU_BOOST:
 #ifdef __SWITCH2__
       QueueAction({ActionType::ToggleCpuBoost});
+#endif
+      break;
+    case MAIN_GAMESHARE:
+#ifdef __SWITCH2__
+      QueueAction({ActionType::ChangeGameSharePlayer, 1});
 #endif
       break;
     case MAIN_SKYLANDERS:
@@ -1180,6 +1195,8 @@ void RenderMainPage()
   MenuRow(MAIN_VBI_SKIP, "VBI Skip", RowKind::Toggle, {}, s_vbi_skip);
 #ifdef __SWITCH2__
   MenuRow(MAIN_CPU_BOOST, "CPU Boost", RowKind::Toggle, {}, s_cpu_boost);
+  if (s_gameshare)
+    MenuRow(MAIN_GAMESHARE, "GameShare player", RowKind::Choice, s_gameshare_player);
 #endif
   if (s_is_wii)
     MenuRow(MAIN_SKYLANDERS, "Skylanders portal", RowKind::Submenu);
@@ -1195,6 +1212,8 @@ int MainPageRowCount()
   int rows = 11 + (s_is_wii ? 2 : 0) + (HasGBA() ? 1 : 0);
 #ifdef __SWITCH2__
   ++rows;
+  if (s_gameshare)
+    ++rows;
 #endif
   return rows;
 }
@@ -1530,6 +1549,11 @@ void UpdateInput(std::uint64_t down, std::uint64_t held, bool gamecube_adapter, 
     ActivateSelection();
   else if (s_page == Page::GBA && (down & (HidNpadButton_Left | HidNpadButton_Right)))
     ChangeGBASetting((down & HidNpadButton_Left) ? -1 : 1);
+#ifdef __SWITCH2__
+  else if (s_page == Page::Main && s_selection == MAIN_GAMESHARE && s_gameshare &&
+           (down & (HidNpadButton_Left | HidNpadButton_Right)))
+    QueueAction({ActionType::ChangeGameSharePlayer, (down & HidNpadButton_Left) ? -1 : 1});
+#endif
 }
 
 std::vector<Action> TakeActions()
@@ -1706,6 +1730,17 @@ void ToggleVBISkipForSession()
 }
 
 #ifdef __SWITCH2__
+void SetGameShare(bool active, std::string player, bool announce)
+{
+  std::lock_guard lock{s_mutex};
+  s_gameshare = active;
+  s_gameshare_player = std::move(player);
+  if (!announce)
+    return;
+  s_status = "The other console plays " + s_gameshare_player;
+  s_status_until = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+}
+
 void SetCpuBoost(bool on, bool announce)
 {
   std::lock_guard lock{s_mutex};

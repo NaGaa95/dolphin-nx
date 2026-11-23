@@ -176,7 +176,7 @@ if(DOLPHIN_SWITCH)
   target_sources(common PRIVATE SwitchSaltyNX.cpp SwitchSaltyNX.h)
   if(DOLPHIN_SWITCH2)
     # Switch 2 platform helpers (nx2_platform.h).
-    target_sources(common PRIVATE nx2_platform.c nx2_platform.h)
+    target_sources(common PRIVATE nx2_platform.c nx2_platform.h nx2_gameshare.c nx2_gameshare.h)
   endif()
   get_target_property(_common_sources common SOURCES)
   list(REMOVE_ITEM _common_sources

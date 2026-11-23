@@ -52,6 +52,9 @@ DKGfx::DKGfx(std::unique_ptr<DKSwapChain> swap_chain, float backbuffer_scale)
 
 DKGfx::~DKGfx()
 {
+#ifdef __SWITCH2__
+  CloseGuestScreen();
+#endif
   if (g_dk_context)
     g_dk_context->WaitIdle();
   UpdateActiveConfig();
@@ -351,9 +354,95 @@ void DKGfx::PresentBackbuffer()
     g_dk_command_buffer_mgr->SubmitCommandBuffer(false, m_swap_chain.get(), m_current_slot);
   else
     g_dk_command_buffer_mgr->SubmitCommandBuffer(false);
+#ifdef __SWITCH2__
+  if (m_guest_swap_chain && m_guest_slot >= 0)
+    m_guest_swap_chain->Present(m_guest_slot);
+  m_guest_slot = -1;
+#endif
 
   m_current_slot = -1;
 }
+
+#ifdef __SWITCH2__
+bool DKGfx::OpenGuestScreen(void* window)
+{
+  CloseGuestScreen();
+  m_guest_swap_chain = DKSwapChain::Create(window, true);
+  if (!m_guest_swap_chain)
+    return false;
+  INFO_LOG_FMT(VIDEO, DEKO3D_DISPLAY_NAME ": GameShare guest screen {}x{}",
+               m_guest_swap_chain->GetWidth(), m_guest_swap_chain->GetHeight());
+  return true;
+}
+
+void DKGfx::CloseGuestScreen()
+{
+  if (!m_guest_swap_chain)
+    return;
+  ExecuteCommandBuffer(true);
+  m_guest_swap_chain.reset();
+  m_guest_slot = -1;
+}
+
+void DKGfx::CopyToGuestScreen(const AbstractTexture* source)
+{
+  if (!m_guest_swap_chain || m_guest_slot >= 0 || (!source && (!m_swap_chain || m_current_slot < 0)))
+    return;
+  const int slot = m_guest_swap_chain->Acquire();
+  if (slot < 0)
+    return;
+  const DkCmdBuf command_buffer = g_dk_command_buffer_mgr->GetCurrentCommandBuffer();
+  const dk::Image& guest = m_guest_swap_chain->GetImage(slot);
+  DkImageView destination;
+  dkImageViewDefaults(&destination, &guest);
+  DkImageView source_view;
+  u32 source_width;
+  u32 source_height;
+  if (source)
+  {
+    const auto* texture = static_cast<const DKTexture*>(source);
+    source_view = texture->MakeView(0, 0, 1);
+    source_width = texture->GetWidth();
+    source_height = texture->GetHeight();
+  }
+  else
+  {
+    dkImageViewDefaults(&source_view, &m_swap_chain->GetImage(m_current_slot));
+    source_width = m_swap_chain->GetWidth();
+    source_height = m_swap_chain->GetHeight();
+  }
+
+  // Letterboxed to the source's shape
+  const u32 guest_width = m_guest_swap_chain->GetWidth();
+  const u32 guest_height = m_guest_swap_chain->GetHeight();
+  u32 width = guest_width;
+  u32 height = static_cast<u32>(static_cast<u64>(guest_width) * source_height / source_width);
+  if (height > guest_height)
+  {
+    height = guest_height;
+    width = static_cast<u32>(static_cast<u64>(guest_height) * source_width / source_height);
+  }
+  dkCmdBufBarrier(command_buffer, DkBarrier_Full, DkInvalidateFlags_Image);
+  if (width != guest_width || height != guest_height)
+  {
+    dkCmdBufBindRenderTarget(command_buffer, &destination, nullptr);
+    const DkScissor scissor = {0, 0, guest_width, guest_height};
+    dkCmdBufSetScissors(command_buffer, 0, &scissor, 1);
+    dkCmdBufClearColorFloat(command_buffer, 0, DkColorMask_RGBA, 0.0f, 0.0f, 0.0f, 1.0f);
+    // (the next draw binds its framebuffer and state again)
+    m_current_framebuffer = nullptr;
+    DKStateTracker::GetInstance()->InvalidateCachedState();
+    dkCmdBufBarrier(command_buffer, DkBarrier_Full, DkInvalidateFlags_Image);
+  }
+  const DkImageRect source_rect = {0, 0, 0, source_width, source_height, 1};
+  const DkImageRect guest_rect = {(guest_width - width) / 2, (guest_height - height) / 2, 0, width,
+                                  height, 1};
+  dkCmdBufBlitImage(command_buffer, &source_view, &source_rect, &destination, &guest_rect,
+                    source ? DkBlitFlag_FilterNearest : DkBlitFlag_FilterLinear, 0);
+  dkCmdBufBarrier(command_buffer, DkBarrier_Full, DkInvalidateFlags_Image);
+  m_guest_slot = slot;
+}
+#endif
 
 SurfaceInfo DKGfx::GetSurfaceInfo() const
 {

@@ -81,6 +81,21 @@ public:
                            VkSwapchainKHR present_swap_chain = VK_NULL_HANDLE,
                            uint32_t present_image_index = 0xFFFFFFFF);
 
+#ifdef __SWITCH2__
+  // A second swapchain image (GameShare's guest screen), presented when the current command buffer
+  // is submitted with a present: the submission waits for acquired before its transfers and
+  // signals rendered, which that present waits for
+  void SetExtraPresent(VkSwapchainKHR swap_chain, u32 image_index, VkSemaphore acquired,
+                       VkSemaphore rendered)
+  {
+    CmdBufferResources& resources = m_command_buffers[m_current_cmd_buffer];
+    resources.extra_swap_chain = swap_chain;
+    resources.extra_image_index = image_index;
+    resources.extra_acquired = acquired;
+    resources.extra_rendered = rendered;
+  }
+#endif
+
   // Was the last present submitted to the queue a failure? If so, we must recreate our swapchain.
   bool CheckLastPresentFail() { return m_last_present_failed.TestAndClear(); }
   VkResult GetLastPresentResult() const { return m_last_present_result; }
@@ -118,6 +133,12 @@ private:
     u64 fence_counter = 0;
     bool init_command_buffer_used = false;
     bool semaphore_used = false;
+#ifdef __SWITCH2__
+    VkSwapchainKHR extra_swap_chain = VK_NULL_HANDLE;
+    u32 extra_image_index = 0;
+    VkSemaphore extra_acquired = VK_NULL_HANDLE;
+    VkSemaphore extra_rendered = VK_NULL_HANDLE;
+#endif
     std::atomic<bool> waiting_for_submit{false};
     u32 frame_index = 0;
 

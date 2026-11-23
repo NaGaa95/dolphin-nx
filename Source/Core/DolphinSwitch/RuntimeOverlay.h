@@ -35,6 +35,8 @@ enum class ActionType
   ToggleFPS,
   ToggleVBISkip,
   ToggleCpuBoost,
+  // value: -1 or 1, the previous or next GameShare player
+  ChangeGameSharePlayer,
   SetControllerMode,
   ResetGBA,
   ToggleSkylandersPortal,
@@ -86,6 +88,9 @@ void ToggleVBISkipForSession();
 #ifdef __SWITCH2__
 // Shows whether the CPU boost is held for the session, announcing a change made from the menu.
 void SetCpuBoost(bool on, bool announce);
+// GameShare's session and the player the guest plays ("Player 2", "Player 1" or "GBA"), announcing
+// a change made from the menu
+void SetGameShare(bool active, std::string player, bool announce);
 #endif
 void SetControllerModeResult(int player, ControllerMode mode, bool success);
 

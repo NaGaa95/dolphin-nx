@@ -27,10 +27,11 @@ DKSwapChain::~DKSwapChain()
   Destroy();
 }
 
-std::unique_ptr<DKSwapChain> DKSwapChain::Create(void* native_window)
+std::unique_ptr<DKSwapChain> DKSwapChain::Create(void* native_window, bool guest)
 {
   auto swap_chain = std::make_unique<DKSwapChain>();
   swap_chain->m_native_window = native_window;
+  swap_chain->m_guest = guest;
   if (!swap_chain->Initialize())
     return nullptr;
   return swap_chain;
@@ -57,8 +58,9 @@ bool DKSwapChain::Initialize()
 
   dk::ImageLayout layout;
 #ifdef __SWITCH2__
-  // VI2 presents uncompressed images.
-  constexpr u32 SWAPCHAIN_FLAGS = DkImageFlags_UsageRender | DkImageFlags_UsagePresent;
+  // VI2 presents uncompressed images. GameShare's guest screen is blitted from them.
+  constexpr u32 SWAPCHAIN_FLAGS =
+      DkImageFlags_UsageRender | DkImageFlags_UsagePresent | DkImageFlags_Usage2DEngine;
 #else
   constexpr u32 SWAPCHAIN_FLAGS =
       DkImageFlags_UsageRender | DkImageFlags_UsagePresent | DkImageFlags_HwCompression;
@@ -142,6 +144,9 @@ void DKSwapChain::Present(int slot)
 
 void DKSwapChain::SetVSync(bool enabled)
 {
+  // (GameShare's guest screen paces with its own window)
+  if (m_guest)
+    return;
   const u32 interval = enabled ? 1 : 0;
 #ifdef __SWITCH2__
   // (drako3d presents at the window's interval; its setSwapInterval would withdraw the 120 Hz request)

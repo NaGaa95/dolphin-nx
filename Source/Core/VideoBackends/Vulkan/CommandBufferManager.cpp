@@ -429,6 +429,32 @@ void CommandBufferManager::SubmitCommandBuffer(u32 command_buffer_index,
     submit_info.pSignalSemaphores = &m_present_semaphores[present_image_index];
   }
 
+#ifdef __SWITCH2__
+  // GameShare's guest screen: its copy waits for its image, and its present for the copy
+  const bool extra_present =
+      present_swap_chain != VK_NULL_HANDLE && resources.extra_swap_chain != VK_NULL_HANDLE;
+  std::array<VkSemaphore, 2> wait_semaphores;
+  std::array<VkPipelineStageFlags, 2> wait_stages;
+  std::array<VkSemaphore, 2> signal_semaphores;
+  if (extra_present)
+  {
+    u32 waits = 0;
+    if (resources.semaphore_used)
+    {
+      wait_semaphores[waits] = resources.semaphore;
+      wait_stages[waits++] = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    }
+    wait_semaphores[waits] = resources.extra_acquired;
+    wait_stages[waits++] = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    submit_info.waitSemaphoreCount = waits;
+    submit_info.pWaitSemaphores = wait_semaphores.data();
+    submit_info.pWaitDstStageMask = wait_stages.data();
+    signal_semaphores = {m_present_semaphores[present_image_index], resources.extra_rendered};
+    submit_info.signalSemaphoreCount = 2;
+    submit_info.pSignalSemaphores = signal_semaphores.data();
+  }
+#endif
+
   const VkResult res =
       vkQueueSubmit(g_vulkan_context->GetGraphicsQueue(), 1, &submit_info, resources.fence);
   if (res != VK_SUCCESS)
@@ -437,6 +463,21 @@ void CommandBufferManager::SubmitCommandBuffer(u32 command_buffer_index,
     PanicAlertFmt("Failed to submit command buffer: {} ({})", VkResultToString(res),
                   static_cast<int>(res));
   }
+
+#ifdef __SWITCH2__
+  if (extra_present)
+  {
+    const VkPresentInfoKHR extra_info = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+                                         nullptr,
+                                         1,
+                                         &resources.extra_rendered,
+                                         1,
+                                         &resources.extra_swap_chain,
+                                         &resources.extra_image_index,
+                                         nullptr};
+    vkQueuePresentKHR(g_vulkan_context->GetPresentQueue(), &extra_info);
+  }
+#endif
 
   // Do we have a swap chain to present?
   if (present_swap_chain != VK_NULL_HANDLE)
@@ -511,6 +552,9 @@ void CommandBufferManager::BeginCommandBuffer()
   // Reset upload command buffer state
   resources.init_command_buffer_used = false;
   resources.semaphore_used = false;
+#ifdef __SWITCH2__
+  resources.extra_swap_chain = VK_NULL_HANDLE;
+#endif
   resources.fence_counter = m_next_fence_counter++;
   resources.frame_index = m_current_frame;
   m_current_cmd_buffer = next_buffer_index;

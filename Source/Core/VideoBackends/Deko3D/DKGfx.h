@@ -89,6 +89,12 @@ public:
 
   bool BindBackbuffer(const ClearColor& clear_color = {}) override;
   void PresentBackbuffer() override;
+#ifdef __SWITCH2__
+  bool SupportsGuestScreen() const override { return true; }
+  bool OpenGuestScreen(void* window) override;
+  void CloseGuestScreen() override;
+  void CopyToGuestScreen(const AbstractTexture* source) override;
+#endif
 
   SurfaceInfo GetSurfaceInfo() const override;
 
@@ -102,5 +108,11 @@ private:
   std::array<SamplerState, VideoCommon::MAX_PIXEL_SHADER_SAMPLERS> m_sampler_states = {};
 
   int m_current_slot = -1;
+#ifdef __SWITCH2__
+  // GameShare's guest screen: CopyToGuestScreen blits into its acquired image, presented after the
+  // frame's present
+  std::unique_ptr<DKSwapChain> m_guest_swap_chain;
+  int m_guest_slot = -1;
+#endif
 };
 }

@@ -135,11 +135,22 @@ constexpr SDL_GameControllerButton BUTTON_Y = SDL_CONTROLLER_BUTTON_X;
 // Button glyphs are rendered at three times their display size and downscaled when blitted.
 constexpr int GLYPH_SUPERSAMPLE = 3;
 
+#ifdef __SWITCH2__
+constexpr std::array<std::pair<std::string_view, std::string_view>, 4> LIBRARY_FOOTER = {{
+    {"A", "Launch"},
+    {"Y", "Game Menu"},
+    {"-", "GameShare"},
+    {"B", "Quit"},
+}};
+// What another console plays with GameShare (Config::MAIN_SWITCH_GAMESHARE_PLAYER)
+constexpr std::array<std::string_view, 3> GAMESHARE_PLAYERS = {"Player 2", "Player 1", "GBA"};
+#else
 constexpr std::array<std::pair<std::string_view, std::string_view>, 3> LIBRARY_FOOTER = {{
     {"A", "Launch"},
     {"Y", "Game Menu"},
     {"B", "Quit"},
 }};
+#endif
 
 // The per-game menu, split into the everyday actions and the destructive "Manage game" group.
 constexpr int GAME_MENU_COUNT = 10;
@@ -1629,6 +1640,14 @@ static constexpr SettingHelpEntry SETTING_HELP[] = {
      "Touchscreen uses touches on the game image in handheld mode, without the gyro; the right "
      "stick aims when no touch does."},
 #endif
+#ifdef __SWITCH2__
+    {"GameShare player", "GameShare",
+     "Press Minus on a game to play it with another Nintendo Switch or Switch 2 console. Chooses "
+     "what the other console plays: player 2 (GameCube controller 2 or Wii Remote 2), player 1 "
+     "while this console's controllers move to the next players, or, in GameCube games, a Game Boy "
+     "Advance on port 2 whose screen it shows. The quick menu of either console can change it "
+     "during play."},
+#endif
     {"Touchscreen tap presses A", "Pointer input",
      "Lifting your finger from the touchscreen presses the Wii Remote A button where you "
      "touched."},
@@ -2318,6 +2337,8 @@ private:
   std::thread m_usb_initialization_thread;
   UICommon::GameFileCache m_game_cache;
   std::optional<LaunchRequest> m_pending_launch;
+  // Minus on the game: it starts with a GameShare session
+  bool m_gameshare_launch = false;
 
   SDL_Window* m_window = nullptr;
   SDL_Renderer* m_renderer = nullptr;
@@ -12749,6 +12770,14 @@ void Launcher::ControllerSettings(bool per_game, Game* game)
                       (Config::Get(Config::MAIN_SWITCH_TOUCHSCREEN_CLICK) ? "On" : "Off")) :
                  "Wii games only",
              wii_game});
+#ifdef __SWITCH2__
+        if (!per_game)
+        {
+          rows.push_back({"GameShare player",
+                          std::string(GAMESHARE_PLAYERS[std::clamp(
+                              Config::Get(Config::MAIN_SWITCH_GAMESHARE_PLAYER), 0, 2)])});
+        }
+#endif
         return rows;
       },
       [&](int index, int delta) {
@@ -12885,6 +12914,19 @@ void Launcher::ControllerSettings(bool per_game, Game* game)
             MarkConfigDirty();
           }
         }
+#ifdef __SWITCH2__
+        else if (index == 10 && !per_game)
+        {
+          const int player = SelectChoice(
+              "GameShare player", GAMESHARE_PLAYERS,
+              std::clamp(Config::Get(Config::MAIN_SWITCH_GAMESHARE_PLAYER), 0, 2), delta);
+          if (player >= 0)
+          {
+            Config::SetBase(Config::MAIN_SWITCH_GAMESHARE_PLAYER, player);
+            MarkConfigDirty();
+          }
+        }
+#endif
         return false;
       },
       false,
@@ -12937,6 +12979,13 @@ void Launcher::ControllerSettings(bool per_game, Game* game)
             ResetConfigSetting(Config::MAIN_SWITCH_TOUCHSCREEN_CLICK);
           return true;
         }
+#ifdef __SWITCH2__
+        if (index == 10 && !per_game)
+        {
+          ResetConfigSetting(Config::MAIN_SWITCH_GAMESHARE_PLAYER);
+          return true;
+        }
+#endif
         return false;
       });
   if (game)
@@ -19430,6 +19479,29 @@ std::optional<LaunchRequest> Launcher::Run()
         m_recent_position = -1;
         BeginScreenFx();
       }
+#ifdef __SWITCH2__
+      else if (button == SDL_CONTROLLER_BUTTON_BACK && !m_library_header_focused && count)
+      {
+        // Minus: the game with another Nintendo Switch or Switch 2 console as one of its players
+        if (Confirm("GameShare",
+                    std::array<std::string, 4>{
+                        VisibleGame(selection)->title,
+                        std::string(m_localization.Translate(
+                            "Play this game with another Nintendo Switch or Nintendo Switch 2 "
+                            "console?")),
+                        std::string{},
+                        std::string(m_localization.Translate(
+                            "kaiHEN must be running in a game that supports GameShare."))}))
+        {
+          m_gameshare_launch = true;
+          launch = true;
+        }
+        else
+        {
+          BeginScreenFx();
+        }
+      }
+#endif
       else if (key == SDLK_F1)
         open_settings();
       else if (button == BUTTON_CANCEL || key == SDLK_ESCAPE)
@@ -19480,10 +19552,12 @@ std::optional<LaunchRequest> Launcher::Run()
   if (m_library_identities_dirty)
     SaveLibraryIdentities();
   FlushPendingSaves();
-  if (game.installed_nand)
-    return LaunchRequest{{}, game.game_id, game.revision, game.title_id};
-  LaunchRequest request{game.path, game.game_id, game.revision};
-  request.game_config_path = game.config_override_path;
+  LaunchRequest request =
+      game.installed_nand ? LaunchRequest{{}, game.game_id, game.revision, game.title_id} :
+                            LaunchRequest{game.path, game.game_id, game.revision};
+  if (!game.installed_nand)
+    request.game_config_path = game.config_override_path;
+  request.gameshare = std::exchange(m_gameshare_launch, false);
   return request;
 }
 

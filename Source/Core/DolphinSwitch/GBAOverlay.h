@@ -6,6 +6,7 @@
 
 #include <memory>
 
+class AbstractTexture;
 class GBAHostInterface;
 
 namespace HW::GBA
@@ -20,4 +21,10 @@ std::unique_ptr<GBAHostInterface> CreateHost(std::weak_ptr<HW::GBA::Core> core);
 void Draw();
 
 void ReleaseTextures();
+
+// GameShare: the GBA on this port is on the guest's own screen, not drawn over this console's
+// picture (-1: none)
+void SetGuestPort(int port);
+// The port's GBA screen as Draw last uploaded it (null while that GBA has shown nothing)
+const AbstractTexture* GetTexture(int port);
 }

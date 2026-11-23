@@ -128,6 +128,9 @@ extern const Info<bool> MAIN_SWITCH_TOUCHSCREEN_CLICK;
 extern const Info<bool> MAIN_SWITCH_JOYCON_MOUSE_POINTER;
 // The boot's CPU boost (faster CPU, slower GPU) stays on for the whole game.
 extern const Info<bool> MAIN_SWITCH_KEEP_CPU_BOOST;
+// The player another console plays with GameShare: 0 player 2, 1 player 1, 2 a GBA on GameCube
+// port 2 (DolphinSwitch/GameShare.h)
+extern const Info<int> MAIN_SWITCH_GAMESHARE_PLAYER;
 #endif
 enum class GBAScreens
 {

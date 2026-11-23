@@ -20,6 +20,8 @@ struct LaunchRequest
   // The launcher identity a HOME Menu shortcut carries: it finds the game's current path after a
   // rename or a USB renumbering.
   std::string library_id;
+  // Minus on the game (Switch 2): it starts with a GameShare session
+  bool gameshare = false;
 };
 
 std::optional<LaunchRequest> RunLauncher(std::string startup_message = {},

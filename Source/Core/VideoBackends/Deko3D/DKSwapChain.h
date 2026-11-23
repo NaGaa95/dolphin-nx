@@ -27,7 +27,8 @@ public:
 
   ~DKSwapChain();
 
-  static std::unique_ptr<DKSwapChain> Create(void* native_window);
+  // guest: GameShare's guest screen, a blit destination paced by its own window
+  static std::unique_ptr<DKSwapChain> Create(void* native_window, bool guest = false);
 
   u32 GetWidth() const { return m_width; }
   u32 GetHeight() const { return m_height; }
@@ -48,6 +49,7 @@ private:
   void Destroy();
 
   void* m_native_window = nullptr;
+  bool m_guest = false;
   u32 m_width = 0;
   u32 m_height = 0;
 

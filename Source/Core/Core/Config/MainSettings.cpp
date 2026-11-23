@@ -233,6 +233,7 @@ const Info<bool> MAIN_SWITCH_TOUCHSCREEN_CLICK{{System::Main, "Core", "SwitchTou
 const Info<bool> MAIN_SWITCH_JOYCON_MOUSE_POINTER{
     {System::Main, "Core", "SwitchJoyConMousePointer"}, false};
 const Info<bool> MAIN_SWITCH_KEEP_CPU_BOOST{{System::Main, "Switch", "KeepCpuBoost"}, true};
+const Info<int> MAIN_SWITCH_GAMESHARE_PLAYER{{System::Main, "Switch", "GameSharePlayer"}, 0};
 #endif
 const Info<GBAScreens> MAIN_SWITCH_GBA_SCREENS{{System::Main, "Switch", "GBAScreens"},
                                                GBAScreens::Small};

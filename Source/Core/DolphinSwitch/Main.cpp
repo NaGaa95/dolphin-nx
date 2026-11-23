@@ -22,6 +22,7 @@
 
 #include <switch.h>
 #ifdef __SWITCH2__
+#include "Common/nx2_gameshare.h"
 #include "Common/nx2_platform.h"
 #include "DolphinSwitch/FrameGeneration.h"
 #endif
@@ -67,6 +68,7 @@
 #include "DolphinSwitch/EmbeddedRuntime.h"
 #include "DolphinSwitch/Forwarder.h"
 #include "DolphinSwitch/GBAOverlay.h"
+#include "DolphinSwitch/GameShare.h"
 #include "DolphinSwitch/GciSync.h"
 #include "DolphinSwitch/Launcher.h"
 #include "DolphinSwitch/RuntimeOverlay.h"
@@ -1326,6 +1328,7 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
       }
     }
   }
+  DolphinSwitch::GameShare::Configure(resolved_request.gameshare);
   DolphinSwitch::RuntimeOverlay::BeginSession(resolved_request.path, resolved_request.game_id,
                                               resolved_request.revision, runtime_controllers.is_wii,
                                               runtime_controllers.modes);
@@ -1391,12 +1394,45 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
   // menu turns it on and off.
   bool keep_cpu_boost = Config::Get(Config::MAIN_SWITCH_KEEP_CPU_BOOST);
   DolphinSwitch::RuntimeOverlay::SetCpuBoost(keep_cpu_boost, false);
+  // GameShare: why the session could not start, and the guest's buttons (the quick menu reads them)
+  std::string gameshare_failure;
+  u64 guest_held_before = 0;
+  const auto gameshare_player_name = [] {
+    switch (DolphinSwitch::GameShare::GetRole())
+    {
+    case DolphinSwitch::GameShare::Role::Player1:
+      return std::string("Player 1");
+    case DolphinSwitch::GameShare::Role::GBA:
+      return std::string("GBA");
+    default:
+      return std::string("Player 2");
+    }
+  };
 #else
   constexpr bool keep_cpu_boost = false;
 #endif
   while (s_session_running.load(std::memory_order_acquire) && (applet_alive = appletMainLoop()))
   {
     Core::HostDispatchJobs(system);
+
+#ifdef __SWITCH2__
+    // The game runs: the GameShare session the launcher asked for starts (the emulation waits for
+    // the matchmaking applet). Cancelled, or failed, the game goes back to the launcher.
+    if (DolphinSwitch::GameShare::Requested() && !DolphinSwitch::GameShare::Active() &&
+        ever_running.load(std::memory_order_acquire))
+    {
+      const DolphinSwitch::GameShare::BeginResult result =
+          DolphinSwitch::GameShare::Begin(system, runtime_controllers.is_wii, &gameshare_failure);
+      if (result != DolphinSwitch::GameShare::BeginResult::Started)
+      {
+        DolphinSwitch::GameShare::Configure(false);
+        s_session_running.store(false, std::memory_order_release);
+        break;
+      }
+      DolphinSwitch::RuntimeOverlay::SetGameShare(true, gameshare_player_name(), false);
+    }
+    DolphinSwitch::GameShare::Update();
+#endif
 
     if (boot_boost && !keep_cpu_boost && ever_running.load(std::memory_order_acquire))
     {
@@ -1423,10 +1459,18 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
                    0.0f :
                    std::copysign((std::abs(normalized) - 0.18f) / 0.82f, normalized);
       };
+      u64 buttons_down = padGetButtonsDown(&runtime_pad);
+      u64 buttons_held = padGetButtons(&runtime_pad);
+#ifdef __SWITCH2__
+      // (GameShare's guest opens and uses the quick menu too)
+      const u64 guest_held = nx2GameShareGetGuestButtons();
+      buttons_down |= guest_held & ~guest_held_before;
+      buttons_held |= guest_held;
+      guest_held_before = guest_held;
+#endif
       DolphinSwitch::RuntimeOverlay::UpdateInput(
-          padGetButtonsDown(&runtime_pad), padGetButtons(&runtime_pad),
-          (runtime_pad.style_set & HidNpadStyleTag_NpadGc) != 0, axis(left.x), -axis(left.y),
-          axis(right.x), -axis(right.y));
+          buttons_down, buttons_held, (runtime_pad.style_set & HidNpadStyleTag_NpadGc) != 0,
+          axis(left.x), -axis(left.y), axis(right.x), -axis(right.y));
     }
     if (!UpdateTouchCalibration(resolved_request.game_id, &touch_mapping))
     {
@@ -1534,6 +1578,22 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
         else if (!boot_boost)
           boot_boost.emplace();
         DolphinSwitch::RuntimeOverlay::SetCpuBoost(keep_cpu_boost, true);
+#endif
+        break;
+      case DolphinSwitch::RuntimeOverlay::ActionType::ChangeGameSharePlayer:
+#ifdef __SWITCH2__
+        if (DolphinSwitch::GameShare::Active())
+        {
+          // The next player the game has, in the order Player 2, Player 1, GBA
+          int role = static_cast<int>(DolphinSwitch::GameShare::GetRole());
+          do
+            role = (role + (action.value < 0 ? 2 : 1)) % 3;
+          while (!DolphinSwitch::GameShare::RoleAvailable(
+              static_cast<DolphinSwitch::GameShare::Role>(role)));
+          DolphinSwitch::GameShare::SetRole(system,
+                                            static_cast<DolphinSwitch::GameShare::Role>(role));
+          DolphinSwitch::RuntimeOverlay::SetGameShare(true, gameshare_player_name(), true);
+        }
 #endif
         break;
       case DolphinSwitch::RuntimeOverlay::ActionType::ToggleSkylandersPortal:
@@ -1646,12 +1706,20 @@ SessionResult RunGameSession(const DolphinSwitch::LaunchRequest& request,
   Core::Stop(system);
   Core::Shutdown(system);
 #ifdef __SWITCH2__
+  // (the backend that presented to the guest's screen is gone)
+  DolphinSwitch::GameShare::End();
+  DolphinSwitch::RuntimeOverlay::SetGameShare(false, {}, false);
   // (the launcher goes back to the TV's resolution at 60 Hz)
   if (nx2DisplaySetFrameGeneration(false))
     (void)nx2DisplayReapply();
 #endif
 
   std::string error_message = CollectAlertText({});
+#ifdef __SWITCH2__
+  if (!gameshare_failure.empty())
+    error_message = error_message.empty() ? std::move(gameshare_failure) :
+                                            std::move(gameshare_failure) + "\n\n" + error_message;
+#endif
   std::string gci_sync_warning;
   gci_sync.Finish(&gci_sync_warning);
   if (!gci_sync_warning.empty())

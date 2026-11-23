@@ -113,6 +113,17 @@ public:
   // Presents the backbuffer to the window system, or "swaps buffers".
   virtual void PresentBackbuffer() {}
 
+#ifdef __SWITCH2__
+  // GameShare's guest screen (DolphinSwitch/GameShare): a second swapchain on the guest's window
+  // (an NWindow*). CopyToGuestScreen, between the frame's drawing and PresentBackbuffer, scales
+  // source (the bound backbuffer when null) into it, letterboxed, and PresentBackbuffer presents it
+  // too. A backend that cannot present there keeps these, and the guest mirrors the host's screen.
+  virtual bool SupportsGuestScreen() const { return false; }
+  virtual bool OpenGuestScreen(void* window) { return false; }
+  virtual void CloseGuestScreen() {}
+  virtual void CopyToGuestScreen(const AbstractTexture* source) {}
+#endif
+
   // Shader modules/objects.
   virtual std::unique_ptr<AbstractShader>
   CreateShaderFromSource(ShaderStage stage, std::string_view source,
